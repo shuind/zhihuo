@@ -1,0 +1,241 @@
+
+> time-archive@1.0.0 dev C:\Users\qdz\Desktop\时间档案馆
+> next dev "--port" "42017"
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:42017
+
+ ✓ Starting...
+ ✓ Ready in 2.4s
+ ✓ Compiled /v1/auth/me in 434ms (65 modules)
+{"level":"info","ts":"2026-03-03T11:32:40.336Z","event":"api.request","requestId":"102d2bea-73f8-4de2-b10d-d0ffde7bc85b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":2}
+ GET /v1/auth/me 401 in 567ms
+{"level":"info","ts":"2026-03-03T11:32:40.859Z","event":"api.request","requestId":"0cf5e6bc-47dd-434a-8705-2b21a97e0489","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 12ms
+{"level":"info","ts":"2026-03-03T11:32:41.382Z","event":"api.request","requestId":"1427c89c-b304-4532-903c-509bb7083c23","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 19ms
+{"level":"info","ts":"2026-03-03T11:32:41.910Z","event":"api.request","requestId":"3f13a231-1909-4170-a629-698efaaefef1","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 21ms
+{"level":"info","ts":"2026-03-03T11:32:42.422Z","event":"api.request","requestId":"4c95d838-e380-46d0-8873-9a967849e72e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 11ms
+{"level":"info","ts":"2026-03-03T11:32:42.937Z","event":"api.request","requestId":"2c4f0951-e220-4614-a187-1eea30c113c6","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:43.461Z","event":"api.request","requestId":"a76db585-c554-45a4-8320-2c1abafdabc8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:43.979Z","event":"api.request","requestId":"c2734d22-14cf-4b52-a0ce-fb430e9f0c18","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:44.492Z","event":"api.request","requestId":"980226d8-857b-4262-b95e-bb09d0a482eb","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:45.005Z","event":"api.request","requestId":"715d5e2a-3502-472f-8a09-1359ea966e06","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:32:45.525Z","event":"api.request","requestId":"11fdfa6d-0271-404a-bfe8-7843b79b961e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:46.036Z","event":"api.request","requestId":"d3f60808-4ad2-4b03-829f-f2a40eb2070e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:46.556Z","event":"api.request","requestId":"f1728f28-e8ae-4090-ad26-f7456ea3a244","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:47.071Z","event":"api.request","requestId":"203fb7f9-24d2-40c1-9c8a-ce36cebeefd7","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:32:47.582Z","event":"api.request","requestId":"aa354eea-8bdd-48ab-979b-f1707ae7ecbe","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:48.097Z","event":"api.request","requestId":"6541b576-f644-457f-b9ce-9cbe21f4d7ce","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:48.613Z","event":"api.request","requestId":"67924b0f-c188-4a47-8d78-5cab3ed46727","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:49.137Z","event":"api.request","requestId":"fdd4b9db-4023-4bc1-9692-91cf8a623ac8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:49.648Z","event":"api.request","requestId":"ca9a3885-d9a5-450f-9772-87b8369b64bc","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:50.160Z","event":"api.request","requestId":"2ec29d65-7c96-47d1-b2d7-7f7ba4fdb15e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:50.673Z","event":"api.request","requestId":"bade8380-7331-4ddb-b6b8-fc52c7240887","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:51.194Z","event":"api.request","requestId":"5898e6f0-dadc-4835-8393-8c97ebbf5faa","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:32:51.710Z","event":"api.request","requestId":"07b12cd1-77da-4c32-a769-192f0b091607","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:32:52.220Z","event":"api.request","requestId":"6574c01b-fbaf-453a-bb6c-ce1661773a36","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:52.745Z","event":"api.request","requestId":"2ad3b187-2627-4e52-b6c7-ba2a40286c29","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:53.262Z","event":"api.request","requestId":"ef8f2897-f65b-4819-b01d-3ba355a5de86","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:53.781Z","event":"api.request","requestId":"0d8ac748-af64-471b-82ab-7c2fa004816d","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 12ms
+{"level":"info","ts":"2026-03-03T11:32:54.296Z","event":"api.request","requestId":"7280359e-482f-48f3-861b-6a9fc08d2c05","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:54.822Z","event":"api.request","requestId":"568e944e-285d-4ea3-bd0b-408b3c37f1af","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:55.334Z","event":"api.request","requestId":"a3ca9470-7c12-48fc-918f-3e39e3b6eff3","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:55.851Z","event":"api.request","requestId":"8fb59ca5-a064-4ad6-bd55-07df11d94609","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:56.364Z","event":"api.request","requestId":"300671a2-b0cb-4727-99af-d21081037bca","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:32:56.875Z","event":"api.request","requestId":"8dfa31cf-c907-4d90-8a65-c279dcb9dbab","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:57.397Z","event":"api.request","requestId":"10062399-d164-4deb-a4e9-ee939524b0b8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:32:57.913Z","event":"api.request","requestId":"b9e5f6c1-2b5e-46b0-8702-d97bbc7e251c","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:32:58.431Z","event":"api.request","requestId":"4d2b498b-b7fd-4cbb-9292-8772f83cc5b9","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:32:58.952Z","event":"api.request","requestId":"61cfb4cb-dab7-4e71-9435-e6e22b1abac2","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:32:59.466Z","event":"api.request","requestId":"6e82d3d6-f9ec-48d0-a6c3-3c334fe31a4f","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:32:59.984Z","event":"api.request","requestId":"dc765de2-3158-4d42-9a07-4c2cae7c6409","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:00.502Z","event":"api.request","requestId":"4d1fd1be-79d1-41d2-93d1-344af855663a","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:01.018Z","event":"api.request","requestId":"ccc13f7b-9211-4f7f-9d0d-370e6efbd58c","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:01.534Z","event":"api.request","requestId":"5282db7c-8a6f-4c18-bb8a-abec428856a9","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:02.060Z","event":"api.request","requestId":"569cdf49-ed9b-40cd-8b90-9427cb53440b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:33:02.581Z","event":"api.request","requestId":"8df955c7-d5d6-413d-bdab-9d8906cad4b4","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:03.098Z","event":"api.request","requestId":"4efd5406-93fd-4621-98c7-6d03782605fe","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:03.621Z","event":"api.request","requestId":"f9d85f7d-d06d-4c6a-8d8b-d60d4084aac7","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:04.137Z","event":"api.request","requestId":"e63343a1-73e9-44dc-896e-4b38fd8dd220","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:04.655Z","event":"api.request","requestId":"a278556b-d1dd-4f94-92f2-8a7363e4acba","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:33:05.171Z","event":"api.request","requestId":"dca82e2a-35bc-44f0-8270-c04a23ce17fd","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:05.688Z","event":"api.request","requestId":"a4241b50-285f-4fc8-b539-562961305345","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:06.198Z","event":"api.request","requestId":"1191ece2-ed3a-46bb-8e1d-371a30c1d9b9","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:06.707Z","event":"api.request","requestId":"55a77ed1-6040-43a4-a714-8b0b4f3622d6","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:33:07.222Z","event":"api.request","requestId":"c549c5e1-41cf-4f15-997f-d14b31b08e63","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:07.732Z","event":"api.request","requestId":"740162f2-3988-4c4d-919b-da87ab1b9fdc","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:08.244Z","event":"api.request","requestId":"3f8b56b8-6c25-42f5-9a4a-8a01c20ae55e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:08.765Z","event":"api.request","requestId":"717e1775-bd9f-441f-81b2-98c3b0184b1e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:09.287Z","event":"api.request","requestId":"269f7c4b-18e9-406a-a237-d14003c6052e","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:09.801Z","event":"api.request","requestId":"e6aba9c3-21ae-4f1f-a50b-769e4651c58b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:10.312Z","event":"api.request","requestId":"dadd891c-f0e3-4dc1-801e-5587f9668db8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:10.820Z","event":"api.request","requestId":"b110244f-656a-49c8-b49e-14af523eb0cc","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:11.338Z","event":"api.request","requestId":"8f095b7a-45fb-42de-a493-50be48aa3c38","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:11.861Z","event":"api.request","requestId":"14f2e3e5-f162-4bba-8418-a5597ffaf8a3","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:12.372Z","event":"api.request","requestId":"91693ba9-ee6b-4277-bff8-e04ad09bca80","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:12.894Z","event":"api.request","requestId":"b6af69ba-db0d-4e45-8f53-3f0be2dc4e85","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:13.405Z","event":"api.request","requestId":"3e5e72c2-3518-4144-acbd-d8ab838604e9","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:13.920Z","event":"api.request","requestId":"2c943d89-4713-4933-bd5e-b205eec93316","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:14.438Z","event":"api.request","requestId":"dcc6fc45-b64c-4938-bbbb-2f99eba9fe04","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:33:14.953Z","event":"api.request","requestId":"9272c8a8-5097-4388-b564-30d844410f92","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:15.472Z","event":"api.request","requestId":"2d396d15-b593-4ed6-8f0b-8c71802f26ea","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:15.993Z","event":"api.request","requestId":"1b48e8ed-ebcc-4d2f-93c6-c5a7f2eba341","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:16.510Z","event":"api.request","requestId":"d0bd5ec9-b074-46e1-bbd6-7563327ebf39","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:17.028Z","event":"api.request","requestId":"7bb0f838-45eb-4da7-9ce4-64c8d4a6c8a7","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:17.544Z","event":"api.request","requestId":"c9260c93-fe58-4d64-a635-e758cbfbec57","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:18.062Z","event":"api.request","requestId":"5d325d1e-03cb-4c65-8cd9-9a15db66405b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:18.571Z","event":"api.request","requestId":"9897b23e-b375-4760-a543-0ae41221a546","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:19.088Z","event":"api.request","requestId":"a3a6d65f-8e4b-4ca2-9e3b-b6c971599abc","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 10ms
+{"level":"info","ts":"2026-03-03T11:33:19.607Z","event":"api.request","requestId":"7f76e335-53cc-47d8-a703-a960c8783fa2","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:20.121Z","event":"api.request","requestId":"20593813-fec3-49b9-bbda-c22750024c15","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:20.638Z","event":"api.request","requestId":"df3ff1e8-e93e-4d4b-a341-9f3092d701ed","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:21.148Z","event":"api.request","requestId":"91caa941-7fee-49a5-b934-bee8c5703f35","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 7ms
+{"level":"info","ts":"2026-03-03T11:33:21.662Z","event":"api.request","requestId":"d484b196-6a82-4e0b-8094-e5753b69ff7a","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:22.177Z","event":"api.request","requestId":"27930c1f-63b8-4180-8b76-f9e30f30c26b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:22.698Z","event":"api.request","requestId":"e2769281-a817-4dd6-b6d1-eb3e051e7d53","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:23.211Z","event":"api.request","requestId":"fcfee848-7e34-47c6-bf75-89099a66a671","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:23.727Z","event":"api.request","requestId":"4313e8c1-6999-4d68-9c8b-5c05902592d8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:24.249Z","event":"api.request","requestId":"f79613bc-8fe8-4c7d-99ff-0718b3c6c280","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:24.765Z","event":"api.request","requestId":"45411723-3800-4ffb-8366-e6634c7a9fe9","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:25.277Z","event":"api.request","requestId":"fba1106e-0e62-4d29-8140-7f1c6825ff8a","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:25.791Z","event":"api.request","requestId":"c7ebe651-2ec5-4c21-8734-e19c2ad0780b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:26.307Z","event":"api.request","requestId":"b604756f-1f19-4088-a5db-086a15a09289","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:26.825Z","event":"api.request","requestId":"ca0ecca6-c69a-4f6f-9f45-79d75fe68f31","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:27.348Z","event":"api.request","requestId":"70335268-5e36-4f45-868a-16def3f24ad5","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:27.858Z","event":"api.request","requestId":"69e6d7f0-918d-4cae-ba5d-281c00f7699b","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:28.378Z","event":"api.request","requestId":"50b36151-ede5-4e2f-8d9c-74c9dc701a78","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:28.893Z","event":"api.request","requestId":"7be704ab-9ed9-49d0-a73e-0c70493348b8","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 9ms
+{"level":"info","ts":"2026-03-03T11:33:29.414Z","event":"api.request","requestId":"a1a8e95a-20db-4b65-9e96-45a63d26441c","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 6ms
+{"level":"info","ts":"2026-03-03T11:33:29.931Z","event":"api.request","requestId":"c48209a6-e32f-4191-8b34-9a4dedf09796","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+{"level":"info","ts":"2026-03-03T11:33:30.445Z","event":"api.request","requestId":"f6d3644e-3758-4bf1-a789-37c3023713ba","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+ ✓ Compiled /v1/auth/register in 115ms (68 modules)
+{"level":"info","ts":"2026-03-03T11:33:31.574Z","event":"api.request","requestId":"02247ba0-f9e2-457f-8f35-1d78cd25418d","route":"auth.register","method":"POST","path":"/v1/auth/register","ip":"::ffff:127.0.0.1","status":200,"durationMs":64}
+ POST /v1/auth/register 200 in 223ms
+{"level":"info","ts":"2026-03-03T11:33:31.594Z","event":"api.request","requestId":"66d0ca2f-76a7-47c6-8963-d8d24955d460","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":1}
+ GET /v1/auth/me 200 in 10ms
+ ✓ Compiled /v1/doubts in 94ms (71 modules)
+{"level":"info","ts":"2026-03-03T11:33:31.716Z","event":"api.request","requestId":"b49d32ab-72ec-4c33-b34d-7072be93bbaf","route":"doubts.create","method":"POST","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/doubts 201 in 120ms
+{"level":"info","ts":"2026-03-03T11:33:31.725Z","event":"api.request","requestId":"c54a8e3a-3df1-4a85-a1d8-44de3c88d9c2","route":"doubts.list","method":"GET","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":200,"durationMs":1}
+ GET /v1/doubts?range=all&include_archived=true 200 in 7ms
+ ✓ Compiled /v1/thinking/spaces in 45ms (73 modules)
+{"level":"info","ts":"2026-03-03T11:33:31.795Z","event":"api.request","requestId":"770c80a5-d75c-47c5-8308-2ba26d61f560","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/thinking/spaces 201 in 69ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/questions in 44ms (75 modules)
+{"level":"info","ts":"2026-03-03T11:33:32.225Z","event":"api.request","requestId":"78193e12-bc14-49cb-8a37-d8cc47f31dad","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/questions 200 in 426ms
+{"level":"info","ts":"2026-03-03T11:33:32.245Z","event":"api.request","requestId":"1699aad7-1a9a-4d7a-8fc3-1fa7e5fdae6e","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ POST /v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/questions 200 in 15ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/rebuild in 44ms (77 modules)
+{"level":"info","ts":"2026-03-03T11:33:32.683Z","event":"api.request","requestId":"5dcc8a4e-43f6-41b1-85b7-7517e09669a1","route":"thinking.spaces.rebuild","method":"POST","path":"/v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/rebuild","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9/rebuild 200 in 435ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId] in 52ms (79 modules)
+{"level":"info","ts":"2026-03-03T11:33:33.125Z","event":"api.request","requestId":"a1d70b0e-f4a3-4373-b0c1-1023d8c6f5d0","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ GET /v1/thinking/spaces/bad91a85-192a-4421-a87e-a33691f48fb9 200 in 439ms
+ ✓ Compiled /v1/system/export in 110ms (82 modules)
+{"level":"info","ts":"2026-03-03T11:33:33.264Z","event":"api.request","requestId":"adda864f-0125-46be-8fc5-ffdd64df290f","route":"system.export","method":"GET","path":"/v1/system/export","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ GET /v1/system/export 200 in 136ms
+ ✓ Compiled /v1/system/import/validate in 66ms (84 modules)
+{"level":"info","ts":"2026-03-03T11:33:33.359Z","event":"api.request","requestId":"aae04ccd-a642-464a-83a3-bcb671920a63","route":"system.import.validate","method":"POST","path":"/v1/system/import/validate","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/system/import/validate 200 in 92ms
+ ✓ Compiled /v1/system/delete-all in 60ms (86 modules)
+{"level":"info","ts":"2026-03-03T11:33:33.447Z","event":"api.request","requestId":"b125c486-a5b2-40e3-9b65-e67e1837a9a5","route":"system.delete_all","method":"POST","path":"/v1/system/delete-all","ip":"::ffff:127.0.0.1","status":200,"durationMs":5}
+ POST /v1/system/delete-all 200 in 86ms
+{"level":"info","ts":"2026-03-03T11:33:33.456Z","event":"api.request","requestId":"2b87e29d-ee79-4074-82af-bf67e571840d","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":1}
+ GET /v1/auth/me 401 in 8ms

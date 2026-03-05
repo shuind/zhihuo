@@ -1,0 +1,208 @@
+
+> time-archive@1.0.0 dev
+> next dev
+
+  ▲ Next.js 14.2.35
+  - Local:        http://localhost:3000
+
+ ✓ Starting...
+ ✓ Ready in 1780ms
+ ✓ Compiled /v1/auth/me in 418ms (65 modules)
+{"level":"info","ts":"2026-03-05T05:36:57.808Z","event":"api.request","requestId":"1c86e386-f2d5-4536-8f5b-69997ea3eb09","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":3}
+ GET /v1/auth/me 401 in 550ms
+ ✓ Compiled /v1/auth/register in 150ms (68 modules)
+{"level":"info","ts":"2026-03-05T05:37:10.674Z","event":"api.request","requestId":"98583908-f4e4-4ebd-b9cf-9241496d7dc3","route":"auth.register","method":"POST","path":"/v1/auth/register","ip":"::ffff:127.0.0.1","status":200,"durationMs":70}
+ POST /v1/auth/register 200 in 263ms
+{"level":"info","ts":"2026-03-05T05:37:10.697Z","event":"api.request","requestId":"f5414cf4-153e-4116-8117-23279789d3bf","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":2}
+ GET /v1/auth/me 200 in 14ms
+ ✓ Compiled /v1/doubts in 92ms (71 modules)
+{"level":"info","ts":"2026-03-05T05:37:10.819Z","event":"api.request","requestId":"8b70d0cb-b554-4b4d-bdad-ce434f7da53a","route":"doubts.create","method":"POST","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/doubts 201 in 120ms
+{"level":"info","ts":"2026-03-05T05:37:10.832Z","event":"api.request","requestId":"dc38dc47-85a4-4d1b-b1e5-c80c212e4e43","route":"doubts.list","method":"GET","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":200,"durationMs":2}
+ GET /v1/doubts?range=all&include_archived=true 200 in 10ms
+ ✓ Compiled /v1/thinking/spaces in 48ms (73 modules)
+{"level":"info","ts":"2026-03-05T05:37:10.909Z","event":"api.request","requestId":"564d007e-8ce4-4f69-b5a1-f19f23114eda","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":4}
+ POST /v1/thinking/spaces 201 in 76ms
+{"level":"info","ts":"2026-03-05T05:37:10.922Z","event":"api.request","requestId":"95053554-9a48-4ceb-920c-e04c57640eb8","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/thinking/spaces 201 in 10ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/questions in 43ms (75 modules)
+{"level":"info","ts":"2026-03-05T05:37:11.362Z","event":"api.request","requestId":"1ec12aaf-6f4c-4ccd-b6c4-f301e3bf4469","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":5}
+ POST /v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/questions 200 in 435ms
+{"level":"info","ts":"2026-03-05T05:37:11.383Z","event":"api.request","requestId":"0a4f65bc-69b7-4ea0-beb0-b75a313ce2c0","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ POST /v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/questions 200 in 16ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/background in 44ms (77 modules)
+{"level":"info","ts":"2026-03-05T05:37:11.848Z","event":"api.request","requestId":"5adf310c-ef35-411a-b2d1-995ebc595059","route":"thinking.spaces.background","method":"POST","path":"/v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/background","ip":"::ffff:127.0.0.1","status":400,"durationMs":6}
+ POST /v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/background 400 in 461ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/rebuild in 53ms (79 modules)
+{"level":"info","ts":"2026-03-05T05:37:12.323Z","event":"api.request","requestId":"6b15a4be-3027-4eee-b212-7dfc31294b20","route":"thinking.spaces.rebuild","method":"POST","path":"/v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/rebuild","ip":"::ffff:127.0.0.1","status":200,"durationMs":5}
+ POST /v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806/rebuild 200 in 472ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId] in 53ms (81 modules)
+{"level":"info","ts":"2026-03-05T05:37:12.774Z","event":"api.request","requestId":"a0e74ebc-bcbd-4c9a-908b-11f9aaada82c","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ GET /v1/thinking/spaces/f88a3231-574e-41d5-a7c2-89491d048806 200 in 445ms
+ ✓ Compiled /v1/system/export in 93ms (84 modules)
+{"level":"info","ts":"2026-03-05T05:37:12.896Z","event":"api.request","requestId":"ba2bc822-d1cc-4527-be3c-780f2a66edb5","route":"system.export","method":"GET","path":"/v1/system/export","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ GET /v1/system/export 200 in 120ms
+ ✓ Compiled /v1/system/import/validate in 61ms (86 modules)
+{"level":"info","ts":"2026-03-05T05:37:12.984Z","event":"api.request","requestId":"edb00dd9-5aaf-4fd1-babd-2b0a73b39e5d","route":"system.import.validate","method":"POST","path":"/v1/system/import/validate","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/system/import/validate 200 in 87ms
+ ✓ Compiled /v1/system/delete-all in 55ms (88 modules)
+{"level":"info","ts":"2026-03-05T05:37:13.068Z","event":"api.request","requestId":"ed8b8098-8e4e-4e79-83ef-b76eaa94daa4","route":"system.delete_all","method":"POST","path":"/v1/system/delete-all","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ POST /v1/system/delete-all 200 in 83ms
+{"level":"info","ts":"2026-03-05T05:37:13.077Z","event":"api.request","requestId":"7b47ed6f-bbca-4319-9447-65cec331ad91","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 8ms
+ ○ Compiling / ...
+ ✓ Compiled / in 4.1s (1270 modules)
+ GET / 200 in 4305ms
+{"level":"info","ts":"2026-03-05T05:37:25.598Z","event":"api.request","requestId":"d9c798f7-e4ae-49f8-8fb3-e85167ce4474","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":5}
+ GET /v1/auth/me 200 in 42ms
+{"level":"info","ts":"2026-03-05T05:37:25.601Z","event":"api.request","requestId":"a3dc4144-e94c-441b-8600-d04f0b467989","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":7}
+ GET /v1/auth/me 200 in 35ms
+{"level":"info","ts":"2026-03-05T05:37:25.672Z","event":"api.request","requestId":"1f003c60-266e-4d7f-b709-05382f3169d6","route":"doubts.list","method":"GET","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":200,"durationMs":6}
+ GET /v1/doubts?range=all&include_archived=true&include_notes=true 200 in 45ms
+{"level":"info","ts":"2026-03-05T05:37:25.694Z","event":"api.request","requestId":"e441f989-2a68-4fb0-bf59-571124181db2","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/fb9ee824-5bbb-40bf-aa93-fc8af4fa5b2c","ip":"::ffff:127.0.0.1","status":200,"durationMs":11}
+ GET /v1/thinking/spaces/fb9ee824-5bbb-40bf-aa93-fc8af4fa5b2c 200 in 62ms
+{"level":"info","ts":"2026-03-05T05:37:25.699Z","event":"api.request","requestId":"aa452707-f788-4cf5-b159-ccd2f809cef3","route":"thinking.spaces.list","method":"GET","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":200,"durationMs":10}
+ GET /v1/thinking/spaces 200 in 62ms
+{"level":"info","ts":"2026-03-05T05:37:25.702Z","event":"api.request","requestId":"735af4c0-d79d-430a-bf41-5d3a1da99c34","route":"thinking.spaces.list","method":"GET","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":200,"durationMs":13}
+ GET /v1/thinking/spaces 200 in 74ms
+{"level":"info","ts":"2026-03-05T05:37:25.711Z","event":"api.request","requestId":"c26dd0c3-4446-494d-bc03-9273b78ee982","route":"doubts.list","method":"GET","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":200,"durationMs":6}
+ GET /v1/doubts?range=all&include_archived=true&include_notes=true 200 in 75ms
+{"level":"info","ts":"2026-03-05T05:37:25.716Z","event":"api.request","requestId":"330e7f87-c536-44b3-9d93-03528509267d","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/fb9ee824-5bbb-40bf-aa93-fc8af4fa5b2c","ip":"::ffff:127.0.0.1","status":200,"durationMs":6}
+ GET /v1/thinking/spaces/fb9ee824-5bbb-40bf-aa93-fc8af4fa5b2c 200 in 75ms
+{"level":"info","ts":"2026-03-05T05:37:25.752Z","event":"api.request","requestId":"eeae67dc-4b1c-41e9-83fa-5ed9eeeec9d5","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/435c130d-80c2-496b-b0f7-6e7c736fc2e8","ip":"::ffff:127.0.0.1","status":200,"durationMs":5}
+ GET /v1/thinking/spaces/435c130d-80c2-496b-b0f7-6e7c736fc2e8 200 in 28ms
+{"level":"info","ts":"2026-03-05T05:37:25.754Z","event":"api.request","requestId":"ec42ae5b-db6d-49a8-8382-ab248e362946","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/435c130d-80c2-496b-b0f7-6e7c736fc2e8","ip":"::ffff:127.0.0.1","status":200,"durationMs":6}
+ GET /v1/thinking/spaces/435c130d-80c2-496b-b0f7-6e7c736fc2e8 200 in 30ms
+{"level":"info","ts":"2026-03-05T05:40:26.676Z","event":"api.request","requestId":"c1ae968b-9b09-4682-a1b9-c13105e1726c","route":"auth.register","method":"POST","path":"/v1/auth/register","ip":"::ffff:127.0.0.1","status":200,"durationMs":70}
+ POST /v1/auth/register 200 in 86ms
+{"level":"info","ts":"2026-03-05T05:40:26.697Z","event":"api.request","requestId":"fd85a7bb-8825-4f1c-bbfa-7dcc42b16019","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":1}
+ GET /v1/auth/me 200 in 10ms
+{"level":"info","ts":"2026-03-05T05:40:26.713Z","event":"api.request","requestId":"8a41e736-8093-4fae-a10e-98789684df81","route":"doubts.create","method":"POST","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":201,"durationMs":4}
+ POST /v1/doubts 201 in 13ms
+{"level":"info","ts":"2026-03-05T05:40:26.726Z","event":"api.request","requestId":"e697fcfe-8804-492f-94e3-b730becc36c1","route":"doubts.list","method":"GET","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":200,"durationMs":1}
+ GET /v1/doubts?range=all&include_archived=true 200 in 10ms
+{"level":"info","ts":"2026-03-05T05:40:26.740Z","event":"api.request","requestId":"953e4712-8710-4fb3-bdde-75f27b9013ec","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/thinking/spaces 201 in 12ms
+{"level":"info","ts":"2026-03-05T05:40:26.755Z","event":"api.request","requestId":"d8d83fe4-751e-457e-ba5f-35df1d519fed","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":3}
+ POST /v1/thinking/spaces 201 in 12ms
+{"level":"info","ts":"2026-03-05T05:40:26.784Z","event":"api.request","requestId":"acd4cebc-9add-426c-b439-c56636717dc7","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/questions 200 in 26ms
+{"level":"info","ts":"2026-03-05T05:40:26.801Z","event":"api.request","requestId":"46ec4f3c-33e2-4350-8a01-f424e6260b09","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/questions 200 in 12ms
+{"level":"info","ts":"2026-03-05T05:40:26.827Z","event":"api.request","requestId":"c1cbe591-d538-471e-bacf-32f6cd329028","route":"thinking.spaces.background","method":"POST","path":"/v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/background","ip":"::ffff:127.0.0.1","status":400,"durationMs":4}
+ POST /v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/background 400 in 21ms
+{"level":"info","ts":"2026-03-05T05:40:26.854Z","event":"api.request","requestId":"821423a7-015d-4d1d-ac69-ceccc80de184","route":"thinking.spaces.rebuild","method":"POST","path":"/v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/rebuild","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ POST /v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe/rebuild 200 in 23ms
+{"level":"info","ts":"2026-03-05T05:40:26.877Z","event":"api.request","requestId":"6e202af8-ceed-4540-8c05-4e3237918d08","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ GET /v1/thinking/spaces/bc37ec45-5d2d-4b5e-93fa-8d0a2be542fe 200 in 19ms
+{"level":"info","ts":"2026-03-05T05:40:26.894Z","event":"api.request","requestId":"5a340321-b2f1-4ca2-b02e-92c34e9e6fe4","route":"system.export","method":"GET","path":"/v1/system/export","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ GET /v1/system/export 200 in 16ms
+{"level":"info","ts":"2026-03-05T05:40:26.916Z","event":"api.request","requestId":"ba145a91-f215-4f6d-9770-9f1d3d4083e6","route":"system.import.validate","method":"POST","path":"/v1/system/import/validate","ip":"::ffff:127.0.0.1","status":200,"durationMs":6}
+ POST /v1/system/import/validate 200 in 19ms
+{"level":"info","ts":"2026-03-05T05:40:26.936Z","event":"api.request","requestId":"0cf7cb99-d535-409f-a98e-91fd1a1181a8","route":"system.delete_all","method":"POST","path":"/v1/system/delete-all","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ POST /v1/system/delete-all 200 in 17ms
+{"level":"info","ts":"2026-03-05T05:40:26.949Z","event":"api.request","requestId":"74e52b98-8ed6-4cff-a39d-08e4ca1cc0b4","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":401,"durationMs":0}
+ GET /v1/auth/me 401 in 12ms
+ GET / 200 in 37ms
+ ○ Compiling /_not-found ...
+ ✓ Compiled /_not-found in 756ms (1273 modules)
+ GET /_next/static/css/app/layout.css?v=1772689256524 404 in 896ms
+ GET /_next/static/chunks/app/page.js 404 in 889ms
+ GET /_next/static/chunks/webpack.js?v=1772689256524 404 in 906ms
+ GET /_next/static/chunks/main-app.js?v=1772689256524 404 in 890ms
+ GET /_next/static/chunks/app-pages-internals.js 404 in 887ms
+ GET /_next/static/css/app/layout.css?v=1772689257482 404 in 36ms
+ ✓ Compiled in 670ms (1208 modules)
+ ✓ Compiled /_not-found in 197ms (1197 modules)
+ GET /_next/static/css/app/layout.css?v=1772689515146 404 in 300ms
+ GET /_next/static/css/app/layout.css?v=1772689515478 404 in 30ms
+ ✓ Compiled in 301ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689524019 404 in 51ms
+ ✓ Compiled in 298ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689536122 404 in 30ms
+ ✓ Compiled in 264ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689568683 404 in 44ms
+ ✓ Compiled in 257ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689583735 404 in 40ms
+ ✓ Compiled in 204ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689598568 404 in 54ms
+ ✓ Compiled in 233ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689613989 404 in 43ms
+ ✓ Compiled in 215ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689622488 404 in 29ms
+ ✓ Compiled in 230ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689633048 404 in 36ms
+ ✓ Compiled in 211ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689644627 404 in 26ms
+ ✓ Compiled in 211ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689653625 404 in 38ms
+ ✓ Compiled in 201ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689664514 404 in 35ms
+ ✓ Compiled in 210ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689683177 404 in 25ms
+ ✓ Compiled in 313ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689693347 404 in 28ms
+ ✓ Compiled in 238ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689705554 404 in 17ms
+ ✓ Compiled in 201ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689716149 404 in 27ms
+ ✓ Compiled in 189ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689728547 404 in 40ms
+ ✓ Compiled in 219ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689738743 404 in 37ms
+ ✓ Compiled in 274ms (614 modules)
+ GET /_next/static/css/app/layout.css?v=1772689748077 404 in 47ms
+ ○ Compiling /v1/auth/register ...
+ ✓ Compiled /v1/auth/register in 547ms (636 modules)
+{"level":"info","ts":"2026-03-05T05:51:29.810Z","event":"api.request","requestId":"f1697da3-1b6f-469c-bddf-f7c51d68d049","route":"auth.register","method":"POST","path":"/v1/auth/register","ip":"::ffff:127.0.0.1","status":200,"durationMs":90}
+ POST /v1/auth/register 200 in 725ms
+ ✓ Compiled /_not-found in 388ms (1239 modules)
+ GET /_next/static/css/app/layout.css?v=1772689889826 404 in 484ms
+{"level":"info","ts":"2026-03-05T05:51:30.345Z","event":"api.request","requestId":"71b65417-6e74-46eb-b68f-a3b457a9a2c0","route":"auth.me","method":"GET","path":"/v1/auth/me","ip":"::ffff:127.0.0.1","status":200,"durationMs":3}
+ GET /v1/auth/me 200 in 512ms
+ ✓ Compiled /v1/doubts in 273ms (1242 modules)
+ GET /_next/static/css/app/layout.css?v=1772689890362 404 in 359ms
+{"level":"info","ts":"2026-03-05T05:51:30.763Z","event":"api.request","requestId":"7e5d80d5-33d4-458c-be25-808c675ffe34","route":"doubts.create","method":"POST","path":"/v1/doubts","ip":"::ffff:127.0.0.1","status":201,"durationMs":8}
+ POST /v1/doubts 201 in 414ms
+ ✓ Compiled /v1/thinking/spaces in 389ms (1244 modules)
+ GET /_next/static/css/app/layout.css?v=1772689890780 404 in 426ms
+{"level":"info","ts":"2026-03-05T05:51:31.253Z","event":"api.request","requestId":"7c396d27-8775-4d41-a1f1-bc6861c105f0","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":7}
+ POST /v1/thinking/spaces 201 in 486ms
+{"level":"info","ts":"2026-03-05T05:51:31.317Z","event":"api.request","requestId":"0276246f-5aa6-4241-bc01-1eb80d5e73fa","route":"thinking.spaces.create","method":"POST","path":"/v1/thinking/spaces","ip":"::ffff:127.0.0.1","status":201,"durationMs":21}
+ POST /v1/thinking/spaces 201 in 65ms
+ GET /_next/static/css/app/layout.css?v=1772689891270 404 in 37ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/questions in 165ms (646 modules)
+{"level":"info","ts":"2026-03-05T05:51:31.562Z","event":"api.request","requestId":"7bf21bb7-f6d0-4368-b036-74d5108db33f","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":8}
+ POST /v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/questions 200 in 232ms
+ GET /_next/static/css/app/layout.css?v=1772689891582 404 in 33ms
+{"level":"info","ts":"2026-03-05T05:51:31.634Z","event":"api.request","requestId":"3b7e7d29-ea08-4ded-ae0e-2bea82f1651b","route":"thinking.questions.add","method":"POST","path":"/v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/questions","ip":"::ffff:127.0.0.1","status":200,"durationMs":28}
+ POST /v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/questions 200 in 66ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/background in 139ms (648 modules)
+{"level":"info","ts":"2026-03-05T05:51:31.832Z","event":"api.request","requestId":"37c48ea8-80c2-4093-9b84-3f7e9ea34c1e","route":"thinking.spaces.background","method":"POST","path":"/v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/background","ip":"::ffff:127.0.0.1","status":400,"durationMs":6}
+ POST /v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/background 400 in 192ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId]/rebuild in 330ms (1250 modules)
+ GET /_next/static/css/app/layout.css?v=1772689891848 404 in 378ms
+{"level":"info","ts":"2026-03-05T05:51:32.260Z","event":"api.request","requestId":"c4688d95-a273-4294-8671-c1b222de920b","route":"thinking.spaces.rebuild","method":"POST","path":"/v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/rebuild","ip":"::ffff:127.0.0.1","status":200,"durationMs":12}
+ POST /v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e/rebuild 200 in 423ms
+ ✓ Compiled /v1/thinking/spaces/[spaceId] in 323ms (1252 modules)
+ GET /_next/static/css/app/layout.css?v=1772689892277 404 in 360ms
+{"level":"info","ts":"2026-03-05T05:51:32.676Z","event":"api.request","requestId":"31fc6ed1-2f17-478b-8c28-994d2e2454dd","route":"thinking.spaces.detail","method":"GET","path":"/v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e","ip":"::ffff:127.0.0.1","status":200,"durationMs":4}
+ GET /v1/thinking/spaces/cbde6cbe-29d8-450e-a99a-316b475a979e 200 in 411ms
+ ✓ Compiled /v1/system/export in 348ms (1255 modules)
+{"level":"info","ts":"2026-03-05T05:51:33.147Z","event":"api.request","requestId":"774fab46-4439-4fa9-ad48-b1fcd88b86ba","route":"system.export","method":"GET","path":"/v1/system/export","ip":"::ffff:127.0.0.1","status":200,"durationMs":9}
+ GET /v1/system/export 200 in 468ms
+ ○ Compiling /v1/system/import/validate ...
+ ✓ Compiled /v1/system/import/validate in 2.4s (1484 modules)
+ GET /_next/static/css/app/layout.css?v=1772689892695 500 in 3412ms
+{"level":"info","ts":"2026-03-05T05:51:36.207Z","event":"api.request","requestId":"7f407685-04f0-4166-8c5c-7f138983228d","route":"system.import.validate","method":"POST","path":"/v1/system/import/validate","ip":"::ffff:127.0.0.1","status":200,"durationMs":18}
+ POST /v1/system/import/validate 200 in 3058ms
+ ✓ Compiled /v1/system/delete-all in 258ms (700 modules)
+{"level":"info","ts":"2026-03-05T05:51:36.832Z","event":"api.request","requestId":"a351b12c-ccef-4350-a145-304068ee8453","route":"system.delete_all","method":"POST","path":"/v1/system/delete-all","ip":"::ffff:127.0.0.1","status":200,"durationMs":56}
+ POST /v1/system/delete-all 200 in 612ms
+ GET /v1/auth/me 500 in 89ms
+ GET / 500 in 57ms
+ ✓ Compiled in 790ms (1500 modules)
+ GET / 500 in 206ms
+ POST /v1/auth/register 500 in 39ms
+ POST /v1/auth/register 500 in 23ms
+ POST /v1/auth/register 500 in 24ms

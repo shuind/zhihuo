@@ -1,0 +1,132 @@
+export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
+export type ThinkingSpaceStatus = "active" | "frozen" | "archived";
+export type ThinkingNodeState = "normal" | "hidden";
+
+export type DoubtRecord = {
+  id: string;
+  user_id: string;
+  raw_text: string;
+  created_at: string;
+  archived_at: string | null;
+  deleted_at: string | null;
+};
+
+export type DoubtNoteRecord = {
+  id: string;
+  doubt_id: string;
+  note_text: string;
+  created_at: string;
+};
+
+export type ThinkingSpaceRecord = {
+  id: string;
+  user_id: string;
+  root_question_text: string;
+  status: ThinkingSpaceStatus;
+  created_at: string;
+  frozen_at: string | null;
+  source_time_doubt_id: string | null;
+};
+
+export type ThinkingNodeRecord = {
+  id: string;
+  space_id: string;
+  parent_node_id: string | null;
+  raw_question_text: string;
+  note_text?: string | null;
+  created_at: string;
+  order_index: number;
+  is_suggested: boolean;
+  state: ThinkingNodeState;
+  dimension: DimensionKey;
+};
+
+export type ThinkingInboxRecord = {
+  id: string;
+  space_id: string;
+  raw_text: string;
+  created_at: string;
+};
+
+export type ThinkingSpaceMetaRecord = {
+  space_id: string;
+  user_freeze_note: string | null;
+  export_version: number;
+  background_text?: string | null;
+  background_version?: number;
+  suggestion_decay?: number;
+  last_track_id?: string | null;
+  last_organized_order?: number;
+};
+
+export type DbState = {
+  doubts: DoubtRecord[];
+  doubt_notes: DoubtNoteRecord[];
+  thinking_spaces: ThinkingSpaceRecord[];
+  thinking_nodes: ThinkingNodeRecord[];
+  thinking_inbox: ThinkingInboxRecord[];
+  thinking_space_meta: ThinkingSpaceMetaRecord[];
+  users: UserRecord[];
+  audit_logs: AuditLogRecord[];
+};
+
+export type UserRecord = {
+  id: string;
+  email: string;
+  password_hash: string;
+  created_at: string;
+  deleted_at: string | null;
+};
+
+export type AuditLogRecord = {
+  id: string;
+  user_id: string;
+  action: string;
+  target_type: string;
+  target_id: string;
+  detail: string;
+  created_at: string;
+};
+
+export type ThinkingSnapshot = {
+  spaces: Array<{
+    id: string;
+    userId: string;
+    rootQuestionText: string;
+    status: ThinkingSpaceStatus;
+    createdAt: string;
+    frozenAt: string | null;
+    sourceTimeDoubtId: string | null;
+  }>;
+  nodes: Array<{
+    id: string;
+    spaceId: string;
+    parentNodeId: string | null;
+    rawQuestionText: string;
+    noteText?: string | null;
+    createdAt: string;
+    orderIndex: number;
+    isSuggested: boolean;
+    state: ThinkingNodeState;
+    dimension: DimensionKey;
+  }>;
+  spaceMeta: Array<{
+    spaceId: string;
+    userFreezeNote: string | null;
+    exportVersion: number;
+    backgroundText?: string | null;
+    backgroundVersion?: number;
+    suggestionDecay?: number;
+    lastTrackId?: string | null;
+    lastOrganizedOrder?: number;
+  }>;
+  inbox: Record<
+    string,
+    Array<{
+      id: string;
+      rawText: string;
+      createdAt: string;
+    }>
+  >;
+  assistEnabled?: boolean;
+};
