@@ -21,6 +21,7 @@ export const POST = withApiRoute(
     let noteText: string | null = null;
     let trackId: string | null = null;
     let suggestedQuestions: string[] = [];
+    let relatedCandidate: { node_id: string; preview: string; score: number } | null = null;
 
     await updateDb((db) => {
       const result = addQuestionToSpace(db, userId, params.spaceId, body.raw_text ?? "", {
@@ -35,6 +36,14 @@ export const POST = withApiRoute(
         noteText = result.note_text;
         trackId = result.track_id;
         suggestedQuestions = result.suggested_questions ?? [];
+        relatedCandidate =
+          result.related_candidate && typeof result.related_candidate.nodeId === "string"
+            ? {
+                node_id: result.related_candidate.nodeId,
+                preview: result.related_candidate.preview,
+                score: result.related_candidate.score
+              }
+            : null;
       } else if (result.kind === "invalid") {
         suggestedQuestions = result.suggested_questions;
       }
@@ -50,7 +59,8 @@ export const POST = withApiRoute(
       converted,
       note_text: noteText,
       track_id: trackId,
-      suggested_questions: suggestedQuestions
+      suggested_questions: suggestedQuestions,
+      related_candidate: relatedCandidate
     });
   },
   { rateLimit: { bucket: "thinking-questions-add", max: 90, windowMs: 60 * 1000 } }

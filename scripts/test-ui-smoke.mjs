@@ -17,12 +17,7 @@ async function assertNoMojibake(page, scope) {
 }
 
 async function ensureSignedIn(page) {
-  await page.waitForFunction(() => {
-    const buttons = Array.from(document.querySelectorAll("button"));
-    const hasThinkingTab = buttons.some((el) => el.textContent?.includes("思路"));
-    const hasEmailInput = Array.from(document.querySelectorAll("input")).some((el) => el.getAttribute("placeholder") === "邮箱");
-    return hasThinkingTab || hasEmailInput;
-  }, { timeout: 20000 });
+  await page.waitForSelector('button:has-text("思路"), input[placeholder="邮箱"]', { timeout: 60000 });
 
   const thinkingTab = page.getByRole("button", { name: "思路" }).first();
   if (await thinkingTab.isVisible().catch(() => false)) return;
@@ -43,7 +38,7 @@ async function openThinking(page) {
 async function createSpace(page, title) {
   console.log("[ui-smoke] create space");
   await page.getByRole("button", { name: /新空间/ }).first().click();
-  await page.getByPlaceholder("输入一个根问题").fill(title);
+  await page.getByPlaceholder("写下这段思考现在围着什么转").fill(title);
   await page.getByRole("button", { name: /^创建(中\.\.\.)?$/ }).click();
   await page.getByText(title).first().waitFor({ timeout: 10000 });
   await page.getByPlaceholder(QUESTION_PLACEHOLDER).waitFor({ timeout: 10000 });
@@ -96,7 +91,7 @@ async function assertTrackScrollableAndCentered(page) {
 async function assertMenuActions(page) {
   console.log("[ui-smoke] assert node menu");
   await page.getByRole("button", { name: "节点菜单" }).first().click();
-  await page.getByRole("menuitem", { name: "新方向" }).first().click();
+  await page.getByRole("menuitem", { name: "换条线想" }).first().click();
   await page.waitForTimeout(420);
 
   await page.getByRole("button", { name: "节点菜单" }).first().click();
@@ -116,9 +111,21 @@ async function assertMenuActions(page) {
   const countBefore = await page.locator('[data-track-node="true"]').count();
   await page.getByRole("button", { name: "节点菜单" }).nth(1).click();
   await page.getByRole("menuitem", { name: "删除" }).first().click();
-  await page.waitForTimeout(350);
-  const countAfter = await page.locator('[data-track-node="true"]').count();
+  let countAfter = countBefore;
+  for (let i = 0; i < 8; i += 1) {
+    await page.waitForTimeout(180);
+    countAfter = await page.locator('[data-track-node="true"]').count();
+    if (countAfter < countBefore) break;
+  }
   assert(countAfter < countBefore, "删除节点未生效");
+}
+
+async function assertOrganizePanel(page) {
+  console.log("[ui-smoke] assert organize panel");
+  await page.getByRole("button", { name: "更多" }).click();
+  await page.getByRole("button", { name: "整理一下" }).click();
+  await page.getByText("安放这些散开的念头").waitFor({ timeout: 8000 });
+  await page.getByRole("button", { name: "安放这些念头" }).click();
 }
 
 async function assertTrackSwitchRestore(page) {
@@ -151,9 +158,9 @@ async function assertTrackSwitchRestore(page) {
 
 async function assertFreezeAndExport(page) {
   console.log("[ui-smoke] assert freeze+export");
-  await page.getByRole("button", { name: "冻结" }).click();
-  await page.getByRole("button", { name: "确认冻结" }).click();
-  await page.getByText("冻结").first().waitFor({ timeout: 10000 });
+  await page.getByRole("button", { name: "先停在这里" }).click();
+  await page.getByRole("button", { name: "停在这里", exact: true }).click();
+  await page.getByText("停在这里").first().waitFor({ timeout: 10000 });
 
   await page.getByRole("button", { name: "导出" }).click();
   const exportArea = page.locator("textarea").last();
@@ -184,7 +191,10 @@ async function assertTabsAndMobile(page) {
 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.getByRole("button", { name: "思路" }).click();
-  await page.waitForSelector('input[placeholder="继续输入一个疑问…"], input[placeholder="该空间已只读"]', { timeout: 10000 });
+  await page.waitForSelector('input[placeholder="继续输入一个疑问…"], input[placeholder="这段思考现在停在这里"]', { timeout: 10000 });
+  await page.getByRole("button", { name: "专注" }).first().click();
+  await page.waitForTimeout(300);
+  await page.getByRole("button", { name: "专注" }).first().click();
 
   const noXOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
   assert(noXOverflow, "移动端出现横向溢出");
@@ -214,6 +224,7 @@ async function run() {
     await openThinking(page);
     await createSpace(page, `轨道回归空间-${Date.now()}`);
     await addTrackNodes(page, 18);
+    await assertOrganizePanel(page);
     await assertTrackScrollableAndCentered(page);
     await assertMenuActions(page);
     await assertTrackSwitchRestore(page);

@@ -15,6 +15,7 @@ import {
   type LifeNote,
   type ThinkingSpace,
   type ThinkingSpaceMeta,
+  type TrackDirectionHint,
   type ThinkingStore,
   EMPTY_LIFE_STORE,
   EMPTY_THINKING_STORE,
@@ -59,6 +60,37 @@ type ApiThinkingSpaceMeta = {
   space_id: string;
   user_freeze_note: string | null;
   export_version: number;
+  background_text?: string | null;
+  background_version?: number;
+  suggestion_decay?: number;
+  last_track_id?: string | null;
+  last_organized_order?: number;
+  parking_track_id?: string | null;
+  milestone_node_ids?: string[];
+  track_direction_hints?: Record<string, TrackDirectionHint | null>;
+};
+
+type ApiReentryEntry = {
+  space_id?: string;
+  track_id?: string | null;
+  node_id?: string | null;
+  preview?: string | null;
+  root_question_text?: string;
+  freeze_note?: string | null;
+  frozen_at?: string | null;
+};
+
+type ApiThinkingTimeLink = {
+  doubt_id: string;
+  space_id: string;
+  status: "active" | "frozen" | "archived";
+  freeze_note: string | null;
+  milestone_previews: string[];
+  reentry?: {
+    question_entry?: ApiReentryEntry | null;
+    freeze_entry?: ApiReentryEntry | null;
+    milestone_entries?: ApiReentryEntry[];
+  };
 };
 
 type ApiThinkingTrackNode = {
@@ -67,6 +99,8 @@ type ApiThinkingTrackNode = {
   note_text?: string | null;
   created_at: string;
   is_suggested: boolean;
+  is_milestone?: boolean;
+  has_related_link?: boolean;
   echo_track_id?: string | null;
   echo_node_id?: string | null;
 };
@@ -74,6 +108,8 @@ type ApiThinkingTrackNode = {
 type ApiThinkingTrack = {
   id: string;
   title_question_text: string;
+  direction_hint?: TrackDirectionHint | null;
+  is_parking?: boolean;
   node_count: number;
   nodes: ApiThinkingTrackNode[];
 };
@@ -86,11 +122,47 @@ type ApiThinkingSpaceView = {
   freeze_note?: string | null;
   background_text?: string | null;
   background_version?: number;
+  parking_track_id?: string | null;
+  milestone_node_ids?: string[];
 };
 
 type SessionUser = {
   userId: string;
   email: string;
+};
+
+type ThinkingProgressSummary = {
+  spaceId: string;
+  status: "active" | "frozen" | "archived";
+  freezeNote: string | null;
+  milestonePreviews: string[];
+  reentry: {
+    questionEntry: {
+      spaceId: string;
+      rootQuestionText: string;
+    } | null;
+    freezeEntry: {
+      spaceId: string;
+      trackId: string | null;
+      nodeId: string | null;
+      preview: string | null;
+      freezeNote: string | null;
+      frozenAt: string | null;
+    } | null;
+    milestoneEntries: Array<{
+      spaceId: string;
+      trackId: string | null;
+      nodeId: string | null;
+      preview: string | null;
+    }>;
+  };
+};
+
+type ThinkingJumpTarget = {
+  spaceId: string;
+  mode: "root" | "freeze" | "milestone";
+  trackId?: string | null;
+  nodeId?: string | null;
 };
 
 function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
@@ -128,7 +200,30 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
   return {
     spaceId: item.space_id,
     userFreezeNote: item.user_freeze_note,
-    exportVersion: item.export_version
+    exportVersion: item.export_version,
+    backgroundText: typeof item.background_text === "string" ? item.background_text : null,
+    backgroundVersion: Number.isFinite(item.background_version) ? Number(item.background_version) : 0,
+    suggestionDecay: Number.isFinite(item.suggestion_decay) ? Number(item.suggestion_decay) : 0,
+    lastTrackId: typeof item.last_track_id === "string" ? item.last_track_id : null,
+    lastOrganizedOrder: Number.isFinite(item.last_organized_order) ? Number(item.last_organized_order) : -1,
+    parkingTrackId: typeof item.parking_track_id === "string" ? item.parking_track_id : null,
+    milestoneNodeIds: Array.isArray(item.milestone_node_ids) ? item.milestone_node_ids.filter((id) => typeof id === "string") : [],
+    trackDirectionHints:
+      item.track_direction_hints && typeof item.track_direction_hints === "object" && !Array.isArray(item.track_direction_hints)
+        ? Object.fromEntries(
+            Object.entries(item.track_direction_hints).filter(
+              ([trackId, hint]) =>
+                typeof trackId === "string" &&
+                (hint === null ||
+                  hint === "hypothesis" ||
+                  hint === "memory" ||
+                  hint === "counterpoint" ||
+                  hint === "worry" ||
+                  hint === "constraint" ||
+                  hint === "aside")
+            )
+          )
+        : {}
   };
 }
 
@@ -139,17 +234,31 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
     tracks: (payload.tracks ?? []).map((track) => ({
       id: track.id,
       titleQuestionText: track.title_question_text,
+      directionHint:
+        track.direction_hint === "hypothesis" ||
+        track.direction_hint === "memory" ||
+        track.direction_hint === "counterpoint" ||
+        track.direction_hint === "worry" ||
+        track.direction_hint === "constraint" ||
+        track.direction_hint === "aside"
+          ? track.direction_hint
+          : null,
+      isParking: track.is_parking === true,
       nodes: (track.nodes ?? []).map((node) => ({
         id: node.id,
         questionText: node.raw_question_text,
         noteText: typeof node.note_text === "string" ? node.note_text : null,
         isSuggested: Boolean(node.is_suggested),
+        isMilestone: node.is_milestone === true,
+        hasRelatedLink: node.has_related_link === true,
         createdAt: node.created_at,
         echoTrackId: typeof node.echo_track_id === "string" ? node.echo_track_id : null,
         echoNodeId: typeof node.echo_node_id === "string" ? node.echo_node_id : null
       })),
       nodeCount: Math.max(0, track.node_count ?? 0)
     })),
+    parkingTrackId: typeof payload.parking_track_id === "string" ? payload.parking_track_id : null,
+    milestoneNodeIds: Array.isArray(payload.milestone_node_ids) ? payload.milestone_node_ids.filter((id) => typeof id === "string") : [],
     suggestedQuestions: (payload.suggested_questions ?? []).filter((item) => typeof item === "string"),
     freezeNote: payload.freeze_note ?? null,
     backgroundText: typeof payload.background_text === "string" ? payload.background_text : null,
@@ -169,6 +278,9 @@ export function TimeArchive() {
   const [notice, setNotice] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [thinkingProgressByDoubt, setThinkingProgressByDoubt] = useState<Record<string, ThinkingProgressSummary>>({});
+  const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
+  const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
   const [stars] = useState(() => createStars(36));
@@ -258,9 +370,62 @@ export function TimeArchive() {
           if (!silent) showNotice("思考空间同步失败");
           return [];
         }
-        const payload = (await response.json()) as { spaces?: ApiThinkingSpace[]; space_meta?: ApiThinkingSpaceMeta[] };
+        const payload = (await response.json()) as {
+          spaces?: ApiThinkingSpace[];
+          space_meta?: ApiThinkingSpaceMeta[];
+          time_links?: ApiThinkingTimeLink[];
+        };
         const spaces = Array.isArray(payload.spaces) ? payload.spaces.map(mapApiThinkingSpace) : [];
         const spaceMeta = Array.isArray(payload.space_meta) ? payload.space_meta.map(mapApiThinkingMeta) : [];
+        const nextProgress: Record<string, ThinkingProgressSummary> = {};
+        for (const link of payload.time_links ?? []) {
+          if (typeof link?.doubt_id !== "string" || typeof link?.space_id !== "string") continue;
+          const questionEntry =
+            link.reentry?.question_entry && typeof link.reentry.question_entry.space_id === "string"
+              ? {
+                  spaceId: link.reentry.question_entry.space_id,
+                  rootQuestionText:
+                    typeof link.reentry.question_entry.root_question_text === "string"
+                      ? link.reentry.question_entry.root_question_text
+                      : ""
+                }
+              : null;
+          const freezeEntry =
+            link.reentry?.freeze_entry && typeof link.reentry.freeze_entry.space_id === "string"
+              ? {
+                  spaceId: link.reentry.freeze_entry.space_id,
+                  trackId: typeof link.reentry.freeze_entry.track_id === "string" ? link.reentry.freeze_entry.track_id : null,
+                  nodeId: typeof link.reentry.freeze_entry.node_id === "string" ? link.reentry.freeze_entry.node_id : null,
+                  preview: typeof link.reentry.freeze_entry.preview === "string" ? link.reentry.freeze_entry.preview : null,
+                  freezeNote: typeof link.reentry.freeze_entry.freeze_note === "string" ? link.reentry.freeze_entry.freeze_note : null,
+                  frozenAt: typeof link.reentry.freeze_entry.frozen_at === "string" ? link.reentry.freeze_entry.frozen_at : null
+                }
+              : null;
+          const milestoneEntries = Array.isArray(link.reentry?.milestone_entries)
+            ? link.reentry?.milestone_entries
+                .filter((entry) => typeof entry?.space_id === "string")
+                .map((entry) => ({
+                  spaceId: entry.space_id as string,
+                  trackId: typeof entry.track_id === "string" ? entry.track_id : null,
+                  nodeId: typeof entry.node_id === "string" ? entry.node_id : null,
+                  preview: typeof entry.preview === "string" ? entry.preview : null
+                }))
+            : [];
+          nextProgress[link.doubt_id] = {
+            spaceId: link.space_id,
+            status: link.status === "active" || link.status === "frozen" || link.status === "archived" ? link.status : "active",
+            freezeNote: typeof link.freeze_note === "string" ? link.freeze_note : null,
+            milestonePreviews: Array.isArray(link.milestone_previews)
+              ? link.milestone_previews.filter((item) => typeof item === "string").slice(0, 3)
+              : [],
+            reentry: {
+              questionEntry,
+              freezeEntry,
+              milestoneEntries
+            }
+          };
+        }
+        setThinkingProgressByDoubt(nextProgress);
         setThinkingStore((prev) => ({
           ...prev,
           spaces,
@@ -406,7 +571,14 @@ export function TimeArchive() {
       rootQuestionText: string,
       sourceTimeDoubtId: string | null
     ): Promise<
-      | { ok: true; spaceId: string; converted: boolean; createdAsStatement: boolean; suggestedQuestions: string[] }
+      | {
+          ok: true;
+          spaceId: string;
+          converted: boolean;
+          createdAsStatement: boolean;
+          suggestedQuestions: string[];
+          questionSuggestion: string | null;
+        }
       | { ok: false; message: string; suggestedQuestions?: string[] }
     > => {
       try {
@@ -422,6 +594,7 @@ export function TimeArchive() {
           converted?: boolean;
           created_as_statement?: boolean;
           suggested_questions?: string[];
+          question_suggestion?: string | null;
           error?: string;
         };
         if (!response.ok) {
@@ -443,7 +616,8 @@ export function TimeArchive() {
           spaceId,
           converted: payload.converted === true,
           createdAsStatement: payload.created_as_statement === true,
-          suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : []
+          suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
+          questionSuggestion: typeof payload.question_suggestion === "string" ? payload.question_suggestion : null
         };
       } catch {
         return { ok: false, message: "网络异常，请稍后再试" };
@@ -464,6 +638,17 @@ export function TimeArchive() {
     setActiveSpaceId(pickDefaultSpaceId(loadedThinking.spaces));
     setHydrated(true);
   }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const raw = window.localStorage.getItem("zhihuo_thinking_focus_mode");
+    setThinkingFocusMode(raw === "1");
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem("zhihuo_thinking_focus_mode", thinkingFocusMode ? "1" : "0");
+  }, [thinkingFocusMode]);
 
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser) return;
@@ -563,6 +748,12 @@ export function TimeArchive() {
     [handleUnauthorized, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
   );
 
+  const handleJumpToThinking = useCallback((target: ThinkingJumpTarget) => {
+    setTab("thinking");
+    setThinkingJumpTarget(target);
+    setActiveSpaceId(target.spaceId);
+  }, []);
+
   const handleCreateThinkingFromInput = useCallback(
     async (rawInput: string) => {
       const result = await createThinkingSpaceApi(rawInput, null);
@@ -572,6 +763,7 @@ export function TimeArchive() {
         converted: result.converted,
         createdAsStatement: result.createdAsStatement,
         suggestedQuestions: result.suggestedQuestions,
+        questionSuggestion: result.questionSuggestion,
         spaceId: result.spaceId
       };
     },
@@ -601,6 +793,7 @@ export function TimeArchive() {
           track_id?: string;
           error?: string;
           suggested_questions?: string[];
+          related_candidate?: { node_id?: string; preview?: string; score?: number } | null;
         };
         if (!response.ok) {
           if (response.status === 409) return { ok: false as const, message: "该空间已只读" };
@@ -617,7 +810,15 @@ export function TimeArchive() {
           noteText: typeof body.note_text === "string" ? body.note_text : null,
           trackId: typeof body.track_id === "string" ? body.track_id : payload.trackId ?? "",
           nodeId: body.node_id,
-          suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : []
+          suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : [],
+          relatedCandidate:
+            body.related_candidate && typeof body.related_candidate.node_id === "string"
+              ? {
+                  nodeId: body.related_candidate.node_id,
+                  preview: typeof body.related_candidate.preview === "string" ? body.related_candidate.preview : "",
+                  score: Number.isFinite(body.related_candidate.score) ? Number(body.related_candidate.score) : 0
+                }
+              : null
         };
       } catch {
         return { ok: false as const, message: "网络异常，请稍后再试" };
@@ -626,19 +827,70 @@ export function TimeArchive() {
     [handleUnauthorized, loadThinkingViewFromApi]
   );
 
-  const handleThinkingOrganize = useCallback(
+  const handleThinkingOrganizePreview = useCallback(
     async (spaceId: string) => {
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/rebuild`, { method: "POST" });
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-preview`, { method: "POST" });
+        if (handleUnauthorized(response)) return [];
+        if (!response.ok) return [];
+        const body = (await response.json().catch(() => ({}))) as {
+          candidates?: Array<{ node_id?: string; preview?: string; from_track_id?: string; suggested_track_id?: string; score?: number }>;
+        };
+        return (body.candidates ?? [])
+          .filter((item) => typeof item.node_id === "string" && typeof item.from_track_id === "string" && typeof item.suggested_track_id === "string")
+          .map((item) => ({
+            nodeId: item.node_id as string,
+            preview: typeof item.preview === "string" ? item.preview : "",
+            fromTrackId: item.from_track_id as string,
+            suggestedTrackId: item.suggested_track_id as string,
+            score: Number.isFinite(item.score) ? Number(item.score) : 0
+          }));
+      } catch {
+        return [];
+      }
+    },
+    [handleUnauthorized]
+  );
+
+  const handleThinkingOrganizeApply = useCallback(
+    async (spaceId: string, moves: Array<{ nodeId: string; targetTrackId: string }>) => {
+      try {
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-apply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            moves: moves.map((item) => ({ node_id: item.nodeId, target_track_id: item.targetTrackId }))
+          })
+        });
+        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+        const body = (await response.json().catch(() => ({}))) as { moved_count?: number; error?: string };
+        if (!response.ok) return { ok: false as const, message: typeof body.error === "string" ? body.error : "整理失败" };
+        await loadThinkingViewFromApi(spaceId, true);
+        return { ok: true as const, movedCount: Number.isFinite(body.moved_count) ? Number(body.moved_count) : 0 };
+      } catch {
+        return { ok: false as const, message: "网络异常，请稍后再试" };
+      }
+    },
+    [handleUnauthorized, loadThinkingViewFromApi]
+  );
+
+  const handleThinkingLinkNodes = useCallback(
+    async (nodeId: string, targetNodeId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/nodes/${nodeId}/link`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ target_node_id: targetNodeId })
+        });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
-        await loadThinkingViewFromApi(spaceId, true);
+        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
         return true;
       } catch {
         return false;
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
   );
 
   const handleThinkingMoveNode = useCallback(
@@ -709,6 +961,25 @@ export function TimeArchive() {
     [handleUnauthorized, loadThinkingViewFromApi]
   );
 
+  const handleThinkingTrackDirection = useCallback(
+    async (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => {
+      try {
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/track-direction`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ track_id: trackId, direction_hint: directionHint })
+        });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        await loadThinkingViewFromApi(spaceId, true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnauthorized, loadThinkingViewFromApi]
+  );
+
   const handleThinkingSaveBackground = useCallback(
     async (spaceId: string, backgroundText: string | null) => {
       try {
@@ -739,12 +1010,12 @@ export function TimeArchive() {
   );
 
   const handleThinkingFreeze = useCallback(
-    async (spaceId: string, userFreezeNote: string | null) => {
+    async (spaceId: string, userFreezeNote: string | null, milestoneNodeIds: string[]) => {
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/freeze`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_freeze_note: userFreezeNote })
+          body: JSON.stringify({ user_freeze_note: userFreezeNote, milestone_node_ids: milestoneNodeIds.slice(0, 3) })
         });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         if (!response.ok) {
@@ -789,6 +1060,28 @@ export function TimeArchive() {
     [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
   );
 
+  const handleThinkingDeleteSpace = useCallback(
+    async (spaceId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/delete`, { method: "POST" });
+        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+        if (!response.ok) {
+          const payload = (await response.json().catch(() => ({}))) as { error?: string };
+          return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "删除空间失败" };
+        }
+        const spaces = await syncThinkingSpacesFromApi(true);
+        const nextActive = pickDefaultSpaceId(spaces);
+        setActiveSpaceId(nextActive);
+        if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+        else setThinkingView(null);
+        return { ok: true as const };
+      } catch {
+        return { ok: false as const, message: "网络异常，请稍后再试" };
+      }
+    },
+    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+  );
+
   const handleThinkingExport = useCallback(async (spaceId: string) => {
     try {
       const response = await fetch(`/v1/thinking/spaces/${spaceId}/export`, { method: "GET", cache: "no-store" });
@@ -800,6 +1093,22 @@ export function TimeArchive() {
       return null;
     }
   }, [handleUnauthorized]);
+
+  const handleSystemExport = useCallback(
+    async (format: "json" | "markdown") => {
+      try {
+        const response = await fetch(`/v1/system/export?format=${format}`, { method: "GET", cache: "no-store" });
+        if (handleUnauthorized(response)) return null;
+        if (!response.ok) return null;
+        const payload = (await response.json().catch(() => ({}))) as { payload?: unknown; checksum?: string; markdown?: string };
+        if (format === "markdown") return typeof payload.markdown === "string" ? payload.markdown : null;
+        return typeof payload.payload !== "undefined" ? JSON.stringify(payload, null, 2) : null;
+      } catch {
+        return null;
+      }
+    },
+    [handleUnauthorized]
+  );
 
   const logout = useCallback(() => {
     void (async () => {
@@ -865,6 +1174,7 @@ export function TimeArchive() {
         tab === "life" ? "life-surface" : tab === "thinking" ? "thinking-surface text-slate-900" : "settings-surface"
       )}
     >
+      {!(tab === "thinking" && thinkingFocusMode) ? (
       <header
         className={cn(
           "absolute left-0 top-0 z-30 w-full border-b px-4 py-3 backdrop-blur md:px-6",
@@ -894,8 +1204,9 @@ export function TimeArchive() {
           </nav>
         </div>
       </header>
+      ) : null}
 
-      <main className="h-full pt-[62px]">
+      <main className={cn("h-full", tab === "thinking" && thinkingFocusMode ? "pt-0" : "pt-[62px]")}>
         <AnimatePresence mode="wait">
           {tab === "life" ? (
             <motion.section
@@ -912,6 +1223,8 @@ export function TimeArchive() {
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
+                thinkingProgressByDoubt={thinkingProgressByDoubt}
+                onJumpToThinking={handleJumpToThinking}
                 onImportToThinking={handleImportToThinking}
                 onCreateDoubt={createLifeDoubt}
                 onArchiveDoubt={archiveLifeDoubt}
@@ -938,7 +1251,9 @@ export function TimeArchive() {
                 spaceView={thinkingView}
                 onCreateSpace={handleCreateThinkingFromInput}
                 onAddQuestion={handleThinkingAddQuestion}
-                onOrganizeSpace={handleThinkingOrganize}
+                onOrganizePreview={handleThinkingOrganizePreview}
+                onOrganizeApply={handleThinkingOrganizeApply}
+                onLinkNodes={handleThinkingLinkNodes}
                 onMoveNode={handleThinkingMoveNode}
                 onMarkMisplaced={handleThinkingMisplacedNode}
                 onDeleteNode={handleThinkingDeleteNode}
@@ -946,8 +1261,14 @@ export function TimeArchive() {
                 onSaveBackground={handleThinkingSaveBackground}
                 onFreezeSpace={handleThinkingFreeze}
                 onToggleArchiveSpace={handleThinkingToggleArchive}
+                onDeleteSpace={handleThinkingDeleteSpace}
                 onExportSpace={handleThinkingExport}
+                onUpdateTrackDirection={handleThinkingTrackDirection}
                 onFreezeToLife={appendThinkingFreezeToLife}
+                focusMode={thinkingFocusMode}
+                onFocusModeChange={setThinkingFocusMode}
+                reentryTarget={thinkingJumpTarget}
+                onReentryHandled={() => setThinkingJumpTarget(null)}
                 showNotice={showNotice}
               />
             </motion.section>
@@ -965,6 +1286,7 @@ export function TimeArchive() {
                 payload={appPayload}
                 assistEnabled={thinkingStore.assistEnabled}
                 setAssistEnabled={(enabled) => setThinkingStore((prev) => ({ ...prev, assistEnabled: enabled }))}
+                onSystemExport={handleSystemExport}
                 onClearAll={clearAllData}
                 showNotice={showNotice}
               />

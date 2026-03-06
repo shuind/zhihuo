@@ -3,7 +3,7 @@ import { NextRequest } from "next/server";
 import { updateDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
-import { buildUserExport } from "@/lib/server/security";
+import { buildUserExport, buildUserExportMarkdown } from "@/lib/server/security";
 import { createId, nowIso } from "@/lib/server/utils";
 
 export const GET = withApiRoute(
@@ -11,24 +11,25 @@ export const GET = withApiRoute(
   async (request: NextRequest) => {
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
+    const format = request.nextUrl.searchParams.get("format") === "markdown" ? "markdown" : "json";
 
-    let result: { payload: unknown; checksum: string } | null = null;
+    let result: { payload: unknown; checksum: string } | { markdown: string } | null = null;
     await updateDb((db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!user) return;
-      result = buildUserExport(db, userId, user.email);
+      result = format === "markdown" ? { markdown: buildUserExportMarkdown(db, userId, user.email) } : buildUserExport(db, userId, user.email);
       db.audit_logs.push({
         id: createId(),
         user_id: userId,
         action: "export_full_data",
         target_type: "user",
         target_id: userId,
-        detail: "exported full user data with checksum",
+        detail: format === "markdown" ? "exported full user data markdown" : "exported full user data with checksum",
         created_at: nowIso()
       });
     });
 
-    if (!result) return errorJson(404, "user not found");
+    if (!result) return errorJson(404, "用户不存在");
     return okJson(result);
   },
   { rateLimit: { bucket: "system-export", max: 20, windowMs: 60 * 1000 } }

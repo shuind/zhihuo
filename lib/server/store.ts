@@ -3,6 +3,8 @@
   DimensionKey,
   DoubtNoteRecord,
   DoubtRecord,
+  TrackDirectionHint,
+  ThinkingNodeLinkRecord,
   ThinkingNodeRecord,
   ThinkingSnapshot,
   ThinkingSpaceMetaRecord,
@@ -23,6 +25,28 @@ import {
 } from "@/lib/server/utils";
 
 const TRACK_PREFIX = "track:";
+const ORGANIZE_MOVE_THRESHOLD = 0.52;
+const ORGANIZE_MOVE_DELTA = 0.16;
+const TRACK_DIRECTION_HINTS: TrackDirectionHint[] = ["hypothesis", "memory", "counterpoint", "worry", "constraint", "aside"];
+const TRACK_DIRECTION_HINT_LABEL: Record<TrackDirectionHint, string> = {
+  hypothesis: "假设",
+  memory: "回忆",
+  counterpoint: "反驳",
+  worry: "担忧",
+  constraint: "现实限制",
+  aside: "旁支念头"
+};
+
+function isTrackDirectionHint(value: unknown): value is TrackDirectionHint {
+  return (
+    value === "hypothesis" ||
+    value === "memory" ||
+    value === "counterpoint" ||
+    value === "worry" ||
+    value === "constraint" ||
+    value === "aside"
+  );
+}
 
 function parseRange(range: string | null) {
   if (range === "week" || range === "month" || range === "all") return range;
@@ -133,6 +157,9 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   if (!Object.prototype.hasOwnProperty.call(meta, "suggestion_decay")) meta.suggestion_decay = 0;
   if (!Object.prototype.hasOwnProperty.call(meta, "last_track_id")) meta.last_track_id = null;
   if (!Object.prototype.hasOwnProperty.call(meta, "last_organized_order")) meta.last_organized_order = -1;
+  if (!Object.prototype.hasOwnProperty.call(meta, "parking_track_id")) meta.parking_track_id = createId();
+  if (!Object.prototype.hasOwnProperty.call(meta, "milestone_node_ids")) meta.milestone_node_ids = [];
+  if (!Object.prototype.hasOwnProperty.call(meta, "track_direction_hints")) meta.track_direction_hints = {};
   if (typeof meta.background_version !== "number" || !Number.isFinite(meta.background_version) || meta.background_version < 0) {
     meta.background_version = 0;
   }
@@ -141,6 +168,21 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   }
   if (typeof meta.last_organized_order !== "number" || !Number.isFinite(meta.last_organized_order)) {
     meta.last_organized_order = -1;
+  }
+  if (typeof meta.parking_track_id !== "string" || !meta.parking_track_id.trim()) {
+    meta.parking_track_id = createId();
+  }
+  if (!Array.isArray(meta.milestone_node_ids)) {
+    meta.milestone_node_ids = [];
+  } else {
+    meta.milestone_node_ids = meta.milestone_node_ids.filter((id) => typeof id === "string").slice(0, 3);
+  }
+  if (!meta.track_direction_hints || typeof meta.track_direction_hints !== "object" || Array.isArray(meta.track_direction_hints)) {
+    meta.track_direction_hints = {};
+  } else {
+    meta.track_direction_hints = Object.fromEntries(
+      Object.entries(meta.track_direction_hints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionHint(hint))
+    );
   }
   return meta;
 }
@@ -156,7 +198,10 @@ function ensureMeta(db: DbState, spaceId: string) {
     background_version: 0,
     suggestion_decay: 0,
     last_track_id: null,
-    last_organized_order: -1
+    last_organized_order: -1,
+    parking_track_id: createId(),
+    milestone_node_ids: [],
+    track_direction_hints: {}
   };
   db.thinking_space_meta.push(next);
   return next;
@@ -166,6 +211,85 @@ function chooseFallbackTrackId(nodes: ThinkingNodeRecord[]) {
   if (!nodes.length) return null;
   const latest = [...nodes].sort((a, b) => b.order_index - a.order_index)[0];
   return latest ? trackIdFromNode(latest) : null;
+}
+
+function getParkingTrackId(meta: ThinkingSpaceMetaRecord) {
+  if (typeof meta.parking_track_id === "string" && meta.parking_track_id.trim()) return meta.parking_track_id;
+  const next = createId();
+  meta.parking_track_id = next;
+  return next;
+}
+
+function getTrackDirectionHints(meta: ThinkingSpaceMetaRecord) {
+  sanitizeMeta(meta);
+  return meta.track_direction_hints ?? {};
+}
+
+function pruneTrackDirectionHints(meta: ThinkingSpaceMetaRecord, trackIds: Iterable<string>) {
+  const allowed = new Set(trackIds);
+  const next = Object.fromEntries(
+    Object.entries(getTrackDirectionHints(meta)).filter(([trackId, hint]) => allowed.has(trackId) && isTrackDirectionHint(hint))
+  );
+  meta.track_direction_hints = next;
+  return next;
+}
+
+function inferTrackDirectionHint(trackNodes: ThinkingNodeRecord[], isParkingTrack: boolean): TrackDirectionHint | null {
+  if (isParkingTrack) return "aside";
+  if (!trackNodes.length) return null;
+
+  const text = trackNodes.slice(0, 3).map((node) => node.raw_question_text).join(" ");
+  if (/(记得|当时|以前|曾经|回想|回忆|小时候|过去)/iu.test(text)) return "memory";
+  if (/(但是|可是|难道|反过来|例外|反例|不成立|为什么不是)/iu.test(text)) return "counterpoint";
+  if (/(担心|害怕|焦虑|会不会|最坏|风险|代价|后果)/iu.test(text)) return "worry";
+  if (/(现实|限制|资源|时间|成本|预算|约束|做不到)/iu.test(text)) return "constraint";
+  if (/(也许|如果|假如|会不会是|可能是|猜想|设想)/iu.test(text)) return "hypothesis";
+
+  const dimensions = new Map<DimensionKey, number>();
+  for (const node of trackNodes.slice(0, 4)) {
+    dimensions.set(node.dimension, (dimensions.get(node.dimension) ?? 0) + 1);
+  }
+  const dominant = [...dimensions.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "definition";
+  if (dominant === "risk") return "worry";
+  if (dominant === "resource") return "constraint";
+  if (dominant === "evidence") return "counterpoint";
+  if (dominant === "value") return "memory";
+  return "hypothesis";
+}
+
+function resolveTrackDirectionHint(
+  meta: ThinkingSpaceMetaRecord,
+  trackId: string,
+  trackNodes: ThinkingNodeRecord[],
+  parkingTrackId: string
+) {
+  const saved = getTrackDirectionHints(meta)[trackId];
+  if (isTrackDirectionHint(saved)) return saved;
+  return inferTrackDirectionHint(trackNodes, trackId === parkingTrackId);
+}
+
+function trackQuestionPreview(text: string, limit = 46) {
+  const compact = collapseWhitespace(text);
+  if (compact.length <= limit) return compact;
+  return `${compact.slice(0, limit)}...`;
+}
+
+function findRelatedCandidate(nodes: ThinkingNodeRecord[], node: ThinkingNodeRecord) {
+  const nodeTokens = tokenizeText(node.raw_question_text);
+  let best: { nodeId: string; preview: string; score: number } | null = null;
+  for (const candidate of nodes) {
+    if (candidate.id === node.id) continue;
+    const score = textOverlapScore(nodeTokens, tokenizeText(candidate.raw_question_text));
+    if (score <= 0.3) continue;
+    if (!best || score > best.score) {
+      best = {
+        nodeId: candidate.id,
+        preview: trackQuestionPreview(candidate.raw_question_text),
+        score: Number(score.toFixed(3))
+      };
+    }
+  }
+  return best;
 }
 
 function echoKey(text: string) {
@@ -246,6 +370,7 @@ export function deleteDoubt(db: DbState, userId: string, doubtId: string) {
     db.thinking_nodes = db.thinking_nodes.filter((node) => !deletingSpaces.has(node.space_id));
     db.thinking_space_meta = db.thinking_space_meta.filter((meta) => !deletingSpaces.has(meta.space_id));
     db.thinking_inbox = db.thinking_inbox.filter((item) => !deletingSpaces.has(item.space_id));
+    db.thinking_node_links = db.thinking_node_links.filter((link) => !deletingSpaces.has(link.space_id));
   }
   return true;
 }
@@ -284,6 +409,7 @@ export function createThinkingSpace(
   const converted = normalized.converted;
   const createdAsStatement = !normalized.is_question;
   const suggestedQuestions = normalized.suggested_questions.slice(0, 3);
+  const questionSuggestion = suggestedQuestions[0] ?? null;
 
   const activeCount = userSpaces(db, userId).filter((space) => space.status === "active").length;
   if (activeCount >= MAX_ACTIVE_SPACES) return { over_limit: true as const };
@@ -306,16 +432,97 @@ export function createThinkingSpace(
     background_version: 0,
     suggestion_decay: 0,
     last_track_id: null,
-    last_organized_order: -1
+    last_organized_order: -1,
+    parking_track_id: createId(),
+    milestone_node_ids: [],
+    track_direction_hints: {}
   });
-  return { over_limit: false as const, space, converted, created_as_statement: createdAsStatement, suggested_questions: suggestedQuestions };
+  return {
+    over_limit: false as const,
+    space,
+    converted,
+    created_as_statement: createdAsStatement,
+    suggested_questions: suggestedQuestions,
+    question_suggestion: questionSuggestion
+  };
 }
 
 export function listThinkingSpaces(db: DbState, userId: string) {
   const spaces = userSpaces(db, userId).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const ids = new Set(spaces.map((space) => space.id));
   const spaceMeta = db.thinking_space_meta.filter((meta) => ids.has(meta.space_id)).map(sanitizeMeta);
-  return { spaces, space_meta: spaceMeta };
+  const nodesBySpace = new Map<string, ThinkingNodeRecord[]>();
+  for (const node of db.thinking_nodes.filter((node) => ids.has(node.space_id) && node.state === "normal")) {
+    const list = nodesBySpace.get(node.space_id);
+    if (list) list.push(node);
+    else nodesBySpace.set(node.space_id, [node]);
+  }
+  const timeLinks = spaces
+    .filter((space) => typeof space.source_time_doubt_id === "string")
+    .map((space) => {
+      const meta = spaceMeta.find((item) => item.space_id === space.id);
+      const nodes = nodesBySpace.get(space.id) ?? [];
+      const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+      const tracks = getTrackMap(nodes);
+      const currentTrackId =
+        (meta?.last_track_id && tracks.has(meta.last_track_id) ? meta.last_track_id : null) ??
+        chooseFallbackTrackId(nodes) ??
+        null;
+      const milestonePreviews = (meta?.milestone_node_ids ?? [])
+        .map((id) => nodeMap.get(id))
+        .filter((node): node is ThinkingNodeRecord => Boolean(node))
+        .slice(0, 3)
+        .map((node) => trackQuestionPreview(node.raw_question_text, 56));
+      const milestoneEntries = (meta?.milestone_node_ids ?? [])
+        .map((id) => nodeMap.get(id))
+        .filter((node): node is ThinkingNodeRecord => Boolean(node))
+        .slice(0, 3)
+        .map((node) => ({
+          node_id: node.id,
+          track_id: trackIdFromNode(node),
+          preview: trackQuestionPreview(node.raw_question_text, 56)
+        }));
+      const freezeAnchorNode =
+        milestoneEntries[0] ??
+        (() => {
+          const focusTrackId = currentTrackId && tracks.has(currentTrackId) ? currentTrackId : chooseFallbackTrackId(nodes);
+          if (!focusTrackId) return null;
+          const focusNodes = tracks.get(focusTrackId) ?? [];
+          const latestNode = focusNodes[focusNodes.length - 1];
+          if (!latestNode) return null;
+          return {
+            node_id: latestNode.id,
+            track_id: focusTrackId,
+            preview: trackQuestionPreview(latestNode.raw_question_text, 56)
+          };
+        })();
+      return {
+        doubt_id: space.source_time_doubt_id as string,
+        space_id: space.id,
+        status: space.status,
+        freeze_note: meta?.user_freeze_note ?? null,
+        milestone_previews: milestonePreviews,
+        reentry: {
+          question_entry: {
+            space_id: space.id,
+            root_question_text: space.root_question_text
+          },
+          freeze_entry:
+            space.frozen_at || meta?.user_freeze_note
+              ? {
+                  space_id: space.id,
+                  frozen_at: space.frozen_at,
+                  freeze_note: meta?.user_freeze_note ?? null,
+                  track_id: freezeAnchorNode?.track_id ?? currentTrackId,
+                  node_id: freezeAnchorNode?.node_id ?? null,
+                  preview: freezeAnchorNode?.preview ?? null
+                }
+              : null,
+          milestone_entries: milestoneEntries
+        }
+      };
+    });
+  return { spaces, space_meta: spaceMeta, time_links: timeLinks };
 }
 
 export function createThinkingSpaceFromDoubt(db: DbState, userId: string, doubtId: string) {
@@ -336,11 +543,12 @@ export function addQuestionToSpace(
   if (space.status !== "active") return { kind: "readonly" as const };
 
   const meta = ensureMeta(db, spaceId);
+  const parkingTrackId = getParkingTrackId(meta);
   const normalized = normalizeQuestionInput(rawText, meta.background_text ?? null);
   if (!normalized.ok) {
     return {
       kind: "invalid" as const,
-      reason: "ask_as_question" as const,
+      reason: "too_short" as const,
       suggested_questions: normalized.suggested_questions
     };
   }
@@ -359,9 +567,10 @@ export function addQuestionToSpace(
   } else if (meta.last_track_id && trackMap.has(meta.last_track_id)) {
     trackId = meta.last_track_id;
   } else {
-    trackId = chooseFallbackTrackId(nodes);
+    trackId = chooseFallbackTrackId(nodes.filter((node) => trackIdFromNode(node) !== parkingTrackId));
   }
   if (!trackId) trackId = createId();
+  if (trackId === parkingTrackId) trackId = createId();
 
   const node: ThinkingNodeRecord = {
     id: createId(),
@@ -379,6 +588,7 @@ export function addQuestionToSpace(
   meta.last_track_id = trackId;
   meta.suggestion_decay = options?.from_suggestion ? Math.min(3, (meta.suggestion_decay ?? 0) + 1) : 0;
   enforceMaxNodes(db, spaceId);
+  const relatedCandidate = findRelatedCandidate(getSpaceNodes(db, spaceId), node);
 
   return {
     kind: "ok" as const,
@@ -387,39 +597,44 @@ export function addQuestionToSpace(
     converted: normalized.converted,
     note_text: normalized.raw_note,
     track_id: trackId,
-    suggested_questions: suggestedQuestions
+    suggested_questions: suggestedQuestions,
+    related_candidate: relatedCandidate
   };
 }
 
-export function rebuildSpace(db: DbState, userId: string, spaceId: string) {
-  const space = requireSpace(db, userId, spaceId);
-  if (!space) return null;
-  if (space.status !== "active") return { rebuilt: false as const, nodes_added: 0, moved_count: 0 };
-
-  const nodes = getSpaceNodes(db, spaceId);
-  if (!nodes.length) return { rebuilt: true as const, nodes_added: 0, moved_count: 0 };
-
+function computeOrganizeCandidates(
+  db: DbState,
+  spaceId: string,
+  fromOrderIndex?: number
+) {
   const meta = ensureMeta(db, spaceId);
-  const checkpoint = meta.last_organized_order ?? -1;
+  const parkingTrackId = getParkingTrackId(meta);
+  const nodes = getSpaceNodes(db, spaceId);
+  const checkpoint = typeof fromOrderIndex === "number" && Number.isFinite(fromOrderIndex) ? fromOrderIndex : meta.last_organized_order ?? -1;
   const candidates = nodes.filter((node) => node.order_index > checkpoint);
-  if (!candidates.length) return { rebuilt: true as const, nodes_added: 0, moved_count: 0 };
+  if (!candidates.length)
+    return {
+      candidates: [] as Array<{ nodeId: string; preview: string; fromTrackId: string; suggestedTrackId: string; score: number }>,
+      maxOrder: checkpoint
+    };
 
   const tracks = getTrackMap(nodes);
+  tracks.delete(parkingTrackId);
   const profiles = new Map<string, ReturnType<typeof getTrackProfile>>();
   for (const [trackId, trackNodes] of tracks.entries()) {
     profiles.set(trackId, getTrackProfile(trackNodes));
   }
 
-  let moved = 0;
+  const result: Array<{ nodeId: string; preview: string; fromTrackId: string; suggestedTrackId: string; score: number }> = [];
   for (const node of candidates) {
     const currentTrackId = trackIdFromNode(node);
+    if (currentTrackId === parkingTrackId) continue;
     const currentProfile = profiles.get(currentTrackId);
     if (!currentProfile) continue;
 
     const currentScore = scoreNodeForTrack(node, currentProfile, true);
     let bestTrackId = currentTrackId;
     let bestScore = currentScore;
-
     for (const [trackId, profile] of profiles.entries()) {
       if (trackId === currentTrackId) continue;
       const score = scoreNodeForTrack(node, profile);
@@ -429,28 +644,94 @@ export function rebuildSpace(db: DbState, userId: string, spaceId: string) {
       }
     }
 
-    if (bestTrackId !== currentTrackId && bestScore >= 0.52 && bestScore - currentScore >= 0.16) {
-      node.parent_node_id = toTrackParentId(bestTrackId);
-      moved += 1;
+    if (bestTrackId !== currentTrackId && bestScore >= ORGANIZE_MOVE_THRESHOLD && bestScore - currentScore >= ORGANIZE_MOVE_DELTA) {
+      result.push({
+        nodeId: node.id,
+        preview: trackQuestionPreview(node.raw_question_text),
+        fromTrackId: currentTrackId,
+        suggestedTrackId: bestTrackId,
+        score: Number(bestScore.toFixed(3))
+      });
       continue;
     }
-
     const currentTrackNodes = tracks.get(currentTrackId) ?? [];
     if (currentScore < 0.18 && currentTrackNodes.length > 1) {
-      const newTrackId = createId();
-      node.parent_node_id = toTrackParentId(newTrackId);
-      tracks.set(newTrackId, [node]);
-      profiles.set(newTrackId, getTrackProfile([node]));
-      moved += 1;
+      result.push({
+        nodeId: node.id,
+        preview: trackQuestionPreview(node.raw_question_text),
+        fromTrackId: currentTrackId,
+        suggestedTrackId: "__new__",
+        score: Number(currentScore.toFixed(3))
+      });
     }
   }
 
-  meta.last_organized_order = Math.max(checkpoint, ...candidates.map((item) => item.order_index));
-  const latestTrackId = chooseFallbackTrackId(getSpaceNodes(db, spaceId));
-  if (!meta.last_track_id || (latestTrackId && !getTrackMap(getSpaceNodes(db, spaceId)).has(meta.last_track_id))) {
-    meta.last_track_id = latestTrackId;
+  const maxOrder = Math.max(checkpoint, ...candidates.map((item) => item.order_index));
+  return { candidates: result, maxOrder };
+}
+
+export function organizeSpacePreview(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  fromOrderIndex?: number
+) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return null;
+  if (space.status !== "active") return { kind: "readonly" as const, candidates: [] as unknown[] };
+  const preview = computeOrganizeCandidates(db, spaceId, fromOrderIndex);
+  return {
+    kind: "ok" as const,
+    candidates: preview.candidates
+  };
+}
+
+export function organizeSpaceApply(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  moves: Array<{ node_id: string; target_track_id: string }>,
+  fromOrderIndex?: number
+) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return null;
+  if (space.status !== "active") return { kind: "readonly" as const, moved_count: 0 };
+  const meta = ensureMeta(db, spaceId);
+  const parkingTrackId = getParkingTrackId(meta);
+  const nodes = getSpaceNodes(db, spaceId);
+  const nodeMap = new Map(nodes.map((node) => [node.id, node]));
+  const movedIds = new Set<string>();
+  let movedCount = 0;
+  for (const move of moves) {
+    const node = nodeMap.get(move.node_id);
+    if (!node) continue;
+    const normalizedTarget = normalizeTrackId(move.target_track_id);
+    const nextTrackId =
+      normalizedTarget === "__new__" || !normalizedTarget ? createId() : normalizedTarget === parkingTrackId ? parkingTrackId : normalizedTarget;
+    if (trackIdFromNode(node) === nextTrackId) continue;
+    node.parent_node_id = toTrackParentId(nextTrackId);
+    movedIds.add(node.id);
+    movedCount += 1;
+    if (nextTrackId !== parkingTrackId) meta.last_track_id = nextTrackId;
   }
-  return { rebuilt: true as const, nodes_added: 0, moved_count: moved };
+
+  const preview = computeOrganizeCandidates(db, spaceId, fromOrderIndex);
+  meta.last_organized_order = preview.maxOrder;
+  return { kind: "ok" as const, moved_count: movedCount, moved_node_ids: [...movedIds] };
+}
+
+export function rebuildSpace(db: DbState, userId: string, spaceId: string) {
+  const preview = organizeSpacePreview(db, userId, spaceId);
+  if (!preview) return null;
+  if (preview.kind === "readonly") return { rebuilt: false as const, nodes_added: 0, moved_count: 0 };
+  const applied = organizeSpaceApply(
+    db,
+    userId,
+    spaceId,
+    preview.candidates.map((item) => ({ node_id: item.nodeId, target_track_id: item.suggestedTrackId }))
+  );
+  if (!applied || applied.kind !== "ok") return { rebuilt: false as const, nodes_added: 0, moved_count: 0 };
+  return { rebuilt: true as const, nodes_added: 0, moved_count: applied.moved_count };
 }
 
 export function getSpaceView(db: DbState, userId: string, spaceId: string) {
@@ -459,7 +740,16 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
 
   const nodes = getSpaceNodes(db, spaceId);
   const meta = ensureMeta(db, spaceId);
+  const parkingTrackId = getParkingTrackId(meta);
   const tracks = getTrackMap(nodes);
+  if (!tracks.has(parkingTrackId)) tracks.set(parkingTrackId, []);
+  const milestoneSet = new Set((meta.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
+  const links = db.thinking_node_links.filter((item) => item.space_id === spaceId && item.link_type === "related");
+  const nodeLinkedSet = new Set<string>();
+  for (const link of links) {
+    nodeLinkedSet.add(link.source_node_id);
+    nodeLinkedSet.add(link.target_node_id);
+  }
 
   const echoes = new Map<string, Array<{ trackId: string; nodeId: string }>>();
   for (const node of nodes) {
@@ -475,14 +765,24 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     .map(([trackId, trackNodes]) => ({
       trackId,
       firstOrder: trackNodes[0]?.order_index ?? Number.MAX_SAFE_INTEGER,
-      title: trackNodes[0]?.raw_question_text ?? "未命名疑问",
+      title: trackId === parkingTrackId ? "先放这里" : trackNodes[0]?.raw_question_text ?? "未命名疑问",
+      directionHint: resolveTrackDirectionHint(meta, trackId, trackNodes, parkingTrackId),
+      isParking: trackId === parkingTrackId,
       nodes: trackNodes
     }))
-    .sort((a, b) => a.firstOrder - b.firstOrder);
+    .sort((a, b) => {
+      if (a.trackId === parkingTrackId) return 1;
+      if (b.trackId === parkingTrackId) return -1;
+      return a.firstOrder - b.firstOrder;
+    });
+
+  pruneTrackDirectionHints(meta, trackRows.map((track) => track.trackId));
 
   const trackPayload = trackRows.map((track) => ({
     id: track.trackId,
     title_question_text: track.title,
+    direction_hint: track.directionHint,
+    is_parking: track.isParking,
     node_count: track.nodes.length,
     nodes: track.nodes.map((node) => {
       const key = echoKey(node.raw_question_text);
@@ -494,6 +794,8 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
         note_text: node.note_text ?? null,
         created_at: node.created_at,
         is_suggested: node.is_suggested,
+        is_milestone: milestoneSet.has(node.id),
+        has_related_link: nodeLinkedSet.has(node.id),
         echo_track_id: jump?.trackId ?? null,
         echo_node_id: jump?.nodeId ?? null
       };
@@ -503,6 +805,10 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   let currentTrackId: string | null = null;
   if (meta.last_track_id && tracks.has(meta.last_track_id)) currentTrackId = meta.last_track_id;
   if (!currentTrackId) currentTrackId = chooseFallbackTrackId(nodes);
+  if (!currentTrackId) currentTrackId = trackRows.find((track) => track.trackId !== parkingTrackId)?.trackId ?? parkingTrackId;
+  if (currentTrackId === parkingTrackId && trackRows.some((track) => track.trackId !== parkingTrackId)) {
+    currentTrackId = trackRows.find((track) => track.trackId !== parkingTrackId)?.trackId ?? parkingTrackId;
+  }
 
   const suggestionQuota = Math.max(0, 3 - (meta.suggestion_decay ?? 0));
   const suggestedQuestions = buildSuggestedQuestions(space.root_question_text, meta.background_text ?? null, suggestionQuota);
@@ -514,7 +820,9 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     suggested_questions: suggestedQuestions,
     freeze_note: meta.user_freeze_note ?? null,
     background_text: meta.background_text ?? null,
-    background_version: meta.background_version ?? 0
+    background_version: meta.background_version ?? 0,
+    parking_track_id: parkingTrackId,
+    milestone_node_ids: [...milestoneSet]
   };
 }
 
@@ -533,6 +841,35 @@ export function setActiveTrack(db: DbState, userId: string, spaceId: string, tra
   if (!tracks.has(normalized)) return { kind: "track_not_found" as const };
   meta.last_track_id = normalized;
   return { kind: "ok" as const, track_id: normalized };
+}
+
+export function updateTrackDirectionHint(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  trackId: string,
+  directionHint: TrackDirectionHint | null
+) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+  const normalized = normalizeTrackId(trackId);
+  if (!normalized || normalized === "__new__") return { kind: "track_not_found" as const };
+
+  const nodes = getSpaceNodes(db, spaceId);
+  const tracks = getTrackMap(nodes);
+  const meta = ensureMeta(db, spaceId);
+  const parkingTrackId = getParkingTrackId(meta);
+  if (!tracks.has(normalized) && normalized !== parkingTrackId) return { kind: "track_not_found" as const };
+  if (directionHint !== null && !isTrackDirectionHint(directionHint)) return { kind: "invalid_hint" as const };
+
+  const hints = { ...getTrackDirectionHints(meta) };
+  if (directionHint === null) {
+    delete hints[normalized];
+  } else {
+    hints[normalized] = directionHint;
+  }
+  meta.track_direction_hints = hints;
+  return { kind: "ok" as const, track_id: normalized, direction_hint: directionHint };
 }
 
 export function updateSpaceBackground(db: DbState, userId: string, spaceId: string, backgroundText: string | null) {
@@ -566,11 +903,12 @@ export function moveNode(db: DbState, userId: string, nodeId: string, targetTrac
   if (space.status !== "active") return { readonly: true as const };
 
   const normalizedTarget = normalizeTrackId(targetTrackId);
+  const meta = ensureMeta(db, node.space_id);
+  const parkingTrackId = getParkingTrackId(meta);
   const nextTrackId = normalizedTarget === "__new__" || !normalizedTarget ? createId() : normalizedTarget;
   node.parent_node_id = toTrackParentId(nextTrackId);
   node.dimension = classifyDimension(node.raw_question_text);
-  const meta = ensureMeta(db, node.space_id);
-  meta.last_track_id = nextTrackId;
+  if (nextTrackId !== parkingTrackId) meta.last_track_id = nextTrackId;
   return { readonly: false as const, node, track_id: nextTrackId };
 }
 
@@ -580,28 +918,11 @@ export function markNodeMisplaced(db: DbState, userId: string, nodeId: string) {
   const space = requireSpace(db, userId, node.space_id);
   if (!space) return null;
   if (space.status !== "active") return { readonly: true as const };
-
-  const nodes = getSpaceNodes(db, node.space_id).filter((item) => item.id !== node.id);
-  const tracks = getTrackMap(nodes);
-  const profiles = new Map<string, ReturnType<typeof getTrackProfile>>();
-  for (const [trackId, trackNodes] of tracks.entries()) profiles.set(trackId, getTrackProfile(trackNodes));
-
-  let targetTrackId: string | null = null;
-  let bestScore = 0;
-  for (const [trackId, profile] of profiles.entries()) {
-    const score = scoreNodeForTrack(node, profile);
-    if (score > bestScore) {
-      bestScore = score;
-      targetTrackId = trackId;
-    }
-  }
-  if (!targetTrackId || bestScore < 0.42) targetTrackId = createId();
-
-  node.parent_node_id = toTrackParentId(targetTrackId);
-  node.dimension = classifyDimension(node.raw_question_text);
   const meta = ensureMeta(db, node.space_id);
-  meta.last_track_id = targetTrackId;
-  return { readonly: false as const, node, track_id: targetTrackId };
+  const parkingTrackId = getParkingTrackId(meta);
+  node.parent_node_id = toTrackParentId(parkingTrackId);
+  node.dimension = classifyDimension(node.raw_question_text);
+  return { readonly: false as const, node, track_id: parkingTrackId };
 }
 
 export function deleteNode(db: DbState, userId: string, nodeId: string) {
@@ -612,14 +933,22 @@ export function deleteNode(db: DbState, userId: string, nodeId: string) {
   if (space.status !== "active") return { kind: "readonly" as const };
 
   db.thinking_nodes = db.thinking_nodes.filter((item) => item.id !== nodeId);
+  db.thinking_node_links = db.thinking_node_links.filter((link) => link.source_node_id !== nodeId && link.target_node_id !== nodeId);
   const meta = ensureMeta(db, node.space_id);
+  meta.milestone_node_ids = (meta.milestone_node_ids ?? []).filter((id) => id !== nodeId);
   const fallback = chooseFallbackTrackId(getSpaceNodes(db, node.space_id));
   if (!fallback) meta.last_track_id = null;
   else if (!meta.last_track_id || !getTrackMap(getSpaceNodes(db, node.space_id)).has(meta.last_track_id)) meta.last_track_id = fallback;
   return { kind: "ok" as const, space_id: node.space_id };
 }
 
-export function freezeSpace(db: DbState, userId: string, spaceId: string, userFreezeNote: string | null) {
+export function freezeSpace(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  userFreezeNote: string | null,
+  milestoneNodeIds?: string[]
+) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return null;
   if (space.status !== "active") return { already_frozen: true as const, space };
@@ -629,10 +958,49 @@ export function freezeSpace(db: DbState, userId: string, spaceId: string, userFr
   space.frozen_at = nowIso();
 
   const meta = ensureMeta(db, spaceId);
+  const milestones = Array.isArray(milestoneNodeIds) ? milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : [];
+  const nodeIds = new Set(getSpaceNodes(db, spaceId).map((node) => node.id));
   meta.user_freeze_note = note || null;
+  meta.milestone_node_ids = milestones.filter((id) => nodeIds.has(id));
   meta.export_version += 1;
 
-  return { already_frozen: false as const, space, freeze_note: meta.user_freeze_note };
+  return { already_frozen: false as const, space, freeze_note: meta.user_freeze_note, milestone_node_ids: meta.milestone_node_ids };
+}
+
+export function linkThinkingNode(db: DbState, userId: string, nodeId: string, targetNodeIdInput: string) {
+  const sourceNode = db.thinking_nodes.find((item) => item.id === nodeId);
+  const targetNode = db.thinking_nodes.find((item) => item.id === targetNodeIdInput);
+  if (!sourceNode || !targetNode) return { kind: "not_found" as const };
+  if (sourceNode.space_id !== targetNode.space_id) return { kind: "invalid_target" as const };
+  if (sourceNode.id === targetNode.id) return { kind: "invalid_target" as const };
+  const space = requireSpace(db, userId, sourceNode.space_id);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const pair = [sourceNode.id, targetNode.id].sort();
+  const sourceNodeId = pair[0];
+  const targetNodeId = pair[1];
+  const existed = db.thinking_node_links.find(
+    (link) =>
+      link.space_id === sourceNode.space_id &&
+      link.source_node_id === sourceNodeId &&
+      link.target_node_id === targetNodeId &&
+      link.link_type === "related"
+  );
+  if (existed) return { kind: "ok" as const, link: existed };
+
+  const score = textOverlapScore(tokenizeText(sourceNode.raw_question_text), tokenizeText(targetNode.raw_question_text));
+  const link: ThinkingNodeLinkRecord = {
+    id: createId(),
+    space_id: sourceNode.space_id,
+    source_node_id: sourceNodeId,
+    target_node_id: targetNodeId,
+    link_type: "related",
+    score: Number(score.toFixed(3)),
+    created_at: nowIso()
+  };
+  db.thinking_node_links.push(link);
+  return { kind: "ok" as const, link };
 }
 
 export function setSpaceStatus(db: DbState, userId: string, spaceId: string, targetStatus: "active" | "archived") {
@@ -651,6 +1019,26 @@ export function setSpaceStatus(db: DbState, userId: string, spaceId: string, tar
   return { kind: "ok" as const, space };
 }
 
+export function deleteThinkingSpace(db: DbState, userId: string, spaceId: string) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+
+  db.thinking_spaces = db.thinking_spaces.filter((item) => item.id !== spaceId);
+  db.thinking_nodes = db.thinking_nodes.filter((item) => item.space_id !== spaceId);
+  db.thinking_space_meta = db.thinking_space_meta.filter((item) => item.space_id !== spaceId);
+  db.thinking_inbox = db.thinking_inbox.filter((item) => item.space_id !== spaceId);
+  db.thinking_node_links = db.thinking_node_links.filter((item) => item.space_id !== spaceId);
+
+  appendAuditLog(db, {
+    userId,
+    action: "delete_space",
+    targetType: "thinking_space",
+    targetId: spaceId,
+    detail: `deleted space ${space.root_question_text.slice(0, 60)}`
+  });
+  return { kind: "ok" as const };
+}
+
 export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapshot {
   const spaces = userSpaces(db, userId).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
   const spaceIds = new Set(spaces.map((space) => space.id));
@@ -658,6 +1046,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
     .filter((node) => spaceIds.has(node.space_id))
     .sort((a, b) => a.order_index - b.order_index);
   const metas = db.thinking_space_meta.filter((meta) => spaceIds.has(meta.space_id)).map(sanitizeMeta);
+  const nodeLinks = db.thinking_node_links.filter((link) => spaceIds.has(link.space_id));
   const inbox = db.thinking_inbox.filter((item) => spaceIds.has(item.space_id));
 
   const inboxMap: ThinkingSnapshot["inbox"] = {};
@@ -703,7 +1092,19 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       backgroundVersion: meta.background_version ?? 0,
       suggestionDecay: meta.suggestion_decay ?? 0,
       lastTrackId: meta.last_track_id ?? null,
-      lastOrganizedOrder: meta.last_organized_order ?? -1
+      lastOrganizedOrder: meta.last_organized_order ?? -1,
+      parkingTrackId: meta.parking_track_id ?? null,
+      milestoneNodeIds: meta.milestone_node_ids ?? [],
+      trackDirectionHints: meta.track_direction_hints ?? {}
+    })),
+    nodeLinks: nodeLinks.map((link) => ({
+      id: link.id,
+      spaceId: link.space_id,
+      sourceNodeId: link.source_node_id,
+      targetNodeId: link.target_node_id,
+      linkType: link.link_type,
+      score: link.score,
+      createdAt: link.created_at
     })),
     inbox: inboxMap,
     assistEnabled: true
@@ -756,9 +1157,32 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
             : 0,
         last_track_id: typeof meta.lastTrackId === "string" ? meta.lastTrackId : null,
         last_organized_order:
-          Number.isFinite(meta.lastOrganizedOrder) && typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1
+          Number.isFinite(meta.lastOrganizedOrder) && typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
+        parking_track_id: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
+        milestone_node_ids: Array.isArray(meta.milestoneNodeIds)
+          ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3)
+          : [],
+        track_direction_hints:
+          meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
+            ? Object.fromEntries(
+                Object.entries(meta.trackDirectionHints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionHint(hint))
+              )
+            : {}
       })
     );
+
+  const nextLinks: ThinkingNodeLinkRecord[] = (snapshot.nodeLinks ?? [])
+    .filter((link) => typeof link.spaceId === "string" && spaceIds.has(link.spaceId))
+    .map((link) => ({
+      id: typeof link.id === "string" ? link.id : createId(),
+      space_id: link.spaceId,
+      source_node_id: typeof link.sourceNodeId === "string" ? link.sourceNodeId : "",
+      target_node_id: typeof link.targetNodeId === "string" ? link.targetNodeId : "",
+      link_type: "related" as const,
+      score: Number.isFinite(link.score) ? Number(link.score) : 0,
+      created_at: typeof link.createdAt === "string" ? link.createdAt : nowIso()
+    }))
+    .filter((link) => link.source_node_id && link.target_node_id && link.source_node_id !== link.target_node_id);
 
   const rawInbox = snapshot.inbox ?? {};
   const nextInbox = Object.entries(rawInbox).flatMap(([spaceId, list]) => {
@@ -781,6 +1205,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     ...nextNodes.sort((a, b) => a.order_index - b.order_index)
   ];
   db.thinking_space_meta = [...db.thinking_space_meta.filter((meta) => !userSpaceIds.has(meta.space_id)), ...nextMeta];
+  db.thinking_node_links = [...db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id)), ...nextLinks];
   db.thinking_inbox = [...db.thinking_inbox.filter((item) => !userSpaceIds.has(item.space_id)), ...nextInbox];
 }
 
@@ -790,6 +1215,8 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
 
   const nodes = getSpaceNodes(db, spaceId);
   const meta = sanitizeMeta(db.thinking_space_meta.find((item) => item.space_id === spaceId) ?? ensureMeta(db, spaceId));
+  const milestoneSet = new Set((meta.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
+  const parkingTrackId = getParkingTrackId(meta);
   const tracks = getTrackMap(nodes);
   const orderedTracks = [...tracks.entries()].sort(
     (a, b) => (a[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER) - (b[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER)
@@ -811,9 +1238,12 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   orderedTracks.forEach(([trackId, trackNodes], index) => {
     lines.push(`## 方向 ${index + 1}`);
     lines.push(`- 轨道ID：${trackId}`);
+    const directionHint = resolveTrackDirectionHint(meta, trackId, trackNodes, parkingTrackId);
+    if (directionHint) lines.push(`- 推进方向：${TRACK_DIRECTION_HINT_LABEL[directionHint]}`);
     lines.push(`- 首条疑问：${trackNodes[0]?.raw_question_text ?? ""}`);
     for (const node of trackNodes) {
-      lines.push(`- ${node.raw_question_text}`);
+      const star = milestoneSet.has(node.id) ? "⭐ " : "";
+      lines.push(`- ${star}${node.raw_question_text}`);
       if (node.note_text) lines.push(`  - 附注：${node.note_text}`);
     }
     lines.push("");
@@ -840,7 +1270,8 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
     notes: db.doubt_notes.filter((note) => doubtIds.has(note.doubt_id)).length,
     spaces: spaceIds.size,
     nodes: db.thinking_nodes.filter((node) => spaceIds.has(node.space_id)).length,
-    inbox: db.thinking_inbox.filter((item) => spaceIds.has(item.space_id)).length
+    inbox: db.thinking_inbox.filter((item) => spaceIds.has(item.space_id)).length,
+    links: db.thinking_node_links.filter((link) => spaceIds.has(link.space_id)).length
   };
 
   db.doubt_notes = db.doubt_notes.filter((note) => !doubtIds.has(note.doubt_id));
@@ -848,6 +1279,7 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
   db.thinking_nodes = db.thinking_nodes.filter((node) => !spaceIds.has(node.space_id));
   db.thinking_inbox = db.thinking_inbox.filter((item) => !spaceIds.has(item.space_id));
   db.thinking_space_meta = db.thinking_space_meta.filter((meta) => !spaceIds.has(meta.space_id));
+  db.thinking_node_links = db.thinking_node_links.filter((link) => !spaceIds.has(link.space_id));
   db.thinking_spaces = db.thinking_spaces.filter((space) => space.user_id !== userId);
 
   user.deleted_at = nowIso();
@@ -856,7 +1288,7 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
     action: "delete_all_data",
     targetType: "user",
     targetId: userId,
-    detail: `reason=${reason}; doubts=${counts.doubts}; notes=${counts.notes}; spaces=${counts.spaces}; nodes=${counts.nodes}; inbox=${counts.inbox}`
+    detail: `reason=${reason}; doubts=${counts.doubts}; notes=${counts.notes}; spaces=${counts.spaces}; nodes=${counts.nodes}; inbox=${counts.inbox}; links=${counts.links}`
   });
 
   return counts;

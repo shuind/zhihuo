@@ -1,6 +1,7 @@
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
 export type ThinkingSpaceStatus = "active" | "frozen" | "archived";
 export type ThinkingNodeState = "normal" | "hidden";
+export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
 export type DoubtRecord = {
   id: string;
@@ -57,6 +58,19 @@ export type ThinkingSpaceMetaRecord = {
   suggestion_decay?: number;
   last_track_id?: string | null;
   last_organized_order?: number;
+  parking_track_id?: string | null;
+  milestone_node_ids?: string[];
+  track_direction_hints?: Record<string, TrackDirectionHint | null>;
+};
+
+export type ThinkingNodeLinkRecord = {
+  id: string;
+  space_id: string;
+  source_node_id: string;
+  target_node_id: string;
+  link_type: "related";
+  score: number;
+  created_at: string;
 };
 
 export type DbState = {
@@ -66,6 +80,7 @@ export type DbState = {
   thinking_nodes: ThinkingNodeRecord[];
   thinking_inbox: ThinkingInboxRecord[];
   thinking_space_meta: ThinkingSpaceMetaRecord[];
+  thinking_node_links: ThinkingNodeLinkRecord[];
   users: UserRecord[];
   audit_logs: AuditLogRecord[];
 };
@@ -119,6 +134,18 @@ export type ThinkingSnapshot = {
     suggestionDecay?: number;
     lastTrackId?: string | null;
     lastOrganizedOrder?: number;
+    parkingTrackId?: string | null;
+    milestoneNodeIds?: string[];
+    trackDirectionHints?: Record<string, TrackDirectionHint | null>;
+  }>;
+  nodeLinks?: Array<{
+    id: string;
+    spaceId: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    linkType: "related";
+    score: number;
+    createdAt: string;
   }>;
   inbox: Record<
     string,

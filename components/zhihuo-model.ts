@@ -28,6 +28,7 @@ export type LifeStore = {
 export type ThinkingSpaceStatus = "active" | "frozen" | "archived";
 export type ThinkingNodeState = "normal" | "hidden";
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
+export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
 export type ThinkingSpace = {
   id: string;
@@ -55,6 +56,14 @@ export type ThinkingSpaceMeta = {
   spaceId: string;
   userFreezeNote: string | null;
   exportVersion: number;
+  backgroundText?: string | null;
+  backgroundVersion?: number;
+  suggestionDecay?: number;
+  lastTrackId?: string | null;
+  lastOrganizedOrder?: number;
+  parkingTrackId?: string | null;
+  milestoneNodeIds?: string[];
+  trackDirectionHints?: Record<string, TrackDirectionHint | null>;
 };
 
 export type ThinkingInboxItem = {
@@ -81,7 +90,7 @@ export type StarDot = {
 };
 
 export const LIFE_STORAGE_KEY = "zhihuo_life_v1";
-export const THINKING_STORAGE_KEY = "zhihuo_thinking_v15";
+export const THINKING_STORAGE_KEY = "zhihuo_thinking_v16";
 const LEGACY_STORAGE_KEY = "time_archive_v2";
 
 export const OPENING_MS = 600;
@@ -357,7 +366,14 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
   const spaceMeta = (store.spaceMeta ?? []).map((meta) => ({
     spaceId: typeof meta.spaceId === "string" ? meta.spaceId : "",
     userFreezeNote: typeof meta.userFreezeNote === "string" ? meta.userFreezeNote : null,
-    exportVersion: typeof meta.exportVersion === "number" ? meta.exportVersion : 1
+    exportVersion: typeof meta.exportVersion === "number" ? meta.exportVersion : 1,
+    backgroundText: typeof meta.backgroundText === "string" ? meta.backgroundText : null,
+    backgroundVersion: typeof meta.backgroundVersion === "number" ? meta.backgroundVersion : 0,
+    suggestionDecay: typeof meta.suggestionDecay === "number" ? meta.suggestionDecay : 0,
+    lastTrackId: typeof meta.lastTrackId === "string" ? meta.lastTrackId : null,
+    lastOrganizedOrder: typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
+    parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
+    milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : []
   })).filter((meta) => meta.spaceId);
   const inbox: Record<string, ThinkingInboxItem[]> = {};
   for (const [spaceId, items] of Object.entries(store.inbox ?? {})) {

@@ -24,7 +24,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     const rootText = collapseWhitespace(body.root_question_text);
-    if (!rootText) return errorJson(400, "根问题不能为空");
+    if (!rootText) return errorJson(400, "中心内容不能为空");
 
     let created = false;
     let overLimit = false;
@@ -33,6 +33,7 @@ export const POST = withApiRoute(
     let normalizedRootQuestionText: string | null = null;
     let createdAsStatement = false;
     let suggestedQuestions: string[] = [];
+    let questionSuggestion: string | null = null;
 
     await updateDb((db) => {
       const result = createThinkingSpace(
@@ -52,9 +53,10 @@ export const POST = withApiRoute(
       normalizedRootQuestionText = result.space.root_question_text;
       createdAsStatement = result.created_as_statement === true;
       suggestedQuestions = Array.isArray(result.suggested_questions) ? result.suggested_questions : [];
+      questionSuggestion = typeof result.question_suggestion === "string" ? result.question_suggestion : null;
     });
 
-    if (!created) return errorJson(400, "根问题格式无效");
+    if (!created) return errorJson(400, "输入内容格式无效");
     if (overLimit) return errorJson(409, "活跃空间已达上限");
 
     return okJson(
@@ -63,7 +65,8 @@ export const POST = withApiRoute(
         converted,
         normalized_question_text: normalizedRootQuestionText,
         created_as_statement: createdAsStatement,
-        suggested_questions: suggestedQuestions
+        suggested_questions: suggestedQuestions,
+        question_suggestion: questionSuggestion
       },
       { status: 201 }
     );

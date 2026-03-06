@@ -5,10 +5,22 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
-import { type ThinkingSpaceStatus, type ThinkingStore } from "@/components/zhihuo-model";
+import { type ThinkingSpaceStatus, type ThinkingStore, type TrackDirectionHint } from "@/components/zhihuo-model";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
+const DIRECTION_HINT_OPTIONS: Array<{ value: TrackDirectionHint; label: string }> = [
+  { value: "hypothesis", label: "假设" },
+  { value: "memory", label: "回忆" },
+  { value: "counterpoint", label: "反驳" },
+  { value: "worry", label: "担忧" },
+  { value: "constraint", label: "现实限制" },
+  { value: "aside", label: "旁支念头" }
+];
+
+function directionHintLabel(value: TrackDirectionHint | null) {
+  return DIRECTION_HINT_OPTIONS.find((item) => item.value === value)?.label ?? null;
+}
 
 export type ThinkingTrackNodeView = {
   id: string;
@@ -16,6 +28,8 @@ export type ThinkingTrackNodeView = {
   noteText: string | null;
   createdAt?: string;
   isSuggested: boolean;
+  isMilestone?: boolean;
+  hasRelatedLink?: boolean;
   echoTrackId: string | null;
   echoNodeId: string | null;
 };
@@ -23,6 +37,8 @@ export type ThinkingTrackNodeView = {
 export type ThinkingTrackView = {
   id: string;
   titleQuestionText: string;
+  directionHint: TrackDirectionHint | null;
+  isParking: boolean;
   nodeCount: number;
   nodes: ThinkingTrackNodeView[];
 };
@@ -30,11 +46,21 @@ export type ThinkingTrackView = {
 export type ThinkingSpaceView = {
   spaceId: string;
   currentTrackId: string | null;
+  parkingTrackId: string | null;
+  milestoneNodeIds: string[];
   tracks: ThinkingTrackView[];
   suggestedQuestions: string[];
   freezeNote: string | null;
   backgroundText: string | null;
   backgroundVersion: number;
+};
+
+type OrganizeCandidate = {
+  nodeId: string;
+  preview: string;
+  fromTrackId: string;
+  suggestedTrackId: string;
+  score: number;
 };
 
 type TrackPosition = {
@@ -55,29 +81,56 @@ export function ThinkingLayer(props: {
   setActiveSpaceId: Dispatch<SetStateAction<string | null>>;
   spaceView: ThinkingSpaceView | null;
   onCreateSpace: (rawInput: string) => Promise<
-    | { ok: true; converted?: boolean; spaceId: string; createdAsStatement?: boolean; suggestedQuestions?: string[] }
+    | {
+        ok: true;
+        converted?: boolean;
+        spaceId: string;
+        createdAsStatement?: boolean;
+        suggestedQuestions?: string[];
+        questionSuggestion?: string | null;
+      }
     | { ok: false; message: string; suggestedQuestions?: string[] }
   >;
   onAddQuestion: (
     spaceId: string,
     payload: AddQuestionPayload
   ) => Promise<
-    | { ok: true; converted: boolean; noteText: string | null; trackId: string; nodeId: string; suggestedQuestions?: string[] }
+    | {
+        ok: true;
+        converted: boolean;
+        noteText: string | null;
+        trackId: string;
+        nodeId: string;
+        suggestedQuestions?: string[];
+        relatedCandidate?: { nodeId: string; preview: string; score: number } | null;
+      }
     | { ok: false; message: string; suggestedQuestions?: string[] }
   >;
-  onOrganizeSpace: (spaceId: string) => Promise<boolean>;
+  onOrganizePreview: (spaceId: string) => Promise<OrganizeCandidate[]>;
+  onOrganizeApply: (
+    spaceId: string,
+    moves: Array<{ nodeId: string; targetTrackId: string }>
+  ) => Promise<{ ok: true; movedCount: number } | { ok: false; message: string }>;
+  onLinkNodes: (nodeId: string, targetNodeId: string) => Promise<boolean>;
   onMoveNode: (nodeId: string, targetTrackId: string) => Promise<boolean>;
   onMarkMisplaced: (nodeId: string) => Promise<boolean>;
   onDeleteNode: (nodeId: string) => Promise<boolean>;
   onSetActiveTrack: (spaceId: string, trackId: string) => Promise<boolean>;
+  onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
   onSaveBackground: (spaceId: string, backgroundText: string | null) => Promise<{ ok: true; version: number } | { ok: false; message: string }>;
   onFreezeSpace: (
     spaceId: string,
-    userFreezeNote: string | null
+    userFreezeNote: string | null,
+    milestoneNodeIds: string[]
   ) => Promise<{ ok: true; frozenAt: string; freezeNote: string | null } | { ok: false; message: string }>;
   onToggleArchiveSpace: (spaceId: string, targetStatus: "active" | "archived") => Promise<{ ok: true } | { ok: false; message: string }>;
+  onDeleteSpace: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onExportSpace: (spaceId: string) => Promise<string | null>;
   onFreezeToLife: (payload: { rootQuestionText: string; createdAt: string; frozenAt: string; freezeNote: string | null }) => void;
+  focusMode: boolean;
+  onFocusModeChange: (enabled: boolean) => void;
+  reentryTarget: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null } | null;
+  onReentryHandled: () => void;
   showNotice: (message: string) => void;
 }) {
   const [newSpaceInput, setNewSpaceInput] = useState("");
@@ -99,15 +152,24 @@ export function ThinkingLayer(props: {
   const [backgroundDraft, setBackgroundDraft] = useState("");
   const [backgroundHint, setBackgroundHint] = useState("");
   const [justAddedNodeId, setJustAddedNodeId] = useState<string | null>(null);
+  const [relatedCandidate, setRelatedCandidate] = useState<{ sourceNodeId: string; targetNodeId: string; preview: string } | null>(null);
   const [isAddingQuestion, setIsAddingQuestion] = useState(false);
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
   const [pausedTrackIds, setPausedTrackIds] = useState<Record<string, boolean>>({});
   const [organizingSpaceId, setOrganizingSpaceId] = useState<string | null>(null);
+  const [organizeCandidates, setOrganizeCandidates] = useState<Array<OrganizeCandidate & { targetTrackId: string; selected: boolean }>>([]);
+  const [organizePanelOpen, setOrganizePanelOpen] = useState(false);
+  const [organizeHintCount, setOrganizeHintCount] = useState(0);
+  const [milestoneNodeIds, setMilestoneNodeIds] = useState<string[]>([]);
+  const [focusMenuNodeId, setFocusMenuNodeId] = useState<string | null>(null);
+  const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
+  const questionInputRef = useRef<HTMLInputElement | null>(null);
   const organizeTimerRef = useRef<number | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
+  const moreMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -152,6 +214,15 @@ export function ThinkingLayer(props: {
   }, [fallbackTrackId, pendingTrackId, props.spaceView, tracks]);
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
   const otherTracks = useMemo(() => tracks.filter((track) => track.id !== activeTrackId).slice(0, 5), [activeTrackId, tracks]);
+  const milestoneCandidates = useMemo(
+    () =>
+      tracks
+        .flatMap((track) => track.nodes.map((node) => ({ trackId: track.id, node })))
+        .slice()
+        .sort((a, b) => (a.node.createdAt && b.node.createdAt ? new Date(b.node.createdAt).getTime() - new Date(a.node.createdAt).getTime() : 0))
+        .slice(0, 20),
+    [tracks]
+  );
 
   useEffect(() => {
     setPendingTrackId(null);
@@ -163,6 +234,13 @@ export function ThinkingLayer(props: {
     setFreezePanelOpen(false);
     setPausedTrackIds({});
     setBackgroundDraft(props.spaceView?.backgroundText ?? "");
+    setMilestoneNodeIds([]);
+    setOrganizeCandidates([]);
+    setOrganizeHintCount(0);
+    setOrganizePanelOpen(false);
+    setRelatedCandidate(null);
+    setFocusMenuNodeId(null);
+    setDeleteSpaceOpen(false);
   }, [props.activeSpaceId, props.spaceView?.backgroundText]);
 
   useEffect(() => {
@@ -171,6 +249,40 @@ export function ThinkingLayer(props: {
       if (clearAddedTimerRef.current) window.clearTimeout(clearAddedTimerRef.current);
     };
   }, []);
+
+  useEffect(() => {
+    if (!freezePanelOpen) return;
+    setMilestoneNodeIds(props.spaceView?.milestoneNodeIds?.slice(0, 3) ?? []);
+  }, [freezePanelOpen, props.spaceView?.milestoneNodeIds]);
+
+  useEffect(() => {
+    if (!props.focusMode) {
+      setFocusMenuNodeId(null);
+    }
+  }, [props.focusMode]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      setFocusMenuNodeId(null);
+      setOrganizePanelOpen(false);
+      setMoreOpen(false);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
+  useEffect(() => {
+    if (!moreOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (!moreMenuRef.current) return;
+      if (event.target instanceof Node && !moreMenuRef.current.contains(event.target)) {
+        setMoreOpen(false);
+      }
+    };
+    window.addEventListener("mousedown", onPointerDown);
+    return () => window.removeEventListener("mousedown", onPointerDown);
+  }, [moreOpen]);
 
   useEffect(() => {
     if (!activeSpace || !activeTrack) return;
@@ -212,6 +324,51 @@ export function ThinkingLayer(props: {
     container.scrollTo({ top: nextTop, behavior });
     return true;
   }, []);
+
+  useEffect(() => {
+    const target = props.reentryTarget;
+    if (!target || !activeSpace || activeSpace.id !== target.spaceId) return;
+
+    const targetTrackId =
+      typeof target.trackId === "string" && tracks.some((track) => track.id === target.trackId) ? target.trackId : activeTrackId;
+
+    if (targetTrackId && activeTrackId !== targetTrackId) {
+      setPendingTrackId(targetTrackId);
+      void props.onSetActiveTrack(activeSpace.id, targetTrackId);
+      return;
+    }
+
+    const frame = window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        const container = trackScrollRef.current;
+        if (!container) return;
+
+        if (target.mode === "root" || !target.nodeId) {
+          container.scrollTo({ top: 0, behavior: "smooth" });
+          questionInputRef.current?.focus();
+          if (targetTrackId) {
+            rememberTrackPosition(activeSpace.id, targetTrackId, {
+              scrollTop: 0,
+              focusNodeId: null
+            });
+          }
+        } else {
+          centerNodeInTrack(target.nodeId, "smooth");
+          const node = document.getElementById(`thinking-node-${target.nodeId}`);
+          if (node instanceof HTMLElement) node.focus();
+          if (targetTrackId) {
+            rememberTrackPosition(activeSpace.id, targetTrackId, {
+              scrollTop: container.scrollTop,
+              focusNodeId: target.nodeId
+            });
+          }
+        }
+        props.onReentryHandled();
+      });
+    });
+
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeSpace, activeTrackId, centerNodeInTrack, props, rememberTrackPosition, tracks]);
 
   const centerAddedNodeWithRetry = useCallback(
     (nodeId: string, spaceId: string, trackId: string | null) => {
@@ -261,7 +418,15 @@ export function ThinkingLayer(props: {
       organizeTimerRef.current = window.setTimeout(() => {
         setOrganizingSpaceId(spaceId);
         void (async () => {
-          await props.onOrganizeSpace(spaceId);
+          const candidates = await props.onOrganizePreview(spaceId);
+          setOrganizeHintCount(candidates.length);
+          setOrganizeCandidates(
+            candidates.map((item) => ({
+              ...item,
+              targetTrackId: item.suggestedTrackId,
+              selected: true
+            }))
+          );
           setOrganizingSpaceId((prev) => (prev === spaceId ? null : prev));
         })();
       }, ORGANIZE_IDLE_MS);
@@ -269,10 +434,45 @@ export function ThinkingLayer(props: {
     [props]
   );
 
+  const applyOrganize = useCallback(() => {
+    if (!activeSpace) return;
+    const moves = organizeCandidates.filter((item) => item.selected).map((item) => ({ nodeId: item.nodeId, targetTrackId: item.targetTrackId }));
+    if (!moves.length) {
+      setOrganizePanelOpen(false);
+      return;
+    }
+    void (async () => {
+      const result = await props.onOrganizeApply(activeSpace.id, moves);
+      if (!result.ok) {
+        props.showNotice(result.message);
+        return;
+      }
+      setOrganizePanelOpen(false);
+      setOrganizeHintCount(0);
+      props.showNotice(`已安放 ${result.movedCount} 条念头`);
+    })();
+  }, [activeSpace, organizeCandidates, props]);
+
+  const openOrganizePanel = useCallback(() => {
+    if (!activeSpace) return;
+    setOrganizePanelOpen(true);
+    void (async () => {
+      const candidates = await props.onOrganizePreview(activeSpace.id);
+      setOrganizeHintCount(candidates.length);
+      setOrganizeCandidates(
+        candidates.map((item) => ({
+          ...item,
+          targetTrackId: item.suggestedTrackId,
+          selected: true
+        }))
+      );
+    })();
+  }, [activeSpace, props]);
+
   const createSpace = useCallback(() => {
     const rawInput = newSpaceInput.trim();
     if (!rawInput) {
-      setCreateSpaceHint("请输入空间标题");
+      setCreateSpaceHint("请先写下这段思考现在围着什么转");
       return;
     }
     if (isCreatingSpace) return;
@@ -292,6 +492,9 @@ export function ThinkingLayer(props: {
         setInputSuggestions(result.suggestedQuestions ?? []);
         setCreateSpaceOpen(false);
         props.setActiveSpaceId(result.spaceId);
+        if (result.createdAsStatement && result.questionSuggestion) {
+          props.showNotice(`也可以这样继续追问：${result.questionSuggestion}`);
+        }
       } finally {
         setIsCreatingSpace(false);
       }
@@ -302,12 +505,12 @@ export function ThinkingLayer(props: {
     (rawInput: string, fromSuggestion = false) => {
       if (!activeSpace) return;
       if (activeSpace.status !== "active") {
-        setInputHint("该空间已只读");
+        setInputHint("这段思考现在停在这里");
         return;
       }
       const cleanedInput = rawInput.trim();
       if (!cleanedInput) {
-        setInputHint("请输入内容");
+        setInputHint("先写下一点现在冒出来的东西");
         return;
       }
       if (isAddingQuestion) return;
@@ -329,6 +532,16 @@ export function ThinkingLayer(props: {
           setInputSuggestions(result.suggestedQuestions ?? []);
           setJustAddedNodeId(result.nodeId);
           clearAddedFlagLater();
+          setFocusMenuNodeId(null);
+          if (result.relatedCandidate?.nodeId) {
+            setRelatedCandidate({
+              sourceNodeId: result.nodeId,
+              targetNodeId: result.relatedCandidate.nodeId,
+              preview: result.relatedCandidate.preview
+            });
+          } else {
+            setRelatedCandidate(null);
+          }
           if (result.trackId !== activeTrackId) setPendingTrackId(result.trackId);
           centerAddedNodeWithRetry(result.nodeId, activeSpace.id, result.trackId);
           scheduleOrganize(activeSpace.id);
@@ -339,6 +552,19 @@ export function ThinkingLayer(props: {
     },
     [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props, scheduleOrganize]
   );
+
+  const confirmRelatedLink = useCallback(() => {
+    if (!relatedCandidate) return;
+    void (async () => {
+      const ok = await props.onLinkNodes(relatedCandidate.sourceNodeId, relatedCandidate.targetNodeId);
+      if (!ok) {
+        props.showNotice("关联失败，请稍后再试");
+        return;
+      }
+      setRelatedCandidate(null);
+      props.showNotice("已添加关联");
+    })();
+  }, [props, relatedCandidate]);
 
   const saveBackground = useCallback(() => {
     if (!activeSpace) return;
@@ -353,11 +579,19 @@ export function ThinkingLayer(props: {
     })();
   }, [activeSpace, backgroundDraft, props]);
 
+  const toggleMilestoneNode = useCallback((nodeId: string) => {
+    setMilestoneNodeIds((prev) => {
+      if (prev.includes(nodeId)) return prev.filter((item) => item !== nodeId);
+      if (prev.length >= 3) return prev;
+      return [...prev, nodeId];
+    });
+  }, []);
+
   const freezeSpace = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
     const freezeNote = freezeNoteInput.trim().slice(0, 48);
     void (async () => {
-      const result = await props.onFreezeSpace(activeSpace.id, freezeNote || null);
+      const result = await props.onFreezeSpace(activeSpace.id, freezeNote || null, milestoneNodeIds);
       if (!result.ok) {
         props.showNotice(result.message);
         return;
@@ -372,10 +606,11 @@ export function ThinkingLayer(props: {
       }
       setFreezePanelOpen(false);
       setFreezeNoteInput("");
+      setMilestoneNodeIds([]);
       setWriteToLifeOnFreeze(false);
-      props.showNotice("空间已冻结");
+      props.showNotice("先停在这里了");
     })();
-  }, [activeSpace, freezeNoteInput, props, writeToLifeOnFreeze]);
+  }, [activeSpace, freezeNoteInput, milestoneNodeIds, props, writeToLifeOnFreeze]);
 
   const openExport = useCallback(() => {
     if (!activeSpace) return;
@@ -398,6 +633,20 @@ export function ThinkingLayer(props: {
     })();
   }, [activeSpace, props]);
 
+  const deleteSpace = useCallback(() => {
+    if (!activeSpace) return;
+    void (async () => {
+      const result = await props.onDeleteSpace(activeSpace.id);
+      if (!result.ok) {
+        props.showNotice(result.message);
+        return;
+      }
+      setDeleteSpaceOpen(false);
+      setMoreOpen(false);
+      props.showNotice("空间已删除");
+    })();
+  }, [activeSpace, props]);
+
   const switchTrack = useCallback(
     (trackId: string) => {
       if (!activeSpace || !activeTrack) return;
@@ -412,6 +661,7 @@ export function ThinkingLayer(props: {
           focusNodeId: focusedNodeId
         });
       }
+      setFocusMenuNodeId(null);
       setPendingTrackId(trackId);
       void (async () => {
         const ok = await props.onSetActiveTrack(activeSpace.id, trackId);
@@ -421,7 +671,18 @@ export function ThinkingLayer(props: {
     [activeSpace, activeTrack, props, rememberTrackPosition]
   );
 
-  const statusLabel = activeSpace ? (activeSpace.status === "active" ? "进行中" : activeSpace.status === "frozen" ? "冻结" : "归档") : "";
+  const updateDirectionHint = useCallback(
+    (trackId: string, nextHint: TrackDirectionHint | null) => {
+      if (!activeSpace) return;
+      void (async () => {
+        const ok = await props.onUpdateTrackDirection(activeSpace.id, trackId, nextHint);
+        if (!ok) props.showNotice("方向提示保存失败");
+      })();
+    },
+    [activeSpace, props]
+  );
+
+  const statusLabel = activeSpace ? (activeSpace.status === "active" ? "进行中" : activeSpace.status === "frozen" ? "停在这里" : "归档") : "";
 
   return (
     <div className="h-full overflow-hidden px-3 pb-4 pt-3 md:px-6">
@@ -471,7 +732,7 @@ export function ThinkingLayer(props: {
                 disabled={!activeSpace || activeSpace.status !== "active"}
                 onClick={() => setFreezePanelOpen(true)}
               >
-                冻结
+                先停在这里
               </Button>
               <Button
                 type="button"
@@ -483,26 +744,62 @@ export function ThinkingLayer(props: {
               >
                 导出
               </Button>
-              <details className="relative" open={moreOpen} onToggle={(event) => setMoreOpen(event.currentTarget.open)}>
-                <summary className="list-none">
-                  <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/10 bg-white/80 text-slate-700 hover:bg-white">
-                    更多
-                  </Button>
-                </summary>
-                <div className="absolute right-0 top-10 z-20 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-[0_14px_30px_rgba(16,20,24,0.16)]">
-                  <MenuItem label="背景说明" disabled={!activeSpace || activeSpace.status !== "active"} onClick={() => setBackgroundOpen(true)} />
-                  <MenuItem
-                    label="整理一次"
-                    disabled={!activeSpace || activeSpace.status !== "active"}
-                    onClick={() => activeSpace && void props.onOrganizeSpace(activeSpace.id)}
-                  />
-                  <MenuItem
-                    label={activeSpace?.status === "archived" ? "恢复空间" : "归档空间"}
-                    disabled={!activeSpace}
-                    onClick={toggleArchive}
-                  />
-                </div>
-              </details>
+              <div className="relative" ref={moreMenuRef}>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-black/10 bg-white/80 text-slate-700 hover:bg-white"
+                  onClick={() => setMoreOpen((prev) => !prev)}
+                >
+                  更多
+                </Button>
+                {moreOpen ? (
+                  <div className="absolute right-0 top-10 z-20 w-40 rounded-xl border border-black/10 bg-white p-1.5 shadow-[0_14px_30px_rgba(16,20,24,0.16)]">
+                    <MenuItem
+                      label="背景说明"
+                      disabled={!activeSpace || activeSpace.status !== "active"}
+                      onClick={() => {
+                        setMoreOpen(false);
+                        setBackgroundOpen(true);
+                      }}
+                    />
+                    <MenuItem
+                      label="整理一下"
+                      disabled={!activeSpace || activeSpace.status !== "active"}
+                      onClick={() => {
+                        setMoreOpen(false);
+                        openOrganizePanel();
+                      }}
+                    />
+                    <MenuItem
+                      label={activeSpace?.status === "archived" ? "恢复空间" : "归档空间"}
+                      disabled={!activeSpace}
+                      onClick={toggleArchive}
+                    />
+                    <MenuItem
+                      label="删除空间"
+                      disabled={!activeSpace}
+                      onClick={() => {
+                        setMoreOpen(false);
+                        setDeleteSpaceOpen(true);
+                      }}
+                    />
+                  </div>
+                ) : null}
+              </div>
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className={cn(
+                  "rounded-full border border-black/10 bg-white/80 text-slate-700 hover:bg-white",
+                  props.focusMode ? "bg-slate-900 text-slate-50 hover:bg-slate-800" : ""
+                )}
+                onClick={() => props.onFocusModeChange(!props.focusMode)}
+              >
+                专注
+              </Button>
             </div>
           </div>
         </header>
@@ -528,10 +825,11 @@ export function ThinkingLayer(props: {
                 <h2 className="mx-auto mt-2 max-w-4xl text-[30px] font-medium leading-[1.5] text-slate-900">{activeSpace.rootQuestionText}</h2>
                 <div className="mx-auto mt-4 flex max-w-3xl items-center gap-2">
                   <input
+                    ref={questionInputRef}
                     value={questionInput}
                     maxLength={220}
                     disabled={activeSpace.status !== "active"}
-                    placeholder={activeSpace.status === "active" ? "继续输入一个疑问…" : "该空间已只读"}
+                    placeholder={activeSpace.status === "active" ? "继续输入一个疑问…" : "这段思考现在停在这里"}
                     className="h-11 flex-1 rounded-full border border-black/12 bg-white/92 px-4 text-sm text-slate-900 outline-none transition focus-visible:ring-1 focus-visible:ring-black/20 disabled:bg-black/5 disabled:text-slate-500"
                     onChange={(event) => setQuestionInput(event.target.value)}
                     onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), addQuestion(questionInput, false))}
@@ -546,7 +844,26 @@ export function ThinkingLayer(props: {
                   </Button>
                 </div>
                 {organizingSpaceId === activeSpace.id ? <p className="mt-2 text-xs text-slate-500">正在形成结构…</p> : null}
+                {organizeHintCount > 0 ? (
+                  <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-black/10 bg-white/80 px-3 py-1 text-xs text-slate-600">
+                    <span>这几条像是另一条线上的内容</span>
+                    <button type="button" className="text-slate-800 hover:underline" onClick={openOrganizePanel}>
+                      整理一下
+                    </button>
+                  </div>
+                ) : null}
                 <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", inputHint ? "opacity-100" : "opacity-0")}>{inputHint}</p>
+                {relatedCandidate ? (
+                  <div className="mx-auto mt-2 flex max-w-3xl items-center justify-center gap-2 text-xs text-slate-600">
+                    <span>发现相关节点：{relatedCandidate.preview}</span>
+                    <button type="button" className="text-slate-800 hover:underline" onClick={confirmRelatedLink}>
+                      关联
+                    </button>
+                    <button type="button" className="text-slate-500 hover:underline" onClick={() => setRelatedCandidate(null)}>
+                      忽略
+                    </button>
+                  </div>
+                ) : null}
                 {inputSuggestions.length ? (
                   <div className="mx-auto mt-2 flex max-w-3xl flex-wrap justify-center gap-2">
                     {inputSuggestions.map((suggestion) => (
@@ -564,7 +881,12 @@ export function ThinkingLayer(props: {
               </div>
             </section>
 
-            <section className="grid min-h-0 overflow-hidden gap-4 px-4 py-4 md:grid-cols-[minmax(0,1fr)_260px] md:px-8 md:py-6">
+            <section
+              className={cn(
+                "grid min-h-0 overflow-hidden gap-4 px-4 py-4 md:px-8 md:py-6",
+                props.focusMode ? "md:grid-cols-[minmax(0,1fr)]" : "md:grid-cols-[minmax(0,1fr)_260px]"
+              )}
+            >
               <div className="min-h-0 h-full min-w-0 rounded-2xl border border-black/10 bg-white/62 p-3 md:p-4 flex flex-col overflow-hidden">
                 {!activeTrack ? (
                   <div className="grid h-full min-h-0 place-items-center text-sm text-slate-500">继续输入疑问，轨道会在这里展开</div>
@@ -574,7 +896,30 @@ export function ThinkingLayer(props: {
                     className={cn("h-full min-h-0 min-w-0 flex flex-col", pausedTrackIds[activeTrack.id] ? "opacity-45" : "opacity-100")}
                   >
                     <div className="mb-3 flex items-center justify-between">
-                      <p className="text-sm text-slate-700">当前轨道</p>
+                      <div>
+                        <p className="text-sm text-slate-700">{activeTrack.isParking ? "先放这里" : "当前这条线"}</p>
+                        <div className="mt-1 flex items-center gap-2">
+                          <select
+                            aria-label="方向提示"
+                            value={activeTrack.directionHint ?? ""}
+                            disabled={activeSpace.status !== "active"}
+                            className="h-7 rounded-full border border-black/10 bg-white/85 px-2 text-[11px] text-slate-600 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+                            onChange={(event) =>
+                              updateDirectionHint(
+                                activeTrack.id,
+                                event.target.value ? (event.target.value as TrackDirectionHint) : null
+                              )
+                            }
+                          >
+                            <option value="">不强调方向</option>
+                            {DIRECTION_HINT_OPTIONS.map((item) => (
+                              <option key={item.value} value={item.value}>
+                                {item.label}
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
                       <p className="text-xs text-slate-500">{activeTrack.nodeCount} 个疑问</p>
                     </div>
                     <div
@@ -604,6 +949,7 @@ export function ThinkingLayer(props: {
                               justAddedNodeId === node.id ? "shadow-[0_10px_20px_rgba(30,35,40,0.12)]" : ""
                             )}
                             style={justAddedNodeId === node.id ? { animation: "zhTrackNodeIn 360ms ease-out 1" } : undefined}
+                            onDoubleClick={() => props.focusMode && setFocusMenuNodeId(node.id)}
                             onFocus={() => {
                               if (!activeSpace || !activeTrack) return;
                               const container = trackScrollRef.current;
@@ -613,21 +959,47 @@ export function ThinkingLayer(props: {
                               });
                             }}
                           >
-                            <p className="text-[15px] leading-[1.65] text-slate-900 [overflow-wrap:anywhere]">{node.questionText}</p>
+                            <p className="text-[15px] leading-[1.65] text-slate-900 [overflow-wrap:anywhere]">
+                              {node.isMilestone ? <span className="mr-1">⭐</span> : null}
+                              {node.questionText}
+                            </p>
                             {node.noteText ? <p className="mt-1 text-xs text-slate-500 [overflow-wrap:anywhere]">附注：{node.noteText}</p> : null}
                             <div className="mt-2 flex items-center justify-between">
-                              <NodeMenu
-                                disabled={activeSpace.status !== "active"}
-                                tracks={tracks}
-                                currentTrackId={activeTrack.id}
-                                paused={Boolean(pausedTrackIds[activeTrack.id])}
-                                onMove={(trackId) => void props.onMoveNode(node.id, trackId)}
-                                onMisplaced={() => void props.onMarkMisplaced(node.id)}
-                                onDelete={() => void props.onDeleteNode(node.id)}
-                                onTogglePause={() =>
-                                  setPausedTrackIds((prev) => ({ ...prev, [activeTrack.id]: !prev[activeTrack.id] }))
-                                }
-                              />
+                              {!props.focusMode || focusMenuNodeId === node.id ? (
+                                <NodeMenu
+                                  disabled={activeSpace.status !== "active"}
+                                  tracks={tracks}
+                                  currentTrackId={activeTrack.id}
+                                  paused={Boolean(pausedTrackIds[activeTrack.id])}
+                                  onMove={(trackId) =>
+                                    void (async () => {
+                                      const ok = await props.onMoveNode(node.id, trackId);
+                                      if (!ok) props.showNotice("移动失败，请稍后再试");
+                                    })()
+                                  }
+                                  onMisplaced={() =>
+                                    void (async () => {
+                                      const ok = await props.onMarkMisplaced(node.id);
+                                      if (!ok) {
+                                        props.showNotice("暂时没能安放过去");
+                                        return;
+                                      }
+                                      props.showNotice("先放这里了");
+                                    })()
+                                  }
+                                  onDelete={() =>
+                                    void (async () => {
+                                      const ok = await props.onDeleteNode(node.id);
+                                      if (!ok) props.showNotice("删除失败，请稍后再试");
+                                    })()
+                                  }
+                                  onTogglePause={() =>
+                                    setPausedTrackIds((prev) => ({ ...prev, [activeTrack.id]: !prev[activeTrack.id] }))
+                                  }
+                                />
+                              ) : (
+                                <span className="text-[11px] text-slate-400">双击显示菜单</span>
+                              )}
                               {node.echoTrackId ? (
                                 <button
                                   type="button"
@@ -637,7 +1009,9 @@ export function ThinkingLayer(props: {
                                   在其他方向也出现过
                                 </button>
                               ) : (
-                                <span className="text-[11px] text-slate-400">{node.createdAt ? node.createdAt.slice(11, 16) : ""}</span>
+                                <span className="text-[11px] text-slate-400">
+                                  {node.hasRelatedLink ? "有关联" : node.createdAt ? node.createdAt.slice(11, 16) : ""}
+                                </span>
                               )}
                             </div>
                           </li>
@@ -648,6 +1022,7 @@ export function ThinkingLayer(props: {
                 )}
               </div>
 
+              {!props.focusMode ? (
               <aside data-other-tracks="true" className="min-h-0 rounded-2xl border border-black/10 bg-white/55 p-3">
                 <p className="mb-2 text-xs text-slate-500">其他方向</p>
                 <div className="grid gap-2">
@@ -664,6 +1039,9 @@ export function ThinkingLayer(props: {
                         )}
                       >
                         <p className="line-clamp-2 text-xs leading-[1.55] text-slate-700">{track.titleQuestionText}</p>
+                        {track.directionHint ? (
+                          <p className="mt-1 text-[11px] text-slate-500">{directionHintLabel(track.directionHint)}</p>
+                        ) : null}
                         <p className="mt-1 text-[11px] text-slate-500">{track.nodeCount}个疑问</p>
                       </button>
                     ))
@@ -672,6 +1050,7 @@ export function ThinkingLayer(props: {
                   )}
                 </div>
               </aside>
+              ) : null}
             </section>
 
             <footer className="border-t border-black/10 px-4 py-2 text-xs text-slate-500 md:px-8">
@@ -685,7 +1064,10 @@ export function ThinkingLayer(props: {
         <div className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
           <div className="absolute right-4 top-16 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] md:right-8">
             <div className="flex items-center justify-between">
-              <p className="text-sm text-slate-800">创建空间</p>
+              <div>
+                <p className="text-sm text-slate-800">从一个困惑、判断或冲突开始</p>
+                <p className="mt-1 text-xs text-slate-500">它会成为这段思考的中心</p>
+              </div>
               <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setCreateSpaceOpen(false)}>
                 关闭
               </button>
@@ -695,7 +1077,7 @@ export function ThinkingLayer(props: {
                 value={newSpaceInput}
                 maxLength={160}
                 className="h-10 rounded-full border border-black/12 bg-white px-4 text-sm text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-                placeholder="输入一个根问题"
+                placeholder="写下这段思考现在围着什么转"
                 onChange={(event) => setNewSpaceInput(event.target.value)}
                 onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), createSpace())}
               />
@@ -731,6 +1113,9 @@ export function ThinkingLayer(props: {
                           setInputSuggestions(result.suggestedQuestions ?? []);
                           setCreateSpaceOpen(false);
                           props.setActiveSpaceId(result.spaceId);
+                          if (result.createdAsStatement && result.questionSuggestion) {
+                            props.showNotice(`也可以这样继续追问：${result.questionSuggestion}`);
+                          }
                         })();
                       }}
                     >
@@ -739,6 +1124,74 @@ export function ThinkingLayer(props: {
                   ))}
                 </div>
               ) : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {organizePanelOpen && activeSpace ? (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
+          <div className="w-[760px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <div className="flex items-center justify-between">
+              <div>
+                <p className="text-sm text-slate-800">安放这些散开的念头</p>
+                <p className="mt-1 text-xs text-slate-500">看看它们更像放在哪条线里</p>
+              </div>
+              <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
+                关闭
+              </button>
+            </div>
+            <div className="mt-3 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
+              {organizeCandidates.length ? (
+                organizeCandidates.map((candidate) => (
+                  <div key={candidate.nodeId} className="rounded-xl border border-black/10 bg-[#f8f6f2] px-3 py-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="flex items-center gap-2 text-xs text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={candidate.selected}
+                          onChange={(event) =>
+                            setOrganizeCandidates((prev) =>
+                              prev.map((item) => (item.nodeId === candidate.nodeId ? { ...item, selected: event.target.checked } : item))
+                            )
+                          }
+                        />
+                        {candidate.preview || `节点 ${candidate.nodeId.slice(0, 8)}`}
+                      </label>
+                      <span className="text-[11px] text-slate-500">{candidate.score.toFixed(2)}</span>
+                    </div>
+                    <div className="mt-2 flex items-center gap-2 text-xs text-slate-600">
+                      <span>更像属于：</span>
+                      <select
+                        value={candidate.targetTrackId}
+                        className="rounded-full border border-black/12 bg-white px-2 py-1 text-xs"
+                        onChange={(event) =>
+                          setOrganizeCandidates((prev) =>
+                            prev.map((item) => (item.nodeId === candidate.nodeId ? { ...item, targetTrackId: event.target.value } : item))
+                          )
+                        }
+                      >
+                        {tracks.map((track) => (
+                          <option key={track.id} value={track.id}>
+                            {track.titleQuestionText.slice(0, 24)}
+                          </option>
+                        ))}
+                        <option value="__new__">从另一个方向展开</option>
+                      </select>
+                    </div>
+                  </div>
+                ))
+              ) : (
+                <p className="text-sm text-slate-500">暂时没有需要安放的内容</p>
+              )}
+            </div>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
+                取消
+              </Button>
+              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={applyOrganize}>
+                安放这些念头
+              </Button>
             </div>
           </div>
         </div>
@@ -770,7 +1223,11 @@ export function ThinkingLayer(props: {
 
       {freezePanelOpen && activeSpace?.status === "active" ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[520px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+          <div className="w-[620px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <div className="mb-4">
+              <p className="text-sm text-slate-800">先停在这里</p>
+              <p className="mt-1 text-xs text-slate-500">今天先想到这里，或先留一个能回来的踏板</p>
+            </div>
             <p className="text-sm text-slate-800">当前状态（可选，一句话）</p>
             <input
               value={freezeNoteInput}
@@ -778,6 +1235,27 @@ export function ThinkingLayer(props: {
               className="mt-3 h-10 w-full rounded-full border border-black/12 bg-white px-4 text-sm text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
               onChange={(event) => setFreezeNoteInput(event.target.value)}
             />
+            <div className="mt-3 rounded-xl border border-black/10 bg-[#f8f6f2] px-3 py-2 text-xs leading-[1.7] text-slate-500">
+              <p>今天先想到这里</p>
+              <p>这段暂时卡住了</p>
+              <p>先留一个能回来的踏板</p>
+            </div>
+            <div className="mt-4 rounded-xl border border-black/10 bg-[#f8f6f2] p-3">
+              <p className="text-xs text-slate-600">关键节点（最多 3 个）</p>
+              <div className="mt-2 grid max-h-44 gap-1 overflow-y-auto pr-1">
+                {milestoneCandidates.map((entry) => (
+                  <label key={entry.node.id} className="flex items-start gap-2 rounded-lg px-2 py-1 text-xs text-slate-700 hover:bg-white/80">
+                    <input
+                      type="checkbox"
+                      checked={milestoneNodeIds.includes(entry.node.id)}
+                      onChange={() => toggleMilestoneNode(entry.node.id)}
+                      disabled={!milestoneNodeIds.includes(entry.node.id) && milestoneNodeIds.length >= 3}
+                    />
+                    <span className="line-clamp-2">{entry.node.questionText}</span>
+                  </label>
+                ))}
+              </div>
+            </div>
             <label className="mt-3 flex items-center gap-2 text-xs text-slate-600">
               <input type="checkbox" checked={writeToLifeOnFreeze} onChange={(event) => setWriteToLifeOnFreeze(event.target.checked)} />
               写入时间档案馆
@@ -787,7 +1265,7 @@ export function ThinkingLayer(props: {
                 取消
               </Button>
               <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={freezeSpace}>
-                确认冻结
+                停在这里
               </Button>
             </div>
           </div>
@@ -808,6 +1286,24 @@ export function ThinkingLayer(props: {
               readOnly
               className="h-[52vh] w-full resize-none rounded-xl border border-black/12 bg-[#f7f4ef] px-3 py-3 text-xs leading-[1.65] text-slate-700 outline-none"
             />
+          </div>
+        </div>
+      ) : null}
+
+      {deleteSpaceOpen && activeSpace ? (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
+          <div className="w-[460px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <p className="text-sm text-slate-800">删除这个空间？</p>
+            <p className="mt-2 line-clamp-2 text-xs text-slate-500">{activeSpace.rootQuestionText}</p>
+            <p className="mt-1 text-xs text-slate-500">删除后不可恢复，轨道、节点与关联会一并清理。</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setDeleteSpaceOpen(false)}>
+                取消
+              </Button>
+              <Button type="button" size="sm" className="rounded-full bg-red-600 text-slate-50 hover:bg-red-500" onClick={deleteSpace}>
+                确认删除
+              </Button>
+            </div>
           </div>
         </div>
       ) : null}
@@ -926,7 +1422,7 @@ function NodeMenu(props: {
           className="mt-1 block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
           onClick={() => runAction(() => props.onMove("__new__"))}
         >
-          新方向
+          换条线想
         </button>
         <div className="my-1 h-px bg-black/8" />
         <button
@@ -962,7 +1458,7 @@ function NodeMenu(props: {
 }
 
 function _StatusPill({ status }: { status: ThinkingSpaceStatus }) {
-  const label = status === "active" ? "进行中" : status === "frozen" ? "冻结" : "归档";
+  const label = status === "active" ? "进行中" : status === "frozen" ? "停在这里" : "归档";
   return (
     <span className="rounded-full border border-black/10 bg-white px-2 py-0.5 text-[11px] text-slate-700">{label}</span>
   );

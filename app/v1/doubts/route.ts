@@ -25,7 +25,7 @@ export const POST = withApiRoute(
   async (request: NextRequest) => {
   const body = await parseJsonBody<{ raw_text?: string; layer?: string }>(request);
   if (!body || typeof body.raw_text !== "string") return errorJson(400, "raw_text is required");
-  if (body.layer && body.layer !== "life") return errorJson(400, "layer must be life");
+  if (body.layer && body.layer !== "life") return errorJson(400, "layer 仅支持 life");
 
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
@@ -34,7 +34,7 @@ export const POST = withApiRoute(
     const created = createDoubt(db, userId, body.raw_text ?? "");
     createdId = created?.id ?? null;
   });
-  if (!createdId) return errorJson(400, "raw_text cannot be empty");
+  if (!createdId) return errorJson(400, "内容不能为空");
   return okJson({ doubt_id: createdId }, { status: 201 });
   },
   { rateLimit: { bucket: "doubts-create", max: 60, windowMs: 60 * 1000 } }

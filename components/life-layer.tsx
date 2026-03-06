@@ -54,6 +54,28 @@ export function LifeLayer(props: {
   ready: boolean;
   openingPhase: OpeningPhase;
   stars: StarDot[];
+  thinkingProgressByDoubt: Record<
+    string,
+    {
+      spaceId: string;
+      status: "active" | "frozen" | "archived";
+      freezeNote: string | null;
+      milestonePreviews: string[];
+      reentry: {
+        questionEntry: { spaceId: string; rootQuestionText: string } | null;
+        freezeEntry: {
+          spaceId: string;
+          trackId: string | null;
+          nodeId: string | null;
+          preview: string | null;
+          freezeNote: string | null;
+          frozenAt: string | null;
+        } | null;
+        milestoneEntries: Array<{ spaceId: string; trackId: string | null; nodeId: string | null; preview: string | null }>;
+      };
+    }
+  >;
+  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null }) => void;
   onImportToThinking: (doubt: LifeDoubt) => void;
   onCreateDoubt: (rawText: string) => Promise<boolean>;
   onArchiveDoubt: (doubtId: string) => Promise<boolean>;
@@ -410,6 +432,7 @@ export function LifeLayer(props: {
                       <ul className="space-y-3 pl-[calc(42%+1rem)] pr-1 md:pr-10" style={{ rowGap: `${LIFE_TOKENS.sameDayGapPx}px` }}>
                         {group.items.map((item) => {
                           const note = notesMap.get(item.id);
+                          const progress = props.thinkingProgressByDoubt[item.id];
                           const playbackFocus = playbackHighlightId === item.id;
                           const expanded = expandedId === item.id;
                           const readable = readableSet.has(item.id);
@@ -446,6 +469,21 @@ export function LifeLayer(props: {
                                     {formatDateTime(item.createdAt).slice(11)}
                                     {item.archivedAt ? " · 已归档" : ""}
                                   </p>
+                                  {progress ? (
+                                    <button
+                                      type="button"
+                                      className="rounded-full border border-slate-300/30 px-2 py-0.5 text-[10px] text-slate-300/80 hover:bg-slate-900/45"
+                                      onClick={(event) => {
+                                        event.stopPropagation();
+                                        props.onJumpToThinking({
+                                          spaceId: progress.spaceId,
+                                          mode: "root"
+                                        });
+                                      }}
+                                    >
+                                      已思考
+                                    </button>
+                                  ) : null}
                                   <button
                                     type="button"
                                     className="rounded-full px-2 py-0.5 text-xs text-slate-400/72 transition-colors hover:bg-slate-900/45 hover:text-slate-300/85"
@@ -481,6 +519,67 @@ export function LifeLayer(props: {
                                   >
                                     注记：{note}
                                   </p>
+                                ) : null}
+                                {expanded && progress ? (
+                                  <div className="mt-2 rounded-lg border border-slate-300/20 bg-slate-900/45 px-3 py-2 text-xs text-slate-300/78">
+                                    <p className="text-[11px] text-slate-300/72">{progress.status === "frozen" ? "这段思考停在这里" : "这段思考还在进行中"}</p>
+                                    {progress.freezeNote ? <p className="mt-1 line-clamp-2">上次停下时：{progress.freezeNote}</p> : null}
+                                    <div className="mt-2 border-t border-slate-300/10 pt-2">
+                                      <p className="text-[11px] text-slate-300/68">再次进入</p>
+                                      <div className="mt-2 flex flex-wrap gap-2">
+                                        {progress.reentry.questionEntry ? (
+                                          <button
+                                            type="button"
+                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              props.onJumpToThinking({
+                                                spaceId: progress.reentry.questionEntry?.spaceId ?? progress.spaceId,
+                                                mode: "root"
+                                              });
+                                            }}
+                                          >
+                                            从当时的问题进入
+                                          </button>
+                                        ) : null}
+                                        {progress.reentry.freezeEntry ? (
+                                          <button
+                                            type="button"
+                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              props.onJumpToThinking({
+                                                spaceId: progress.reentry.freezeEntry?.spaceId ?? progress.spaceId,
+                                                mode: "freeze",
+                                                trackId: progress.reentry.freezeEntry?.trackId ?? null,
+                                                nodeId: progress.reentry.freezeEntry?.nodeId ?? null
+                                              });
+                                            }}
+                                          >
+                                            从上次停下的地方进入
+                                          </button>
+                                        ) : null}
+                                        {progress.reentry.milestoneEntries.map((entry) => (
+                                          <button
+                                            key={`${entry.spaceId}:${entry.nodeId ?? entry.preview ?? "milestone"}`}
+                                            type="button"
+                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              props.onJumpToThinking({
+                                                spaceId: entry.spaceId,
+                                                mode: "milestone",
+                                                trackId: entry.trackId,
+                                                nodeId: entry.nodeId
+                                              });
+                                            }}
+                                          >
+                                            {entry.preview ? `从关键节点进入 · ${entry.preview}` : "从关键节点进入"}
+                                          </button>
+                                        ))}
+                                      </div>
+                                    </div>
+                                  </div>
                                 ) : null}
                               </article>
 
@@ -721,7 +820,7 @@ function LifeDetailModal(props: {
             className="rounded-full border border-slate-300/25 bg-slate-900/40 text-slate-100 hover:bg-slate-800/75"
             onClick={props.onImport}
           >
-            用它重新思考
+            带着它进入思路
           </Button>
           <Button
             type="button"

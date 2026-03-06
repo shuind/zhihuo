@@ -1,8 +1,31 @@
-# 知惑 Zhihuo (Next.js)
+# 知惑 Zhihuo
 
-当前仓库包含：
-- 前端：Life Layer + Thinking Layer + Settings
-- 后端：基于 Next Route Handlers 的 `/v1/*` API
+知惑把“疑问”当成长期存在的思维材料，而不是立刻解决的任务。
+
+- `时间层 Time`：时间档案馆，也是再次进入界面。它不解释过去，而是提供重新进入思考的入口。
+- `思路层 Thinking Track`：围绕一个中心问题展开的平行方向。它不是树，不是脑图，也不是知识管理面板。
+- `设置层 Settings`：导出、导入校验、数据清理与账户相关设置。
+
+## 产品立意
+
+知惑最特别的体验不是“记录”，而是 `再进入`：
+
+- 从当时的问题重新进入
+- 从上次停下的地方进入
+- 从某个关键节点重新进入
+
+时间层负责把过去的问题再次点燃；思路层负责让思考继续发生。
+
+在思路层里，每条 track 代表的是一种 `推进方向`，不是分类桶。常见方向包括：
+
+- 假设
+- 回忆
+- 反驳
+- 担忧
+- 现实限制
+- 旁支念头
+
+另外，系统固定保留一条弱化的缓冲轨 `先放这里`，用于接住暂时不适合放进当前线上的内容。
 
 ## 本地运行
 
@@ -12,13 +35,11 @@
 pnpm install
 ```
 
-2. 配置环境变量（开发最小）
+2. 配置环境变量
 
 ```bash
-# 必填（生产必须替换）
 AUTH_SECRET=replace-with-strong-secret
-
-# 可选：不填时使用本地 JSON 文件存储
+# 可选：使用 PostgreSQL
 # DATABASE_URL=postgres://user:pass@host:5432/zhihuo
 ```
 
@@ -30,22 +51,15 @@ pnpm dev
 
 4. 打开
 
-`http://localhost:3000`
+[http://localhost:3000](http://localhost:3000)
 
-## 数据存储与迁移
+## 数据存储
 
-- 无 `DATABASE_URL`：使用 `data/zhihuo-db.json`（仅开发用途）。
-- 有 `DATABASE_URL`：使用 PostgreSQL。
-- 启动时自动执行 `db/migrations/*.sql`。
-- 若存在历史 `app_state` JSONB 数据，会自动迁移到规范化表。
+- 未配置 `DATABASE_URL`：使用 `data/zhihuo-db.json`
+- 配置 `DATABASE_URL`：使用 PostgreSQL
+- 启动时会自动执行 `db/migrations/*.sql`
 
-## 认证与多用户
-
-- 使用 `zhihuo_session` HttpOnly Cookie 会话。
-- 生产环境默认只接受 Cookie，不再依赖 `x-user-id`。
-- 仅当 `ALLOW_USER_HEADER=true` 时，允许通过请求头注入用户（调试用途）。
-
-## 已实现 API
+## 主要 API
 
 ### Auth
 - `POST /v1/auth/register`
@@ -53,7 +67,7 @@ pnpm dev
 - `POST /v1/auth/logout`
 - `GET /v1/auth/me`
 
-### Life
+### Time
 - `POST /v1/doubts`
 - `GET /v1/doubts?range=week|month|all&include_archived=true|false`
 - `GET /v1/doubts/{id}`
@@ -62,40 +76,39 @@ pnpm dev
 - `POST /v1/doubts/{id}/note`
 - `POST /v1/doubts/{id}/to-thinking`
 
-### Thinking
+### Thinking Track
 - `GET /v1/thinking/spaces`
 - `POST /v1/thinking/spaces`
 - `GET /v1/thinking/spaces/{space_id}`
 - `POST /v1/thinking/spaces/{space_id}/questions`
-- `POST /v1/thinking/spaces/{space_id}/rebuild`
+- `POST /v1/thinking/spaces/{space_id}/organize-preview`
+- `POST /v1/thinking/spaces/{space_id}/organize-apply`
 - `POST /v1/thinking/spaces/{space_id}/freeze`
 - `POST /v1/thinking/spaces/{space_id}/status`
+- `POST /v1/thinking/spaces/{space_id}/delete`
+- `POST /v1/thinking/spaces/{space_id}/track-direction`
 - `GET /v1/thinking/spaces/{space_id}/export`
 - `POST /v1/thinking/nodes/{node_id}/move`
 - `POST /v1/thinking/nodes/{node_id}/misplaced`
-- `GET /v1/thinking/snapshot`（兼容只读）
-- `POST /v1/thinking/snapshot`（已废弃，返回 410）
+- `POST /v1/thinking/nodes/{node_id}/delete`
+- `POST /v1/thinking/nodes/{node_id}/link`
+- `GET /v1/thinking/snapshot`
 
-### System / 安全
-- `GET /v1/system/export`（全量导出 + checksum）
-- `POST /v1/system/import/validate`（校验 checksum 与引用完整性）
-- `POST /v1/system/delete-all`（全量删除 + 审计，需 `confirm_text: "DELETE ALL"`）
+### System
+- `GET /v1/system/export?format=json|markdown`
+- `POST /v1/system/import/validate`
+- `POST /v1/system/delete-all`
 
-## 可观测性与稳定性
+## 回归测试
 
-- 所有 `/v1/*` 路由已接入统一错误边界与结构化日志（JSON）。
-- 核心写操作已接入内存级速率限制（429 + `retry-after`）。
-- PostgreSQL 读写包含瞬时错误重试（序列化冲突/死锁等）。
-
-## 自动化 API 回归
-
-先启动服务，再运行：
+先启动服务，再执行：
 
 ```bash
 pnpm run test:api-routes
+pnpm run test:ui-smoke
 ```
 
-可用环境变量：
+可选环境变量：
 
 ```bash
 TEST_BASE_URL=http://127.0.0.1:3000
@@ -103,9 +116,8 @@ TEST_BASE_URL=http://127.0.0.1:3000
 
 ## 目录
 
-- `app/` 页面与 Route Handlers
-- `app/v1/**` API 路由
-- `components/` 前端交互层
-- `lib/server/` 后端业务、存储、安全与观测
-- `db/migrations/` PostgreSQL 迁移脚本
-- `scripts/` 自动化脚本
+- `app/`：页面与 Route Handlers
+- `components/`：前端界面与交互
+- `lib/server/`：服务端业务与存储
+- `db/migrations/`：PostgreSQL 迁移
+- `scripts/`：自动化回归脚本

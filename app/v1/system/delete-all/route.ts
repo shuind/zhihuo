@@ -27,7 +27,7 @@ export const POST = withApiRoute(
     await updateDb((db) => {
       deleted = deleteAllUserData(db, userId, reason);
     });
-    if (!deleted) return errorJson(404, "user not found");
+    if (!deleted) return errorJson(404, "用户不存在");
 
     const response = okJson({ ok: true, deleted });
     response.cookies.set(getAuthCookieName(), "", {

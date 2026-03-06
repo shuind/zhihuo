@@ -30,6 +30,7 @@ const EMPTY_DB: DbState = {
   thinking_nodes: [],
   thinking_inbox: [],
   thinking_space_meta: [],
+  thinking_node_links: [],
   users: [],
   audit_logs: []
 };
@@ -71,8 +72,43 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
           background_version: Number.isFinite(row.background_version) ? Number(row.background_version) : 0,
           suggestion_decay: Number.isFinite(row.suggestion_decay) ? Number(row.suggestion_decay) : 0,
           last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
-          last_organized_order: Number.isFinite(row.last_organized_order) ? Number(row.last_organized_order) : -1
+          last_organized_order: Number.isFinite(row.last_organized_order) ? Number(row.last_organized_order) : -1,
+          parking_track_id: typeof row.parking_track_id === "string" ? row.parking_track_id : null,
+          milestone_node_ids: Array.isArray(row.milestone_node_ids)
+            ? row.milestone_node_ids.filter((id) => typeof id === "string")
+            : [],
+          track_direction_hints:
+            row.track_direction_hints && typeof row.track_direction_hints === "object" && !Array.isArray(row.track_direction_hints)
+              ? Object.fromEntries(
+                  Object.entries(row.track_direction_hints).filter(
+                    ([trackId, hint]) =>
+                      typeof trackId === "string" &&
+                      (hint === null ||
+                        hint === "hypothesis" ||
+                        hint === "memory" ||
+                        hint === "counterpoint" ||
+                        hint === "worry" ||
+                        hint === "constraint" ||
+                        hint === "aside")
+                  )
+                )
+              : {}
         }))
+      : [],
+    thinking_node_links: Array.isArray(input?.thinking_node_links)
+      ? input.thinking_node_links
+          .map((row) => ({
+            ...row,
+            link_type: "related" as const,
+            score: Number.isFinite(row.score) ? Number(row.score) : 0
+          }))
+          .filter(
+            (row) =>
+              typeof row.id === "string" &&
+              typeof row.space_id === "string" &&
+              typeof row.source_node_id === "string" &&
+              typeof row.target_node_id === "string"
+          )
       : [],
     users: Array.isArray(input?.users) ? input.users : [],
     audit_logs: Array.isArray(input?.audit_logs) ? input.audit_logs : []
@@ -197,7 +233,7 @@ async function migrateLegacyBlobIfNeeded(client: PoolClient) {
 }
 
 async function readDbFromPg(client: PoolClient): Promise<DbState> {
-  const [users, doubts, doubtNotes, spaces, nodes, inbox, spaceMeta, auditLogs] = await Promise.all([
+  const [users, doubts, doubtNotes, spaces, nodes, inbox, spaceMeta, nodeLinks, auditLogs] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
     client.query("SELECT id, user_id, raw_text, created_at, archived_at, deleted_at FROM doubts"),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
@@ -209,7 +245,10 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     ),
     client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox"),
     client.query(
-      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order FROM thinking_space_meta"
+      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+    ),
+    client.query(
+      "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
     ),
     client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs")
   ]);
@@ -233,8 +272,33 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       background_version: Number(row.background_version ?? 0),
       suggestion_decay: Number(row.suggestion_decay ?? 0),
       last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
-      last_organized_order: Number(row.last_organized_order ?? -1)
+      last_organized_order: Number(row.last_organized_order ?? -1),
+      parking_track_id: typeof row.parking_track_id === "string" ? row.parking_track_id : null,
+      milestone_node_ids: Array.isArray(row.milestone_node_ids)
+        ? row.milestone_node_ids.filter((id: unknown) => typeof id === "string")
+        : [],
+      track_direction_hints:
+        row.track_direction_hints && typeof row.track_direction_hints === "object" && !Array.isArray(row.track_direction_hints)
+          ? Object.fromEntries(
+              Object.entries(row.track_direction_hints).filter(
+                ([trackId, hint]) =>
+                  typeof trackId === "string" &&
+                  (hint === null ||
+                    hint === "hypothesis" ||
+                    hint === "memory" ||
+                    hint === "counterpoint" ||
+                    hint === "worry" ||
+                    hint === "constraint" ||
+                    hint === "aside")
+              )
+            )
+          : {}
     })) as DbState["thinking_space_meta"],
+    thinking_node_links: nodeLinks.rows.map((row) => ({
+      ...row,
+      link_type: "related" as const,
+      score: Number(row.score ?? 0)
+    })) as DbState["thinking_node_links"],
     audit_logs: auditLogs.rows as DbState["audit_logs"]
   });
 }
@@ -301,7 +365,10 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       "background_version",
       "suggestion_decay",
       "last_track_id",
-      "last_organized_order"
+      "last_organized_order",
+      "parking_track_id",
+      "milestone_node_ids",
+      "track_direction_hints"
     ],
     db.thinking_space_meta.map((row) => [
       row.space_id,
@@ -311,7 +378,10 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       row.background_version ?? 0,
       row.suggestion_decay ?? 0,
       row.last_track_id ?? null,
-      row.last_organized_order ?? -1
+      row.last_organized_order ?? -1,
+      row.parking_track_id ?? null,
+      row.milestone_node_ids ?? [],
+      row.track_direction_hints ?? {}
     ])
   );
   await replaceTable(
@@ -336,6 +406,20 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_inbox",
     ["id", "space_id", "raw_text", "created_at"],
     db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
+  );
+  await replaceTable(
+    client,
+    "thinking_node_links",
+    ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
+    db.thinking_node_links.map((row) => [
+      row.id,
+      row.space_id,
+      row.source_node_id,
+      row.target_node_id,
+      row.link_type,
+      row.score,
+      row.created_at
+    ])
   );
   await replaceTable(
     client,
