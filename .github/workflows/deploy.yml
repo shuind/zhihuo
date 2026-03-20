@@ -1,13 +1,21 @@
 name: Deploy
 
 on:
-  push:
-    branches:
-      - main
+  workflow_run:
+    workflows: ["CI"]
+    types:
+      - completed
   workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
 
 jobs:
   deploy:
+    if: |
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -21,9 +29,20 @@ jobs:
           script: |
             set -e
             cd ${{ secrets.DEPLOY_PATH }}
+            test -f docker-compose.yml
+            test -f .env.production
             git fetch --all --prune
             git checkout main
             git pull --ff-only
-            docker compose pull || true
-            docker compose up -d --build
+            docker compose up -d --build --pull never
             docker compose ps
+            for i in {1..30}; do
+              if curl -sf http://127.0.0.1:3000/v1/health >/dev/null; then
+                echo "healthcheck ok"
+                exit 0
+              fi
+              sleep 2
+            done
+            echo "healthcheck failed"
+            docker compose logs --tail=120 app || true
+            exit 1

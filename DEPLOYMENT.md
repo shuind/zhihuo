@@ -53,14 +53,34 @@ Required GitHub Secrets:
 - `DEPLOY_USER`
 - `DEPLOY_SSH_KEY`
 - `DEPLOY_PORT` (optional, default 22)
-- `DEPLOY_PATH` (example: `/opt/zhihuo`)
+- `DEPLOY_PATH` (example: `/opt/zhihuo` or `/home/qdz/zhihuo`)
 
-On `main` push, the workflow runs:
+Deploy trigger:
+- automatic after `CI` succeeds on `main`
+- manual `workflow_dispatch` fallback
+
+On deploy, the workflow runs:
 1. SSH to server
-2. `git checkout main && git pull --ff-only`
-3. `docker compose up -d --build`
+2. check `docker-compose.yml` and `.env.production` exist
+3. `git checkout main && git pull --ff-only`
+4. `docker compose up -d --build --pull never`
+5. health check `http://127.0.0.1:3000/v1/health`
 
-## 5. Manual operations
+## 5. End-to-end flow (local fix -> auto deploy)
+
+1. fix code locally
+2. run local checks (`pnpm lint`, `pnpm build`)
+3. push to feature branch
+4. merge into `main`
+5. `CI` runs and must pass
+6. `Deploy` runs automatically
+7. verify online (`https://luylu.online`)
+
+Recommended repo settings:
+- protect `main`
+- require `CI` status check before merge
+
+## 6. Manual operations
 
 Update:
 
@@ -84,7 +104,7 @@ git checkout <old_commit_sha>
 docker compose up -d --build
 ```
 
-## 6. Optional reverse proxy
+## 7. Optional reverse proxy
 
 Expose the app at `127.0.0.1:3000` behind Nginx/Caddy.
 Use `/v1/health` for liveness/readiness probes.
