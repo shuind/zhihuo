@@ -1,4 +1,4 @@
-FROM node:20-bookworm-slim AS base
+﻿FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS base
 
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
@@ -33,3 +33,4 @@ COPY --from=builder /app/next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
 CMD ["pnpm", "start"]
+
