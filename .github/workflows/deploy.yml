@@ -1,4 +1,4 @@
-name: Deploy
+﻿name: Deploy
 
 on:
   workflow_run:
@@ -33,7 +33,8 @@ jobs:
             test -f .env.production
             git fetch --all --prune
             git checkout main
-            git pull --ff-only
+            git reset --hard origin/main
+            git clean -fd
             docker compose up -d --build --pull never
             docker compose ps
             for i in {1..30}; do
