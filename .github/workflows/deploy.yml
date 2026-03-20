@@ -72,6 +72,13 @@ jobs:
             cd ${{ secrets.DEPLOY_PATH }}
             test -f docker-compose.yml
             test -f .env.production
+            cat > .npmrc <<'EOF'
+            registry=https://registry.npmmirror.com
+            fetch-retries=5
+            fetch-retry-mintimeout=20000
+            fetch-retry-maxtimeout=120000
+            network-timeout=600000
+            EOF
             docker compose up -d --build --pull never
             docker compose ps
             for i in {1..30}; do

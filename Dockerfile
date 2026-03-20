@@ -1,12 +1,15 @@
-﻿FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS base
+FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS base
 
+ARG NPM_REGISTRY=https://registry.npmmirror.com
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
+ENV NPM_CONFIG_REGISTRY=$NPM_REGISTRY
 RUN corepack enable
 
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
+RUN pnpm config set registry "$NPM_CONFIG_REGISTRY"
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -21,6 +24,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY package.json pnpm-lock.yaml ./
+RUN pnpm config set registry "$NPM_CONFIG_REGISTRY"
 RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=builder /app/.next ./.next
@@ -33,4 +37,3 @@ COPY --from=builder /app/next.config.mjs ./next.config.mjs
 
 EXPOSE 3000
 CMD ["pnpm", "start"]
-
