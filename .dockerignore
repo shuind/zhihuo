@@ -1,0 +1,16 @@
+node_modules
+.next
+.git
+.github
+data
+dev-err.log
+dev-out.log
+start-err.log
+start-out.log
+tmp-dev-err.log
+tmp-dev-out.log
+*.log
+*.tsbuildinfo
+.env
+.env.*
+!.env.production.example

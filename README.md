@@ -69,7 +69,7 @@ pnpm dev
 
 ### Time
 - `POST /v1/doubts`
-- `GET /v1/doubts?range=week|month|all&include_archived=true|false`
+- `GET /v1/doubts?range=week|month|all`
 - `GET /v1/doubts/{id}`
 - `POST /v1/doubts/{id}/archive`
 - `POST /v1/doubts/{id}/delete`
@@ -83,7 +83,7 @@ pnpm dev
 - `POST /v1/thinking/spaces/{space_id}/questions`
 - `POST /v1/thinking/spaces/{space_id}/organize-preview`
 - `POST /v1/thinking/spaces/{space_id}/organize-apply`
-- `POST /v1/thinking/spaces/{space_id}/freeze`
+- `POST /v1/thinking/spaces/{space_id}/write-to-time`
 - `POST /v1/thinking/spaces/{space_id}/status`
 - `POST /v1/thinking/spaces/{space_id}/delete`
 - `POST /v1/thinking/spaces/{space_id}/track-direction`

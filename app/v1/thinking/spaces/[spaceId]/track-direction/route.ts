@@ -26,6 +26,7 @@ export const POST = withApiRoute(
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
     const body = await parseJsonBody<{ track_id?: string; direction_hint?: string | null }>(request);
     if (!body || typeof body.track_id !== "string") return errorJson(400, "缺少 track_id");
+    const trackIdInput = body.track_id;
 
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
@@ -37,13 +38,7 @@ export const POST = withApiRoute(
     if (normalizedHint === false) return errorJson(400, "方向提示无效");
 
     await updateDb((db) => {
-      const result = updateTrackDirectionHint(
-        db,
-        userId,
-        params.spaceId,
-        body.track_id as string,
-        normalizedHint
-      );
+      const result = updateTrackDirectionHint(db, userId, params.spaceId, trackIdInput, normalizedHint);
       kind = result.kind;
       if (result.kind === "ok") {
         trackId = result.track_id;

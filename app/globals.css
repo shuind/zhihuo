@@ -21,11 +21,20 @@
   --input: 220 20% 20%;
   --ring: 220 42% 70%;
   --radius: 0.75rem;
-  --life-axis-x: 42%;
-  --life-axis-width: 1.5px;
-  --life-node-size: 8px;
-  --life-letter-surface: rgba(226, 232, 240, 0.03);
-  --life-beat: 600ms;
+  --time-bg: #020203;
+  --time-bg-elevated: rgba(7, 7, 9, 0.92);
+  --time-bg-panel: rgba(8, 8, 10, 0.72);
+  --time-bg-soft: rgba(255, 255, 255, 0.01);
+  --time-border: rgba(255, 255, 255, 0.026);
+  --time-divider: rgba(255, 255, 255, 0.04);
+  --time-text-strong: rgba(232, 227, 218, 0.88);
+  --time-text: rgba(208, 202, 192, 0.64);
+  --time-text-soft: rgba(176, 170, 160, 0.36);
+  --time-accent: rgba(188, 151, 94, 0.76);
+  --time-accent-soft: rgba(188, 151, 94, 0.08);
+  --time-focus: rgba(188, 151, 94, 0.08);
+  --time-serif: var(--font-time-serif), "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
+  --time-sans: var(--font-time-serif), "Noto Serif SC", "Source Han Serif SC", "STSong", serif;
 }
 
 * {
@@ -41,7 +50,14 @@ body {
 
 body {
   @apply bg-background text-foreground antialiased;
-  font-family: "IBM Plex Sans", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+
+.time-serif {
+  font-family: var(--time-serif);
+}
+
+.time-sans {
+  font-family: var(--time-sans);
 }
 
 .time-bg {
@@ -88,8 +104,7 @@ body {
 
 .life-surface {
   background:
-    radial-gradient(120% 90% at 50% 60%, rgba(19, 30, 54, 0.34), transparent 68%),
-    radial-gradient(140% 140% at 50% 50%, #040913, #020307 56%, #010206 100%);
+    linear-gradient(180deg, #020203 0%, #030304 48%, #020203 100%);
 }
 
 .thinking-surface {
@@ -104,22 +119,127 @@ body {
     radial-gradient(140% 100% at 20% 0%, rgba(255, 255, 255, 0.7), transparent 60%);
 }
 
-.life-grain {
-  opacity: 0.06;
-  background-image:
-    radial-gradient(circle at 15% 16%, rgba(255, 255, 255, 0.07) 0 1px, transparent 1px),
-    radial-gradient(circle at 82% 74%, rgba(255, 255, 255, 0.05) 0 1px, transparent 1px),
-    radial-gradient(circle at 35% 63%, rgba(255, 255, 255, 0.04) 0 1px, transparent 1px);
-  background-size: 18px 18px, 21px 21px, 25px 25px;
+.time-panel {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
-.life-star {
-  animation: twinkle 9s ease-in-out infinite;
+.time-panel-soft {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
-.life-scroll {
+.time-detail-shell {
+  background:
+    linear-gradient(180deg, rgba(8, 8, 10, 0.94), rgba(5, 5, 7, 0.96));
+  border-left: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 1px 0 0 rgba(255, 255, 255, 0.02);
+  backdrop-filter: blur(4px);
+}
+
+.time-sheet {
+  background: linear-gradient(180deg, rgba(5, 5, 7, 0.98), rgba(3, 3, 4, 0.98));
+}
+
+.time-divider {
+  border-color: var(--time-divider);
+}
+
+.time-input-shell {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+  background: transparent;
+  transition:
+    transform 240ms ease,
+    box-shadow 240ms ease,
+    border-color 240ms ease,
+    background-color 240ms ease;
+}
+
+.time-input-shell:focus-within {
+  transform: scale(1.002);
+  border-color: rgba(188, 151, 94, 0.2);
+  box-shadow:
+    0 10px 24px rgba(188, 151, 94, 0.035);
+  background: radial-gradient(circle at 50% 50%, rgba(188, 151, 94, 0.02), transparent 72%);
+}
+
+.time-list-mask {
   scroll-behavior: smooth;
   overscroll-behavior: contain;
+  scrollbar-width: none;
+}
+
+.time-status-dot {
+  position: relative;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(160, 152, 145, 0.56);
+  box-shadow: none;
+}
+
+.time-status-dot::after {
+  content: "";
+  position: absolute;
+  inset: -4px;
+  border-radius: inherit;
+  border: 1px solid transparent;
+  opacity: 0;
+}
+
+.time-status-dot--active {
+  background: var(--time-accent);
+  animation: breath 4.4s ease-in-out infinite;
+}
+
+.time-status-dot--active::after {
+  border-color: rgba(188, 151, 94, 0.08);
+  opacity: 1;
+  animation: pulse-ring 4.4s ease-in-out infinite;
+}
+
+.time-status-dot--muted {
+  background: rgba(144, 140, 136, 0.34);
+}
+
+.time-detail-scroll {
+  scrollbar-width: none;
+}
+
+.time-list-mask::-webkit-scrollbar,
+.time-detail-scroll::-webkit-scrollbar {
+  width: 0;
+  height: 0;
+}
+
+.time-subtle-button {
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  background: rgba(255, 255, 255, 0.018);
+  color: var(--time-text);
+  transition:
+    background-color 180ms ease,
+    border-color 180ms ease,
+    color 180ms ease,
+    transform 180ms ease;
+}
+
+.time-subtle-button:hover {
+  border-color: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--time-text-strong);
+}
+
+.time-subtle-button:active {
+  transform: translateY(1px);
+}
+
+.time-quiet-rule {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.04), transparent);
 }
 
 .life-clamp-1 {
@@ -143,10 +263,24 @@ body {
 @keyframes breath {
   0%,
   100% {
-    opacity: 0.55;
+    opacity: 0.68;
+    transform: scale(0.98);
   }
   50% {
-    opacity: 0.72;
+    opacity: 0.84;
+    transform: scale(1);
+  }
+}
+
+@keyframes pulse-ring {
+  0%,
+  100% {
+    transform: scale(0.94);
+    opacity: 0.24;
+  }
+  50% {
+    transform: scale(1.08);
+    opacity: 0.46;
   }
 }
 

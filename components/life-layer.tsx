@@ -1,221 +1,164 @@
-﻿"use client";
+"use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction, type WheelEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import {
   type LifeDoubt,
-  type LifeRange,
   type LifeStore,
   type OpeningPhase,
   type StarDot,
   collapseWhitespace,
-  formatDateTime,
-  isOlderThanOneYear,
-  pickPlaybackRoute,
-  sleep
+  formatDateTimeInTimeZone,
+  getDateKeyInTimeZone,
+  isOlderThanOneYear
 } from "@/components/zhihuo-model";
 
+type ThinkingProgress = {
+  spaceId: string;
+  status: "active" | "hidden";
+  freezeNote: string | null;
+  milestonePreviews: string[];
+  reentry: {
+    questionEntry: { spaceId: string; rootQuestionText: string } | null;
+    freezeEntry: {
+      spaceId: string;
+      trackId: string | null;
+      nodeId: string | null;
+      preview: string | null;
+      freezeNote: string | null;
+      frozenAt: string | null;
+    } | null;
+    milestoneEntries: Array<{ spaceId: string; trackId: string | null; nodeId: string | null; preview: string | null }>;
+  };
+};
+
 type DateGroup = {
-  dateKey: string;
+  key: string;
+  label: string;
   items: LifeDoubt[];
 };
 
-const LIFE_TOKENS = {
-  axisX: "42%",
-  axisWidthPx: 1.5,
-  nodeSizePx: 8,
-  sameDayGapPx: 12,
-  groupGapMinPx: 36,
-  groupGapMaxPx: 56,
-  readableCount: 2
-} as const;
+type LinkedSpacePreview = {
+  spaceId: string;
+  title: string;
+  firstNode: string;
+  lastNode: string;
+};
 
-const LIFE_MOTION = {
-  beat: 600,
-  fade: 360,
-  expand: 860,
-  dim: 400,
-  settle: 600,
-  archiveSink: 840,
-  wheelDampingMin: 420
-} as const;
-
-const LIFE_EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
+const EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
 
 export function LifeLayer(props: {
   store: LifeStore;
   setStore: Dispatch<SetStateAction<LifeStore>>;
+  timezone: string;
+  linkedSpacePreview: LinkedSpacePreview | null;
   ready: boolean;
   openingPhase: OpeningPhase;
   stars: StarDot[];
-  thinkingProgressByDoubt: Record<
-    string,
-    {
-      spaceId: string;
-      status: "active" | "frozen" | "archived";
-      freezeNote: string | null;
-      milestonePreviews: string[];
-      reentry: {
-        questionEntry: { spaceId: string; rootQuestionText: string } | null;
-        freezeEntry: {
-          spaceId: string;
-          trackId: string | null;
-          nodeId: string | null;
-          preview: string | null;
-          freezeNote: string | null;
-          frozenAt: string | null;
-        } | null;
-        milestoneEntries: Array<{ spaceId: string; trackId: string | null; nodeId: string | null; preview: string | null }>;
-      };
-    }
-  >;
-  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null }) => void;
+  thinkingProgressByDoubt: Record<string, ThinkingProgress>;
+  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
   onImportToThinking: (doubt: LifeDoubt) => void;
   onCreateDoubt: (rawText: string) => Promise<boolean>;
-  onArchiveDoubt: (doubtId: string) => Promise<boolean>;
   onSaveDoubtNote: (doubtId: string, noteText: string) => Promise<boolean>;
   onDeleteDoubt: (doubtId: string) => Promise<boolean>;
   showNotice: (message: string) => void;
 }) {
   const [inputValue, setInputValue] = useState("");
-  const [range, setRange] = useState<LifeRange>("month");
-  const [showArchived, setShowArchived] = useState(false);
-  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
-  const [detailId, setDetailId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [selectedDoubtId, setSelectedDoubtId] = useState<string | null>(null);
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [ritualVisible, setRitualVisible] = useState(false);
-  const [playbackRunning, setPlaybackRunning] = useState(false);
-  const [playbackHighlightId, setPlaybackHighlightId] = useState<string | null>(null);
-  const [expandedId, setExpandedId] = useState<string | null>(null);
-  const [hoveredId, setHoveredId] = useState<string | null>(null);
-  const [archivingId, setArchivingId] = useState<string | null>(null);
-  const [scrollTop, setScrollTop] = useState(0);
-  const [viewportHeight, setViewportHeight] = useState(0);
-  const [dangerMenuId, setDangerMenuId] = useState<string | null>(null);
+  const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [isMobile, setIsMobile] = useState(false);
+  const [fieldFocused, setFieldFocused] = useState(false);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  const listViewportRef = useRef<HTMLDivElement | null>(null);
-  const rowRefs = useRef<Record<string, HTMLLIElement | null>>({});
+  const searchRef = useRef<HTMLInputElement | null>(null);
   const ritualTimerRef = useRef<number | null>(null);
-  const archiveTimerRef = useRef<number | null>(null);
-  const playbackStartedRef = useRef(false);
-  const wheelMotionRef = useRef<{ rafId: number | null; target: number; current: number; startedAt: number }>({
-    rafId: null,
-    target: 0,
-    current: 0,
-    startedAt: 0
-  });
+  const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const allDoubts = useMemo(
     () =>
       [...props.store.doubts]
-        .filter((item) => !item.deletedAt)
+        .filter((item) => !item.deletedAt && !item.archivedAt)
         .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()),
     [props.store.doubts]
   );
-  const activeDoubts = useMemo(() => allDoubts.filter((item) => !item.archivedAt), [allDoubts]);
-  const archivedDoubts = useMemo(() => allDoubts.filter((item) => Boolean(item.archivedAt)), [allDoubts]);
-
-  const filteredDoubts = useMemo(() => {
-    const base = showArchived ? archivedDoubts : activeDoubts;
-    if (range === "all") return base;
-    const now = Date.now();
-    const span = range === "week" ? 7 * 24 * 60 * 60 * 1000 : 30 * 24 * 60 * 60 * 1000;
-    return base.filter((item) => now - new Date(item.createdAt).getTime() <= span);
-  }, [activeDoubts, archivedDoubts, range, showArchived]);
 
   const notesMap = useMemo(() => {
     const map = new Map<string, string>();
-    for (const note of props.store.notes) {
-      map.set(note.doubtId, note.noteText);
-    }
+    for (const note of props.store.notes) map.set(note.doubtId, note.noteText);
     return map;
   }, [props.store.notes]);
 
-  const detailDoubt = useMemo(() => allDoubts.find((item) => item.id === detailId) ?? null, [allDoubts, detailId]);
+  const selectedDoubt = useMemo(() => allDoubts.find((item) => item.id === selectedDoubtId) ?? null, [allDoubts, selectedDoubtId]);
+  const isSplitView = Boolean(selectedDoubt);
+  const normalizedSearch = useMemo(() => collapseWhitespace(searchQuery).toLocaleLowerCase(), [searchQuery]);
+
+  const filteredDoubts = useMemo(() => {
+    if (!normalizedSearch) return allDoubts;
+    return allDoubts.filter((item) => item.rawText.toLocaleLowerCase().includes(normalizedSearch) || item.id === selectedDoubtId);
+  }, [allDoubts, normalizedSearch, selectedDoubtId]);
 
   const groupedTimeline = useMemo<DateGroup[]>(() => {
     const groups: DateGroup[] = [];
     for (const item of filteredDoubts) {
-      const dateKey = formatAxisDate(item.createdAt);
-      const last = groups[groups.length - 1];
-      if (last && last.dateKey === dateKey) {
-        last.items.push(item);
-      } else {
-        groups.push({ dateKey, items: [item] });
-      }
+      const key = getDateKeyInTimeZone(item.createdAt, props.timezone);
+      const previous = groups[groups.length - 1];
+      if (previous && previous.key === key) previous.items.push(item);
+      else groups.push({ key, label: formatGroupLabel(key, props.timezone), items: [item] });
     }
     return groups;
-  }, [filteredDoubts]);
+  }, [filteredDoubts, props.timezone]);
 
-  const idToDateMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const group of groupedTimeline) {
-      for (const item of group.items) {
-        map.set(item.id, group.dateKey);
-      }
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const media = window.matchMedia("(max-width: 767px)");
+    const sync = () => setIsMobile(media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!selectedDoubtId) return;
+    if (allDoubts.some((item) => item.id === selectedDoubtId)) return;
+    setSelectedDoubtId(null);
+    setSearchQuery("");
+    setMobileDetailOpen(false);
+  }, [allDoubts, selectedDoubtId]);
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileDetailOpen(false);
+      return;
     }
-    return map;
-  }, [groupedTimeline]);
+    if (selectedDoubtId) setMobileDetailOpen(true);
+  }, [isMobile, selectedDoubtId]);
 
-  const hoveredDateKey = hoveredId ? idToDateMap.get(hoveredId) ?? null : null;
-  const playbackDateKey = playbackHighlightId ? idToDateMap.get(playbackHighlightId) ?? null : null;
+  useEffect(() => {
+    if (!selectedDoubtId) {
+      composerRef.current?.focus();
+      return;
+    }
+    rowRefs.current[selectedDoubtId]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    searchRef.current?.focus();
+  }, [selectedDoubtId]);
 
-  const readableSet = useMemo(() => {
-    if (!filteredDoubts.length) return new Set<string>();
-    if (expandedId) return new Set([expandedId]);
-    if (playbackRunning && playbackHighlightId) return new Set([playbackHighlightId]);
-
-    const center = scrollTop + (viewportHeight || 1) * 0.44;
-    const ranked = filteredDoubts
-      .map((item) => {
-        const node = rowRefs.current[item.id];
-        const y = node ? node.offsetTop + node.clientHeight * 0.5 : 0;
-        return { id: item.id, dist: Math.abs(y - center) };
-      })
-      .sort((a, b) => a.dist - b.dist);
-
-    return new Set(ranked.slice(0, LIFE_TOKENS.readableCount).map((item) => item.id));
-  }, [expandedId, filteredDoubts, playbackHighlightId, playbackRunning, scrollTop, viewportHeight]);
-
-  const toggleArchive = useCallback(
-    async (id: string) => {
-      const target = allDoubts.find((item) => item.id === id);
-      if (!target) return false;
-      setMenuOpenId(null);
-      setDangerMenuId(null);
-
-      if (target.archivedAt || showArchived) {
-        return props.onArchiveDoubt(id);
-      }
-
-      setArchivingId(id);
-      if (archiveTimerRef.current) window.clearTimeout(archiveTimerRef.current);
-      return await new Promise<boolean>((resolve) => {
-        archiveTimerRef.current = window.setTimeout(() => {
-          void (async () => {
-            const ok = await props.onArchiveDoubt(id);
-            setArchivingId((prev) => (prev === id ? null : prev));
-            archiveTimerRef.current = null;
-            resolve(ok);
-          })();
-        }, LIFE_MOTION.archiveSink);
-      });
-    },
-    [allDoubts, props, showArchived]
-  );
+  useEffect(() => {
+    const timer = ritualTimerRef;
+    return () => {
+      if (timer.current) window.clearTimeout(timer.current);
+    };
+  }, []);
 
   const saveLifeNote = useCallback(
-    async (doubtId: string, noteText: string) => {
-      const normalized = collapseWhitespace(noteText).slice(0, 42);
-      return props.onSaveDoubtNote(doubtId, normalized);
-    },
+    async (doubtId: string, noteText: string) => props.onSaveDoubtNote(doubtId, collapseWhitespace(noteText).slice(0, 42)),
     [props]
   );
 
@@ -230,418 +173,178 @@ export function LifeLayer(props: {
     ritualTimerRef.current = window.setTimeout(() => {
       setRitualVisible(false);
       ritualTimerRef.current = null;
-    }, 1200);
+    }, 1400);
   }, [inputValue, props]);
 
-  const runAutoPlayback = useCallback(async (source: LifeDoubt[]) => {
-    if (!source.length) return;
-    setPlaybackRunning(true);
-    setPlaybackHighlightId(null);
-    const ascending = [...source].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-    const route = pickPlaybackRoute(ascending);
-    for (let i = 0; i < route.length; i += 1) {
-      const doubt = route[i];
-      setPlaybackHighlightId(doubt.id);
-      rowRefs.current[doubt.id]?.scrollIntoView({ behavior: "smooth", block: "center" });
-      if (i === 0) await sleep(1500);
-      else if (i === route.length - 1) await sleep(1300);
-      else await sleep(1200);
-    }
-    setPlaybackHighlightId(null);
-    setPlaybackRunning(false);
-  }, []);
-
-  useEffect(() => {
-    if (!props.ready || playbackStartedRef.current || props.store.meta.twelvePlaybackSeen) return;
-    if (activeDoubts.length < 12) return;
-    playbackStartedRef.current = true;
-    props.setStore((prev) => ({ ...prev, meta: { ...prev.meta, twelvePlaybackSeen: true } }));
-    void runAutoPlayback(activeDoubts);
-  }, [activeDoubts, props, runAutoPlayback]);
-
-  useEffect(() => {
-    const ritualTimer = ritualTimerRef;
-    const archiveTimer = archiveTimerRef;
-    const wheelMotion = wheelMotionRef;
-    return () => {
-      if (ritualTimer.current) {
-        window.clearTimeout(ritualTimer.current);
-      }
-      if (archiveTimer.current) {
-        window.clearTimeout(archiveTimer.current);
-      }
-      if (wheelMotion.current.rafId) {
-        window.cancelAnimationFrame(wheelMotion.current.rafId);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    const sync = () => {
-      const h = listViewportRef.current?.clientHeight ?? 0;
-      setViewportHeight(h);
-    };
-    sync();
-    window.addEventListener("resize", sync);
-    return () => window.removeEventListener("resize", sync);
-  }, []);
-
-  useEffect(() => {
-    if (!expandedId) return;
-    if (!filteredDoubts.some((item) => item.id === expandedId)) setExpandedId(null);
-  }, [expandedId, filteredDoubts]);
-
-  const animateWheelScroll = useCallback((timestamp: number) => {
-    const viewport = listViewportRef.current;
-    if (!viewport) {
-      wheelMotionRef.current.rafId = null;
-      return;
-    }
-    const state = wheelMotionRef.current;
-    state.current += (state.target - state.current) * 0.16;
-    viewport.scrollTop = state.current;
-    const settled = Math.abs(state.target - state.current) <= 0.6;
-    const elapsed = timestamp - state.startedAt;
-    if (settled && elapsed >= LIFE_MOTION.wheelDampingMin) {
-      viewport.scrollTop = state.target;
-      state.current = state.target;
-      state.rafId = null;
-      return;
-    }
-    state.rafId = window.requestAnimationFrame(animateWheelScroll);
-  }, []);
-
-  const handleDampedWheel = useCallback(
-    (event: WheelEvent<HTMLDivElement>) => {
-      const viewport = listViewportRef.current;
-      if (!viewport) return;
-      event.preventDefault();
-
-      const state = wheelMotionRef.current;
-      const maxScroll = Math.max(0, viewport.scrollHeight - viewport.clientHeight);
-      if (!state.rafId) {
-        state.current = viewport.scrollTop;
-        state.target = viewport.scrollTop;
-      }
-      state.target = Math.max(0, Math.min(maxScroll, state.target + event.deltaY));
-      state.startedAt = performance.now();
-      if (!state.rafId) {
-        state.rafId = window.requestAnimationFrame(animateWheelScroll);
-      }
+  const handleSelect = useCallback(
+    (doubtId: string) => {
+      setSelectedDoubtId(doubtId);
+      if (isMobile) setMobileDetailOpen(true);
     },
-    [animateWheelScroll]
+    [isMobile]
   );
 
+  const closeDetail = useCallback(() => {
+    setSelectedDoubtId(null);
+    setSearchQuery("");
+    setMobileDetailOpen(false);
+  }, []);
+
+  const selectedProgress = selectedDoubt ? props.thinkingProgressByDoubt[selectedDoubt.id] ?? null : null;
+  const matchedCount = normalizedSearch
+    ? allDoubts.filter((item) => item.rawText.toLocaleLowerCase().includes(normalizedSearch)).length
+    : allDoubts.length;
+
   return (
-    <div className="relative h-full overflow-hidden px-4 pb-6 pt-4 md:px-8">
-      <div className="life-grain pointer-events-none absolute inset-0 z-0" />
-      <div className="pointer-events-none absolute inset-x-0 top-0 z-0 h-56 bg-gradient-to-b from-sky-700/10 to-transparent" />
+    <div className="time-serif relative h-full overflow-hidden" data-life-layout="true">
+      <div className="pointer-events-none absolute inset-0 life-surface" />
+      <div className="pointer-events-none absolute inset-0 opacity-60">
+        <div className="grain absolute inset-0 opacity-[0.022]" />
+      </div>
 
-      <div className="relative z-10 mx-auto flex h-full w-full max-w-5xl flex-col gap-4">
-        <section className="relative rounded-2xl border border-slate-300/12 bg-slate-950/45 p-4 shadow-[0_18px_46px_rgba(1,7,16,0.45)] backdrop-blur">
-          <div className="mb-3 flex min-h-[20px] items-center justify-between gap-3">
-            <p className="text-xs tracking-[0.2em] text-slate-300/86">时间档案馆</p>
-            <p className="text-xs text-slate-400/70">只记录时间，不解释意义</p>
-          </div>
-          <Textarea
-            ref={composerRef}
-            value={inputValue}
-            maxLength={280}
-            placeholder="把此刻的疑问放进来"
-            className="min-h-[104px] resize-none rounded-xl border-slate-300/20 bg-slate-900/45 text-[15px] leading-[1.8] text-slate-100 placeholder:text-slate-400/60 focus-visible:ring-slate-300/40"
-            onChange={(event) => setInputValue(event.target.value)}
-            onKeyDown={(event) => (event.ctrlKey || event.metaKey) && event.key === "Enter" && void saveDoubt()}
-          />
-          <div className="mt-3 flex items-center justify-between gap-3">
-            <p className={cn("text-xs text-slate-200/40 transition-opacity duration-300", ritualVisible ? "opacity-100" : "opacity-0")}>
-              已存入时间。
-            </p>
-            <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-400/70">{inputValue.length}/280</span>
-              <Button
-                type="button"
-                className="rounded-full border border-slate-300/25 bg-slate-900/75 px-5 text-sm tracking-[0.08em] text-slate-100 hover:bg-slate-800/90"
-                onClick={() => void saveDoubt()}
-              >
-                放进去
-              </Button>
-            </div>
-          </div>
-        </section>
-
-        <section className="flex flex-wrap items-center gap-2">
-          <div className="inline-flex rounded-full border border-slate-300/12 bg-slate-950/35 p-1">
-            <RangeChip active={range === "week"} onClick={() => setRange("week")} label="近一周" />
-            <RangeChip active={range === "month"} onClick={() => setRange("month")} label="近一月" />
-            <RangeChip active={range === "all"} onClick={() => setRange("all")} label="全部" />
-          </div>
-          <RangeChip active={showArchived} onClick={() => setShowArchived((prev) => !prev)} label={showArchived ? "查看主视图" : "查看归档"} />
-          {playbackRunning ? <p className="ml-2 text-xs text-slate-300/60">时间回放中…</p> : null}
-        </section>
-
-        <section
-          className={cn(
-            "relative overflow-hidden rounded-2xl border border-slate-300/10 bg-slate-950/24 p-3 md:p-4",
-            expandedId ? "bg-slate-950/30" : "",
-            filteredDoubts.length === 0 ? "h-[48vh]" : "min-h-0 flex-1"
-          )}
+      <div className="relative z-10 flex h-full min-h-0">
+        <motion.div
+          className="flex min-h-0 flex-1 flex-col"
+          animate={{ width: !isMobile && selectedDoubt ? "60%" : "100%" }}
+          transition={{ duration: 0.5, ease: [0.32, 0.72, 0, 1] }}
         >
-          <div
-            className={cn("pointer-events-none absolute inset-0 z-[6] bg-black/5 opacity-0", expandedId ? "opacity-100" : "opacity-0")}
-            style={{ transitionDuration: `${LIFE_MOTION.dim}ms`, transitionTimingFunction: "cubic-bezier(0.24, 0.61, 0.35, 1)" }}
-          />
-          <div
-            ref={listViewportRef}
-            className="life-scroll relative z-[8] h-full overflow-y-auto pr-1"
-            onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-            onWheel={handleDampedWheel}
-          >
-            {filteredDoubts.length === 0 ? (
-              <EmptyTimelineState showArchived={showArchived} />
-            ) : (
-              <ol className="relative mx-auto w-full max-w-5xl pb-20 pt-4">
-                <span
-                  className="pointer-events-none absolute bottom-0 top-0 -translate-x-1/2 bg-gradient-to-b from-transparent via-slate-300/25 to-transparent"
-                  style={{ left: LIFE_TOKENS.axisX, width: `${LIFE_TOKENS.axisWidthPx}px` }}
-                />
-                {groupedTimeline.map((group, groupIndex) => {
-                  const first = group.items[0];
-                  const prevGroupLast = groupIndex > 0 ? groupedTimeline[groupIndex - 1].items.at(-1) ?? null : null;
-                  const groupGap = resolveTimelineGroupGap(prevGroupLast, first);
-                  const nodeActive = group.dateKey === hoveredDateKey || group.dateKey === playbackDateKey;
+          <header className="sticky top-0 z-10 bg-[rgba(2,2,3,0.82)] backdrop-blur-xl" data-life-hero="true">
+            <div className="mx-auto w-full max-w-2xl px-8 lg:px-12">
+              <div className="flex items-end justify-between pb-8 pt-16">
+                <div className="space-y-2">
+                  <h1 className="time-serif text-xl font-light tracking-[0.2em] text-[var(--time-text-strong)]">{"\u65F6\u95F4\u6863\u6848\u9986"}</h1>
+                  <p className="text-xs tracking-[0.18em] text-[var(--time-text-soft)]">
+                    {allDoubts.length}
+                    {" \u4E2A\u95EE\u9898\u5728\u6B64\u6C89\u6DC0"}
+                  </p>
+                </div>
+                <div className="flex items-center gap-1.5 opacity-40" aria-hidden="true">
+                  <span className="h-1 w-1 rounded-full bg-[var(--time-accent)]/55" />
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--time-accent)]/70" />
+                  <span className="h-1 w-1 rounded-full bg-[var(--time-accent)]/55" />
+                </div>
+              </div>
 
-                  return (
-                    <li key={group.dateKey} style={{ marginTop: groupGap }} className="relative">
-                      <div className="relative min-h-[22px]">
-                        <span
-                          className={cn(
-                            "absolute top-[7px] -translate-x-1/2 rounded-full border transition-colors",
-                            nodeActive ? "border-slate-200/65 bg-slate-200/45" : "border-slate-300/45 bg-slate-300/22"
-                          )}
-                          style={{
-                            left: LIFE_TOKENS.axisX,
-                            width: `${LIFE_TOKENS.nodeSizePx}px`,
-                            height: `${LIFE_TOKENS.nodeSizePx}px`,
-                            transitionDuration: `${LIFE_MOTION.fade}ms`,
-                            transitionTimingFunction: "cubic-bezier(0.24, 0.61, 0.35, 1)"
-                          }}
-                        />
-                        <p className="pl-[calc(42%+1rem)] text-[11px] tracking-[0.16em] text-slate-300/64">{group.dateKey}</p>
+              <div className="pb-10" data-life-input-mode={isSplitView ? "search" : "compose"}>
+                <div className={cn("time-input-shell relative max-w-[42rem] transition-all duration-500", fieldFocused ? "scale-[1.006]" : "")}>
+                  <div
+                    className="absolute -inset-3 rounded-[1.25rem] bg-white/[0.024] opacity-0 transition-opacity duration-500"
+                    style={{ opacity: fieldFocused ? 1 : 0 }}
+                  />
+                  {!isSplitView ? (
+                    <div className="relative">
+                      <Textarea
+                        ref={composerRef}
+                        value={inputValue}
+                        maxLength={280}
+                        placeholder={"\u6B64\u523B\uFF0C\u5728\u60F3\u4EC0\u4E48..."}
+                        data-life-composer="true"
+                        className="min-h-[2.6rem] w-full resize-none border-0 bg-transparent px-0 py-0 text-[1.06rem] font-light leading-[1.95] tracking-[0.04em] text-[var(--time-text-strong)] shadow-none ring-0 placeholder:text-[var(--time-text-soft)] focus-visible:ring-0"
+                        onChange={(event) => setInputValue(event.target.value)}
+                        onFocus={() => setFieldFocused(true)}
+                        onBlur={() => setFieldFocused(false)}
+                        onKeyDown={(event) => {
+                          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void saveDoubt();
+                        }}
+                      />
+                      <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
+                        <p className={cn("transition-opacity duration-300", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
+                        <div className="flex items-center gap-3">
+                          <span className={cn("transition-opacity", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
+                          <Button type="button" variant="ghost" className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={() => void saveDoubt()}>
+                            {"\u5B58\u5165\u6B64\u523B"}
+                          </Button>
+                        </div>
                       </div>
+                    </div>
+                  ) : (
+                    <div className="relative">
+                      <div className="flex items-center gap-3">
+                        <span className="text-[11px] tracking-[0.22em] text-[var(--time-text-soft)]">{"\u68C0\u7D22"}</span>
+                        <input
+                          ref={searchRef}
+                          value={searchQuery}
+                          data-life-search="true"
+                          placeholder={"\u641C\u7D22\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41\u91CC\u7684\u95EE\u9898"}
+                          className="h-10 flex-1 border-0 bg-transparent px-0 text-[0.98rem] font-light tracking-[0.06em] text-[var(--time-text-strong)] outline-none placeholder:text-[var(--time-text-soft)]"
+                          onChange={(event) => setSearchQuery(event.target.value)}
+                          onFocus={() => setFieldFocused(true)}
+                          onBlur={() => setFieldFocused(false)}
+                        />
+                        <Button type="button" variant="ghost" className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={closeDetail}>
+                          {"\u9000\u51FA\u7EC6\u8BFB"}
+                        </Button>
+                      </div>
+                      <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
+                        <span>{normalizedSearch ? `\u5339\u914D\u5230 ${matchedCount} \u6761\u95EE\u9898` : "\u6CBF\u65F6\u95F4\u68C0\u7D22"}</span>
+                        <span>{groupedTimeline.reduce((sum, group) => sum + group.items.length, 0)} {"\u6761"}</span>
+                      </div>
+                    </div>
+                  )}
+                  <motion.div className="mt-3 h-px bg-gradient-to-r from-transparent via-white/18 to-transparent" animate={{ opacity: fieldFocused ? 0.82 : 0.3 }} transition={{ duration: 0.3 }} />
+                </div>
+              </div>
+            </div>
+          </header>
 
-                      <ul className="space-y-3 pl-[calc(42%+1rem)] pr-1 md:pr-10" style={{ rowGap: `${LIFE_TOKENS.sameDayGapPx}px` }}>
-                        {group.items.map((item) => {
-                          const note = notesMap.get(item.id);
-                          const progress = props.thinkingProgressByDoubt[item.id];
-                          const playbackFocus = playbackHighlightId === item.id;
-                          const expanded = expandedId === item.id;
-                          const readable = readableSet.has(item.id);
-                          const primaryFocus = playbackFocus || expanded || (!expandedId && readable);
-                          const secondaryFocus = !expandedId && !primaryFocus && hoveredId === item.id;
-                          const receding = !primaryFocus && !secondaryFocus;
-                          const archiving = archivingId === item.id;
+          <main className="time-list-mask flex-1 overflow-y-auto">
+            <div className="mx-auto w-full max-w-2xl px-8 pb-32 lg:px-12" data-life-timeline="true">
+              {filteredDoubts.length === 0 ? (
+                <EmptyTimelineState hasSearch={Boolean(normalizedSearch)} />
+              ) : (
+                <div className="space-y-16">
+                  {groupedTimeline.map((group) => (
+                    <TimeClusterGroup
+                      key={group.key}
+                      label={group.label}
+                      count={group.items.length}
+                      items={group.items}
+                      selectedId={selectedDoubtId}
+                      notesMap={notesMap}
+                      progressByDoubt={props.thinkingProgressByDoubt}
+                      rowRefs={rowRefs}
+                      onSelect={handleSelect}
+                    />
+                  ))}
+                </div>
+              )}
+            </div>
+          </main>
+        </motion.div>
 
-                          return (
-                            <li
-                              key={item.id}
-                              ref={(node) => {
-                                rowRefs.current[item.id] = node;
-                              }}
-                              className="relative"
-                              onMouseEnter={() => setHoveredId(item.id)}
-                              onMouseLeave={() => setHoveredId((prev) => (prev === item.id ? null : prev))}
-                            >
-                              <article
-                                className={cn(
-                                  "cursor-pointer rounded-xl px-4 py-3 transition-[opacity,background-color,transform,filter]",
-                                  expanded ? "relative z-20 bg-slate-100/[0.042]" : "bg-slate-100/[0.028]",
-                                  receding ? "opacity-55 blur-[0.25px]" : secondaryFocus ? "opacity-70" : "opacity-100",
-                                  archiving ? "translate-y-2 brightness-90 opacity-40" : ""
-                                )}
-                                style={{
-                                  transitionDuration: expanded ? `${LIFE_MOTION.expand}ms` : `${LIFE_MOTION.fade}ms`,
-                                  transitionTimingFunction: "cubic-bezier(0.24, 0.61, 0.35, 1)"
-                                }}
-                                onClick={() => setExpandedId((prev) => (prev === item.id ? null : item.id))}
-                              >
-                                <div className="mb-2 flex items-center justify-between gap-2">
-                                  <p className="text-[11px] tracking-[0.08em] text-slate-400/74">
-                                    {formatDateTime(item.createdAt).slice(11)}
-                                    {item.archivedAt ? " · 已归档" : ""}
-                                  </p>
-                                  {progress ? (
-                                    <button
-                                      type="button"
-                                      className="rounded-full border border-slate-300/30 px-2 py-0.5 text-[10px] text-slate-300/80 hover:bg-slate-900/45"
-                                      onClick={(event) => {
-                                        event.stopPropagation();
-                                        props.onJumpToThinking({
-                                          spaceId: progress.spaceId,
-                                          mode: "root"
-                                        });
-                                      }}
-                                    >
-                                      已思考
-                                    </button>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    className="rounded-full px-2 py-0.5 text-xs text-slate-400/72 transition-colors hover:bg-slate-900/45 hover:text-slate-300/85"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      setMenuOpenId((prevOpen) => {
-                                        const next = prevOpen === item.id ? null : item.id;
-                                        if (next !== item.id) setDangerMenuId(null);
-                                        return next;
-                                      });
-                                    }}
-                                  >
-                                    ...
-                                  </button>
-                                </div>
-
-                                <p
-                                  className={cn(
-                                    "transition-[font-size,opacity,filter] duration-300",
-                                    expanded ? "life-clamp-none text-[19px] leading-[1.88] text-slate-100" : "",
-                                    primaryFocus && !expanded ? "life-clamp-2 text-[15px] leading-[1.8] text-slate-100/84" : "",
-                                    !primaryFocus && !expanded ? "life-clamp-1 text-[14px] leading-[1.72] text-slate-300/64" : ""
-                                  )}
-                                >
-                                  {item.rawText}
-                                </p>
-                                {note && primaryFocus ? (
-                                  <p
-                                    className={cn(
-                                      "mt-2 text-xs leading-[1.74] text-slate-300/55 transition-opacity",
-                                      expanded ? "opacity-100" : "opacity-80"
-                                    )}
-                                  >
-                                    注记：{note}
-                                  </p>
-                                ) : null}
-                                {expanded && progress ? (
-                                  <div className="mt-2 rounded-lg border border-slate-300/20 bg-slate-900/45 px-3 py-2 text-xs text-slate-300/78">
-                                    <p className="text-[11px] text-slate-300/72">{progress.status === "frozen" ? "这段思考停在这里" : "这段思考还在进行中"}</p>
-                                    {progress.freezeNote ? <p className="mt-1 line-clamp-2">上次停下时：{progress.freezeNote}</p> : null}
-                                    <div className="mt-2 border-t border-slate-300/10 pt-2">
-                                      <p className="text-[11px] text-slate-300/68">再次进入</p>
-                                      <div className="mt-2 flex flex-wrap gap-2">
-                                        {progress.reentry.questionEntry ? (
-                                          <button
-                                            type="button"
-                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              props.onJumpToThinking({
-                                                spaceId: progress.reentry.questionEntry?.spaceId ?? progress.spaceId,
-                                                mode: "root"
-                                              });
-                                            }}
-                                          >
-                                            从当时的问题进入
-                                          </button>
-                                        ) : null}
-                                        {progress.reentry.freezeEntry ? (
-                                          <button
-                                            type="button"
-                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              props.onJumpToThinking({
-                                                spaceId: progress.reentry.freezeEntry?.spaceId ?? progress.spaceId,
-                                                mode: "freeze",
-                                                trackId: progress.reentry.freezeEntry?.trackId ?? null,
-                                                nodeId: progress.reentry.freezeEntry?.nodeId ?? null
-                                              });
-                                            }}
-                                          >
-                                            从上次停下的地方进入
-                                          </button>
-                                        ) : null}
-                                        {progress.reentry.milestoneEntries.map((entry) => (
-                                          <button
-                                            key={`${entry.spaceId}:${entry.nodeId ?? entry.preview ?? "milestone"}`}
-                                            type="button"
-                                            className="rounded-full border border-slate-300/20 px-2.5 py-1 text-[11px] text-slate-200 transition-colors hover:bg-slate-900/60"
-                                            onClick={(event) => {
-                                              event.stopPropagation();
-                                              props.onJumpToThinking({
-                                                spaceId: entry.spaceId,
-                                                mode: "milestone",
-                                                trackId: entry.trackId,
-                                                nodeId: entry.nodeId
-                                              });
-                                            }}
-                                          >
-                                            {entry.preview ? `从关键节点进入 · ${entry.preview}` : "从关键节点进入"}
-                                          </button>
-                                        ))}
-                                      </div>
-                                    </div>
-                                  </div>
-                                ) : null}
-                              </article>
-
-                              <AnimatePresence>
-                                {menuOpenId === item.id ? (
-                                  <motion.div
-                                    initial={{ opacity: 0, y: -2 }}
-                                    animate={{ opacity: 1, y: 0 }}
-                                    exit={{ opacity: 0, y: -2 }}
-                                    transition={{ duration: LIFE_MOTION.fade / 1000, ease: LIFE_EASE }}
-                                    className="absolute right-2 top-11 z-30 grid gap-1 rounded-md border border-slate-400/20 bg-slate-950/94 p-1.5"
-                                    onClick={(event) => event.stopPropagation()}
-                                  >
-                                    <MenuAction
-                                      label="查看详情"
-                                      onClick={() => {
-                                        setDetailId(item.id);
-                                        setMenuOpenId(null);
-                                        setDangerMenuId(null);
-                                      }}
-                                    />
-                                    <MenuAction label={item.archivedAt ? "恢复到主视图" : "归档"} onClick={() => void toggleArchive(item.id)} />
-                                    <MenuAction label="更多…" onClick={() => setDangerMenuId((prev) => (prev === item.id ? null : item.id))} />
-                                    {dangerMenuId === item.id ? (
-                                      <div className="mt-1 border-t border-slate-300/15 pt-1">
-                                        <MenuAction
-                                          label="永久删除（不可恢复）"
-                                          danger
-                                          onClick={() => {
-                                            setDeleteId(item.id);
-                                            setMenuOpenId(null);
-                                            setDangerMenuId(null);
-                                          }}
-                                        />
-                                      </div>
-                                    ) : null}
-                                  </motion.div>
-                                ) : null}
-                              </AnimatePresence>
-                            </li>
-                          );
-                        })}
-                      </ul>
-                    </li>
-                  );
-                })}
-              </ol>
-            )}
-          </div>
-        </section>
+        <AnimatePresence initial={false}>
+          {!isMobile && selectedDoubt ? (
+            <DetailPanel
+              key="detail-panel"
+              doubt={selectedDoubt}
+              timezone={props.timezone}
+              linkedSpacePreview={props.linkedSpacePreview}
+              noteText={notesMap.get(selectedDoubt.id) ?? ""}
+              progress={selectedProgress}
+              onClose={closeDetail}
+              onDelete={() => setDeleteId(selectedDoubt.id)}
+              onImport={() => props.onImportToThinking(selectedDoubt)}
+              onJumpToThinking={props.onJumpToThinking}
+              onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
+            />
+          ) : null}
+        </AnimatePresence>
       </div>
 
       <AnimatePresence>
-        {detailDoubt ? (
-          <LifeDetailModal
-            doubt={detailDoubt}
-            noteText={notesMap.get(detailDoubt.id) ?? ""}
-            onClose={() => setDetailId(null)}
-            onArchiveToggle={() => void toggleArchive(detailDoubt.id)}
-            onDelete={() => setDeleteId(detailDoubt.id)}
-            onImport={() => props.onImportToThinking(detailDoubt)}
-            onSaveNote={(value) => void saveLifeNote(detailDoubt.id, value)}
+        {isMobile && selectedDoubt && mobileDetailOpen ? (
+          <MobileDetailDrawer
+            key="mobile-detail-drawer"
+            doubt={selectedDoubt}
+            timezone={props.timezone}
+            linkedSpacePreview={props.linkedSpacePreview}
+            noteText={notesMap.get(selectedDoubt.id) ?? ""}
+            progress={selectedProgress}
+            onClose={closeDetail}
+            onDelete={() => setDeleteId(selectedDoubt.id)}
+            onImport={() => props.onImportToThinking(selectedDoubt)}
+            onJumpToThinking={props.onJumpToThinking}
+            onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
           />
         ) : null}
       </AnimatePresence>
@@ -649,15 +352,15 @@ export function LifeLayer(props: {
       <AnimatePresence>
         {deleteId ? (
           <ConfirmDialog
-            title="永久删除？"
-            description="删除后不可恢复，相关派生结构会一并清理。"
-            confirmLabel="永久删除"
+            title={"\u6C38\u4E45\u5220\u9664\uFF1F"}
+            description={"\u5220\u9664\u540E\u4E0D\u53EF\u6062\u590D\uFF0C\u76F8\u5173\u6D3E\u751F\u5185\u5BB9\u4E5F\u4F1A\u4E00\u5E76\u6E05\u7406\u3002"}
+            confirmLabel={"\u6C38\u4E45\u5220\u9664"}
             onCancel={() => setDeleteId(null)}
             onConfirm={() => {
               void (async () => {
                 const ok = await props.onDeleteDoubt(deleteId);
                 if (!ok) return;
-                if (detailId === deleteId) setDetailId(null);
+                if (selectedDoubtId === deleteId) closeDetail();
                 setDeleteId(null);
               })();
             }}
@@ -670,232 +373,407 @@ export function LifeLayer(props: {
   );
 }
 
-function formatAxisDate(iso: string) {
-  const date = new Date(iso);
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, "0");
-  const day = `${date.getDate()}`.padStart(2, "0");
-  return `${year} · ${month} · ${day}`;
-}
-
-function resolveTimelineGroupGap(previous: LifeDoubt | null, current: LifeDoubt) {
-  if (!previous) return 0;
-  const hours = Math.abs(new Date(previous.createdAt).getTime() - new Date(current.createdAt).getTime()) / (1000 * 60 * 60);
-  const blend = Math.min(1, hours / 72);
-  return Math.round(LIFE_TOKENS.groupGapMinPx + (LIFE_TOKENS.groupGapMaxPx - LIFE_TOKENS.groupGapMinPx) * blend);
-}
-
-function EmptyTimelineState(props: { showArchived: boolean }) {
+function EmptyTimelineState(props: { hasSearch: boolean }) {
   return (
-    <div className="relative mx-auto h-full w-full max-w-5xl">
-      <span
-        className="pointer-events-none absolute bottom-10 top-10 -translate-x-1/2 bg-gradient-to-b from-transparent via-slate-300/20 to-transparent"
-        style={{ left: LIFE_TOKENS.axisX, width: `${LIFE_TOKENS.axisWidthPx}px` }}
-      />
-      <span
-        className="pointer-events-none absolute top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-slate-300/42 bg-slate-300/18"
-        style={{ left: LIFE_TOKENS.axisX, width: `${LIFE_TOKENS.nodeSizePx}px`, height: `${LIFE_TOKENS.nodeSizePx}px` }}
-      />
-      <p className="absolute left-[calc(42%+32px)] top-1/2 -translate-y-1/2 text-sm tracking-[0.08em] text-slate-300/42">
-        {props.showArchived ? "归档处仍无回声" : "今夜尚无落笔"}
-      </p>
+    <div className="grid min-h-[28rem] place-items-center py-12 text-center md:justify-items-start">
+      <div className="max-w-md space-y-4">
+        <p className="time-serif text-[28px] text-[var(--time-text)]">
+          {props.hasSearch ? "\u6CA1\u6709\u627E\u5230\u76F8\u8FD1\u7684\u95EE\u9898" : "\u4ECA\u591C\u5C1A\u65E0\u843D\u7B14"}
+        </p>
+        <p className="text-sm leading-8 text-[var(--time-text-soft)]">
+          {props.hasSearch
+            ? "\u6362\u4E00\u4E2A\u8BCD\uFF0C\u518D\u6CBF\u7740\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41\u8F7B\u8F7B\u68C0\u7D22\u3002"
+            : "\u5199\u4E0B\u4E00\u53E5\u60AC\u800C\u672A\u51B3\u7684\u8BDD\uFF0C\u5B83\u4F1A\u7559\u5728\u8FD9\u91CC\u3002"}
+        </p>
+      </div>
     </div>
   );
 }
 
-function LifeOpeningOverlay(props: { phase: OpeningPhase; stars: StarDot[] }) {
+function TimeClusterGroup(props: {
+  label: string;
+  count: number;
+  items: LifeDoubt[];
+  selectedId: string | null;
+  notesMap: Map<string, string>;
+  progressByDoubt: Record<string, ThinkingProgress>;
+  rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
+  onSelect: (id: string) => void;
+}) {
   return (
-    <motion.div
-      className="absolute inset-0 z-20 bg-black"
-      initial={{ opacity: 1 }}
-      animate={{ opacity: props.phase === "ready" ? 0 : 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.5 }}
-    >
-      <div className="absolute inset-0">
-        {props.phase === "stars" || props.phase === "text" ? (
-          <div className="absolute inset-0">
-            {props.stars.map((star, index) => (
-              <span
-                key={`${star.left}-${star.top}-${index}`}
-                className={cn("life-star absolute rounded-full bg-slate-200", star.large ? "h-1.5 w-1.5" : "h-1 w-1")}
-                style={{
-                  left: `${star.left}%`,
-                  top: `${star.top}%`,
-                  opacity: star.opacity,
-                  animationDelay: `${star.delay}s`,
-                  animationDuration: `${star.duration}s`
-                }}
-              />
-            ))}
-          </div>
-        ) : null}
+    <section className="relative">
+      <div
+        className="sticky top-0 z-10 mb-6"
+        style={{ background: "linear-gradient(180deg, rgba(2,2,3,0.98), rgba(2,2,3,0.82))" }}
+        data-life-group="true"
+      >
+        <div className="flex items-center gap-4 py-1">
+          <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--time-text-soft)]">{props.label}</span>
+          <div className="h-px flex-1 bg-gradient-to-r from-white/12 to-transparent" />
+          <span className="text-[10px] tabular-nums text-[var(--time-text-soft)]/75">{props.count}</span>
+        </div>
       </div>
-      <div className="absolute inset-0 grid place-items-center">
-        <p
-          className={cn(
-            "text-sm tracking-[0.28em] text-slate-200/76 transition-opacity duration-700",
-            props.phase === "text" ? "opacity-100" : "opacity-0"
-          )}
+
+      <div className="space-y-1">
+        {props.items.map((item) => (
+          <TimeEntryCard
+            key={item.id}
+            doubt={item}
+            noteText={props.notesMap.get(item.id) ?? ""}
+            progress={props.progressByDoubt[item.id] ?? null}
+            isSelected={props.selectedId === item.id}
+            rowRefs={props.rowRefs}
+            onSelect={props.onSelect}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function TimeEntryCard(props: {
+  doubt: LifeDoubt;
+  noteText: string;
+  progress: ThinkingProgress | null;
+  isSelected: boolean;
+  rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
+  onSelect: (id: string) => void;
+}) {
+  const statusTone = resolveStatusTone(props.progress);
+
+  return (
+    <motion.article layout className="group relative">
+      <motion.div
+        className="absolute -left-4 top-1/2 h-0 w-0.5 -translate-y-1/2 rounded-full bg-[var(--time-accent)]/65"
+        animate={{ height: props.isSelected ? "56%" : 0, opacity: props.isSelected ? 0.78 : 0 }}
+        transition={{ duration: 0.3 }}
+      />
+
+      <button
+        ref={(node) => {
+          props.rowRefs.current[props.doubt.id] = node;
+        }}
+        type="button"
+        className={cn(
+          "-mx-3 w-full rounded-[1.35rem] px-3 py-6 text-left transition-all duration-500",
+          "hover:bg-white/[0.024]",
+          props.isSelected && "bg-white/[0.03] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]"
+        )}
+        data-life-item="true"
+        data-life-item-selected={props.isSelected ? "true" : "false"}
+        onClick={() => props.onSelect(props.doubt.id)}
+      >
+        <div className="flex items-start gap-4">
+          <div className="relative mt-2.5 shrink-0">
+            <span className={cn("time-status-dot", statusTone.dotClass)} />
+          </div>
+
+          <div className="min-w-0 flex-1">
+            <p
+              className={cn(
+                "text-[var(--time-text)] font-light leading-[1.9] tracking-[0.04em] transition-colors duration-300",
+                "group-hover:text-[var(--time-text-strong)]",
+                props.isSelected && "text-[var(--time-text-strong)]"
+              )}
+            >
+              {props.doubt.rawText}
+            </p>
+
+            <div className="mt-4 flex items-center gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
+              <time>{formatRelativeTime(props.doubt.createdAt)}</time>
+              {props.progress ? <span>{props.progress.status === "active" ? "\u6709\u5EF6\u7EED" : statusTone.label}</span> : null}
+              {props.noteText ? <span>{"\u6709\u6CE8\u8BB0"}</span> : null}
+            </div>
+          </div>
+
+          <div className={cn("flex h-5 w-5 shrink-0 items-center justify-center transition-all duration-300", "opacity-0 group-hover:opacity-100")}>
+            <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="transition-transform duration-300">
+              <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-white/30" />
+            </svg>
+          </div>
+        </div>
+      </button>
+    </motion.article>
+  );
+}
+
+function DetailPanel(props: {
+  doubt: LifeDoubt;
+  timezone: string;
+  linkedSpacePreview: LinkedSpacePreview | null;
+  noteText: string;
+  progress: ThinkingProgress | null;
+  onClose: () => void;
+  onDelete: () => void;
+  onImport: () => void;
+  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
+  onSaveNote: (value: string) => void;
+}) {
+  return (
+    <motion.aside
+      className="time-detail-shell time-detail-scroll hidden h-full min-h-0 w-[40%] min-w-[560px] max-w-[760px] flex-col overflow-y-auto lg:flex"
+      data-life-detail="desktop"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.24, ease: EASE }}
+    >
+      <DetailBody {...props} />
+    </motion.aside>
+  );
+}
+
+function MobileDetailDrawer(props: {
+  doubt: LifeDoubt;
+  timezone: string;
+  linkedSpacePreview: LinkedSpacePreview | null;
+  noteText: string;
+  progress: ThinkingProgress | null;
+  onClose: () => void;
+  onDelete: () => void;
+  onImport: () => void;
+  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
+  onSaveNote: (value: string) => void;
+}) {
+  return (
+    <motion.section
+      className="absolute inset-0 z-30 bg-black/45 backdrop-blur-sm lg:hidden"
+      data-life-detail="mobile"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={props.onClose}
+    >
+      <motion.div
+        className="time-sheet absolute bottom-0 left-0 right-0 max-h-[80vh] overflow-y-auto rounded-t-[2rem] border border-b-0 border-white/8 pb-8 shadow-[0_-24px_80px_rgba(0,0,0,0.44)]"
+        initial={{ y: '100%' }}
+        animate={{ y: 0 }}
+        exit={{ y: '100%' }}
+        transition={{ duration: 0.34, ease: EASE }}
+        onClick={(event) => event.stopPropagation()}
+      >
+        <div className="mx-auto mt-3 h-1.5 w-16 rounded-full bg-white/10" />
+        <DetailBody {...props} compact />
+      </motion.div>
+    </motion.section>
+  );
+}
+
+function DetailBody(props: {
+  doubt: LifeDoubt;
+  timezone: string;
+  linkedSpacePreview: LinkedSpacePreview | null;
+  noteText: string;
+  progress: ThinkingProgress | null;
+  onClose: () => void;
+  onDelete: () => void;
+  onImport: () => void;
+  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
+  onSaveNote: (value: string) => void;
+  compact?: boolean;
+}) {
+  const continueTarget = props.progress?.reentry.freezeEntry
+    ? {
+        spaceId: props.progress.reentry.freezeEntry.spaceId,
+        mode: "freeze" as const,
+        trackId: props.progress.reentry.freezeEntry.trackId,
+        nodeId: props.progress.reentry.freezeEntry.nodeId
+      }
+    : props.progress?.reentry.questionEntry
+      ? { spaceId: props.progress.reentry.questionEntry.spaceId, mode: "root" as const }
+      : props.progress
+        ? { spaceId: props.progress.spaceId, mode: "root" as const }
+        : null;
+  const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
+  const actionLabel = continueTarget ? "\u56DE\u5230\u8FD9\u6BB5\u601D\u8DEF" : "\u5E26\u5165\u601D\u8003";
+  const fallbackTrackNodes = useMemo(() => {
+    if (!props.progress) return [];
+    return [
+      ...(props.progress.milestonePreviews ?? []),
+      ...(props.progress.reentry.milestoneEntries.map((entry) => entry.preview ?? "").filter(Boolean) as string[]),
+      props.progress.reentry.freezeEntry?.preview ?? ""
+    ]
+      .map((item) => item.trim())
+      .filter((item, index, source) => item.length > 0 && source.indexOf(item) === index);
+  }, [props.progress]);
+  const matchedLinkedSpacePreview =
+    props.linkedSpacePreview && props.progress?.spaceId && props.linkedSpacePreview.spaceId === props.progress.spaceId
+      ? props.linkedSpacePreview
+      : null;
+  const firstTrackNode =
+    props.doubt.firstNodePreview?.trim() ||
+    matchedLinkedSpacePreview?.firstNode ||
+    fallbackTrackNodes[0] ||
+    "";
+  const lastTrackNode =
+    props.doubt.lastNodePreview?.trim() ||
+    matchedLinkedSpacePreview?.lastNode ||
+    fallbackTrackNodes[fallbackTrackNodes.length - 1] ||
+    firstTrackNode;
+  const shouldShowTrackEdgeSummary = Boolean(props.progress && firstTrackNode);
+  const shouldShowLastTrackNode = Boolean(lastTrackNode);
+
+  const handlePrimaryAction = () => {
+    if (continueTarget) {
+      props.onJumpToThinking({ ...continueTarget, doubtId: props.doubt.id });
+      return;
+    }
+    props.onImport();
+  };
+
+  return (
+    <div className={cn("flex h-full flex-col", props.compact && "px-6 pt-4 md:px-8")}>
+      <div className={cn("flex items-center justify-between border-b border-white/8 px-8 py-6", props.compact && "px-0")}>
+        <div className="flex items-center gap-3">
+          <span className="h-1.5 w-1.5 rounded-full bg-[var(--time-accent)]/60" />
+          <span className="text-xs uppercase tracking-[0.28em] text-[var(--time-text)]/80">{"\u7EC6\u8282"}</span>
+        </div>
+        <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
+          {"\u5173\u95ED"}
+        </button>
+      </div>
+
+      <AnimatePresence mode="wait" initial={false}>
+        <motion.div
+          key={props.doubt.id}
+          className={cn("flex-1 overflow-y-auto px-8 py-10", props.compact ? "px-0 py-6" : "")}
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
         >
-          你一直在走
+          <div className="mb-12">
+            <p className="text-[25px] font-light leading-relaxed tracking-wide text-[var(--time-text-strong)] md:text-[31px]" data-life-selected-title="true">
+              {props.doubt.rawText}
+            </p>
+          </div>
+
+        <div className="mb-12 flex flex-wrap items-center gap-6 text-xs text-[var(--time-text)]/74">
+          <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
+          {props.progress?.status === "active" ? <span className="text-[var(--time-accent)]/85">{"\u601D\u8003\u4E2D"}</span> : null}
+        </div>
+
+          <div className="mb-12 h-px bg-gradient-to-r from-white/16 via-white/8 to-transparent" />
+
+          {props.noteText ? (
+            <div className="mb-10">
+              <h3 className="mb-4 text-[10px] uppercase tracking-[0.2em] text-[var(--time-text)]/72">{"\u6CE8\u8BB0"}</h3>
+              <p className="border-l-2 border-white/15 pl-4 text-sm italic leading-relaxed text-[var(--time-text)]/92">{props.noteText}</p>
+            </div>
+          ) : null}
+
+          {props.progress ? (
+            <div className="mb-10">
+              {shouldShowTrackEdgeSummary ? (
+                <div className="space-y-3">
+                  <p className="text-sm leading-relaxed text-[var(--time-text)]/94">最初：{firstTrackNode}</p>
+                  {shouldShowLastTrackNode ? (
+                    <p className="text-sm leading-relaxed text-[var(--time-text)]/94">最后：{lastTrackNode}</p>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div className="mb-10" />
+          )}
+
+          {canEditNote ? (
+            <div className="mb-10">
+              <h3 className="mb-4 text-[10px] uppercase tracking-[0.2em] text-[var(--time-text)]/72">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
+              <input
+                defaultValue={props.noteText}
+                maxLength={42}
+                placeholder={"\u7559\u4E00\u53E5\u8BDD"}
+                className="h-11 w-full border-0 border-b border-white/8 bg-transparent px-0 text-[16px] text-[var(--time-text-strong)] outline-none transition-colors placeholder:text-[var(--time-text-soft)] focus:border-[var(--time-accent)]/22"
+                onBlur={(event) => props.onSaveNote(event.target.value)}
+              />
+            </div>
+          ) : null}
+        </motion.div>
+      </AnimatePresence>
+
+      <div className={cn("border-t border-white/8 px-8 py-6", props.compact && "px-0")}>
+        <div className="flex items-center gap-4">
+          <button type="button" className="flex-1 rounded-lg bg-[var(--time-accent-soft)] px-4 py-3 text-sm text-[var(--time-text-strong)] transition-all duration-300 hover:bg-[var(--time-accent)]/18" onClick={handlePrimaryAction}>
+            {actionLabel}
+          </button>
+          <button type="button" className="rounded-lg px-4 py-3 text-sm text-[var(--time-text-soft)] transition-all duration-300 hover:bg-white/[0.04] hover:text-[var(--time-text)]" onClick={props.onDelete}>
+            {"\u5220\u9664"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ConfirmDialog(props: { title: string; description: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {
+  return (
+    <motion.section className="absolute inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
+      <div className="w-full max-w-md rounded-[1.8rem] border border-white/8 bg-[rgba(5,5,7,0.94)] px-6 py-6 shadow-[0_24px_64px_rgba(0,0,0,0.36)]">
+        <div className="space-y-3">
+          <h3 className="time-serif text-2xl text-[var(--time-text-strong)]">{props.title}</h3>
+          <p className="text-sm leading-8 text-[var(--time-text-soft)]">{props.description}</p>
+        </div>
+        <div className="mt-6 flex justify-end gap-3">
+          <Button type="button" variant="ghost" className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={props.onCancel}>
+            {"\u53D6\u6D88"}
+          </Button>
+          <Button type="button" variant="ghost" className="rounded-full border border-[var(--time-accent)]/22 bg-[var(--time-accent-soft)] px-4 text-[11px] font-light tracking-[0.16em] text-[var(--time-text-strong)] hover:bg-[var(--time-accent)]/18" onClick={props.onConfirm}>
+            {props.confirmLabel}
+          </Button>
+        </div>
+      </div>
+    </motion.section>
+  );
+}
+
+function LifeOpeningOverlay(props: { phase: OpeningPhase; stars: StarDot[] }) {
+  const { phase } = props;
+  return (
+    <motion.div className="absolute inset-0 z-20 bg-black" initial={{ opacity: 1 }} animate={{ opacity: phase === "ready" ? 0 : 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.45 }}>
+      <div className="absolute inset-0 grid place-items-center">
+        <p className={cn("time-serif text-lg tracking-[0.28em] text-white/74 transition-opacity duration-700", phase === "text" ? "opacity-100" : "opacity-0")}>
+          {"\u65F6\u95F4\u6B63\u5728\u663E\u5F71"}
         </p>
       </div>
     </motion.div>
   );
 }
 
-function RangeChip(props: { active: boolean; onClick: () => void; label: string }) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "rounded-full border px-3 py-1 text-xs tracking-[0.08em] transition-colors",
-        props.active
-          ? "border-slate-300/45 bg-slate-900/70 text-slate-100"
-          : "border-slate-300/18 bg-slate-900/35 text-slate-300/70 hover:bg-slate-900/60 hover:text-slate-100"
-      )}
-      onClick={props.onClick}
-    >
-      {props.label}
-    </button>
-  );
+function formatGroupLabel(dateKey: string, timeZone: string) {
+  const [year, month, day] = dateKey.split("-").map((value) => Number(value));
+  const date = new Date(year, month - 1, day);
+  const todayKey = getDateKeyInTimeZone(new Date().toISOString(), timeZone);
+  const [todayYear, todayMonth, todayDay] = todayKey.split("-").map((value) => Number(value));
+  const todayStart = new Date(todayYear, todayMonth - 1, todayDay).getTime();
+  const targetStart = new Date(date.getFullYear(), date.getMonth(), date.getDate()).getTime();
+  const deltaDays = Math.round((todayStart - targetStart) / (24 * 60 * 60 * 1000));
+
+  if (deltaDays === 0) return "\u4ECA\u5929";
+  if (deltaDays === 1) return "\u6628\u5929";
+  return `${month} \u6708 ${day} \u65E5`;
 }
 
-function MenuAction(props: { label: string; onClick: () => void; danger?: boolean }) {
-  return (
-    <button
-      type="button"
-      className={cn(
-        "rounded-md px-3 py-1.5 text-left text-xs transition-colors",
-        props.danger ? "text-slate-200/86 hover:bg-slate-800/78" : "text-slate-200/90 hover:bg-slate-800/80"
-      )}
-      onClick={props.onClick}
-    >
-      {props.label}
-    </button>
-  );
+function formatRelativeTime(iso: string) {
+  const diff = Date.now() - new Date(iso).getTime();
+  const minutes = Math.max(1, Math.floor(diff / 60000));
+  if (minutes < 60) return `${minutes} \u5206\u949F\u524D`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours} \u5C0F\u65F6\u524D`;
+  const days = Math.floor(hours / 24);
+  if (days < 30) return `${days} \u5929\u524D`;
+  const months = Math.floor(days / 30);
+  if (months < 12) return `${months} \u4E2A\u6708\u524D`;
+  const years = Math.floor(months / 12);
+  return `${years} \u5E74\u524D`;
 }
 
-function LifeDetailModal(props: {
-  doubt: LifeDoubt;
-  noteText: string;
-  onClose: () => void;
-  onArchiveToggle: () => void;
-  onDelete: () => void;
-  onImport: () => void;
-  onSaveNote: (value: string) => void;
-}) {
-  return (
-    <motion.section
-      className="absolute inset-0 z-30 grid place-items-center bg-black/55 p-4 backdrop-blur-sm"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
-      <Card className="w-full max-w-2xl border-slate-400/20 bg-slate-950/95 text-slate-100">
-        <CardHeader>
-          <CardTitle className="text-base tracking-[0.06em]">条目详情</CardTitle>
-          <CardDescription className="text-slate-300/65">{formatDateTime(props.doubt.createdAt)}</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <p className="text-[15px] leading-[1.86] text-slate-100">{props.doubt.rawText}</p>
-          {isOlderThanOneYear(props.doubt.createdAt) ? (
-            <div className="space-y-2 border-t border-slate-300/15 pt-3">
-              <p className="text-xs text-slate-300/66">给当时的自己留一句话（可选）</p>
-              <input
-                defaultValue={props.noteText}
-                maxLength={42}
-                className="h-9 w-full rounded-md border border-slate-400/25 bg-slate-900/50 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-                onBlur={(event) => props.onSaveNote(event.target.value)}
-              />
-            </div>
-          ) : null}
-        </CardContent>
-        <CardFooter className="flex flex-wrap gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 bg-slate-900/40 text-slate-100 hover:bg-slate-800/75"
-            onClick={props.onImport}
-          >
-            带着它进入思路
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 bg-slate-900/40 text-slate-100 hover:bg-slate-800/75"
-            onClick={props.onArchiveToggle}
-          >
-            {props.doubt.archivedAt ? "恢复" : "归档"}
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 bg-slate-900/40 text-slate-200/90 hover:bg-slate-800/70"
-            onClick={props.onDelete}
-          >
-            删除
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 bg-slate-900/40 text-slate-100 hover:bg-slate-800/75"
-            onClick={props.onClose}
-          >
-            关闭
-          </Button>
-        </CardFooter>
-      </Card>
-    </motion.section>
-  );
+function resolveStatusTone(progress: ThinkingProgress | null) {
+  if (!progress) {
+    return { label: "\u9759\u7F6E\u4E2D", detail: "\u5C1A\u672A\u8FDB\u5165\u601D\u8003\u5C42", dotClass: "time-status-dot--muted" };
+  }
+  if (progress.status === "active") {
+    return { label: "\u601D\u8003\u4E2D", detail: "\u4ECD\u5728\u5EF6\u7EED", dotClass: "time-status-dot--active" };
+  }
+  return { label: "\u5DF2\u5199\u56DE\u65F6\u95F4", detail: "\u53EF\u91CD\u65B0\u8FDB\u5165", dotClass: "" };
 }
-
-function ConfirmDialog(props: {
-  title: string;
-  description: string;
-  confirmLabel: string;
-  onCancel: () => void;
-  onConfirm: () => void;
-}) {
-  return (
-    <motion.section
-      className="absolute inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-    >
-      <Card className="w-full max-w-md border-slate-400/20 bg-slate-950/95 text-slate-100">
-        <CardHeader>
-          <CardTitle className="text-base">{props.title}</CardTitle>
-          <CardDescription className="text-slate-300/70">{props.description}</CardDescription>
-        </CardHeader>
-        <CardFooter className="justify-end gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 text-slate-100"
-            onClick={props.onCancel}
-          >
-            取消
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="rounded-full border border-slate-300/25 bg-slate-900/50 text-slate-200/92"
-            onClick={props.onConfirm}
-          >
-            {props.confirmLabel}
-          </Button>
-        </CardFooter>
-      </Card>
-    </motion.section>
-  );
-}
-

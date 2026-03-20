@@ -14,6 +14,7 @@ import {
   type LifeDoubt,
   type LifeNote,
   type ThinkingSpace,
+  type ThinkingScratchItem,
   type ThinkingSpaceMeta,
   type TrackDirectionHint,
   type ThinkingStore,
@@ -28,12 +29,15 @@ import {
   loadThinkingStore,
   persistLifeStore,
   persistThinkingStore,
-  pickDefaultSpaceId
+  pickDefaultSpaceId,
+  sanitizeTimeZone
 } from "@/components/zhihuo-model";
 
 type ApiLifeDoubt = {
   id: string;
   raw_text: string;
+  first_node_preview: string | null;
+  last_node_preview: string | null;
   created_at: string;
   archived_at: string | null;
   deleted_at: string | null;
@@ -50,10 +54,22 @@ type ApiThinkingSpace = {
   id: string;
   user_id: string;
   root_question_text: string;
-  status: "active" | "frozen" | "archived";
+  status: "active" | "hidden";
   created_at: string;
+  last_activity_at?: string;
   frozen_at: string | null;
   source_time_doubt_id: string | null;
+};
+
+type ApiThinkingScratch = {
+  id: string;
+  raw_text: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  deleted_at: string | null;
+  derived_space_id: string | null;
+  fed_time_doubt_id: string | null;
 };
 
 type ApiThinkingSpaceMeta = {
@@ -66,6 +82,8 @@ type ApiThinkingSpaceMeta = {
   last_track_id?: string | null;
   last_organized_order?: number;
   parking_track_id?: string | null;
+  pending_track_id?: string | null;
+  empty_track_ids?: string[];
   milestone_node_ids?: string[];
   track_direction_hints?: Record<string, TrackDirectionHint | null>;
 };
@@ -83,7 +101,7 @@ type ApiReentryEntry = {
 type ApiThinkingTimeLink = {
   doubt_id: string;
   space_id: string;
-  status: "active" | "frozen" | "archived";
+  status: "active" | "hidden";
   freeze_note: string | null;
   milestone_previews: string[];
   reentry?: {
@@ -97,6 +115,7 @@ type ApiThinkingTrackNode = {
   id: string;
   raw_question_text: string;
   note_text?: string | null;
+  answer_text?: string | null;
   created_at: string;
   is_suggested: boolean;
   is_milestone?: boolean;
@@ -110,6 +129,7 @@ type ApiThinkingTrack = {
   title_question_text: string;
   direction_hint?: TrackDirectionHint | null;
   is_parking?: boolean;
+  is_empty?: boolean;
   node_count: number;
   nodes: ApiThinkingTrackNode[];
 };
@@ -123,6 +143,8 @@ type ApiThinkingSpaceView = {
   background_text?: string | null;
   background_version?: number;
   parking_track_id?: string | null;
+  pending_track_id?: string | null;
+  empty_track_ids?: string[];
   milestone_node_ids?: string[];
 };
 
@@ -133,7 +155,7 @@ type SessionUser = {
 
 type ThinkingProgressSummary = {
   spaceId: string;
-  status: "active" | "frozen" | "archived";
+  status: "active" | "hidden";
   freezeNote: string | null;
   milestonePreviews: string[];
   reentry: {
@@ -163,12 +185,24 @@ type ThinkingJumpTarget = {
   mode: "root" | "freeze" | "milestone";
   trackId?: string | null;
   nodeId?: string | null;
+  doubtId?: string;
+};
+
+const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
+
+type LinkedSpacePreview = {
+  spaceId: string;
+  title: string;
+  firstNode: string;
+  lastNode: string;
 };
 
 function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
   return {
     id: item.id,
     rawText: item.raw_text,
+    firstNodePreview: typeof item.first_node_preview === "string" ? item.first_node_preview : null,
+    lastNodePreview: typeof item.last_node_preview === "string" ? item.last_node_preview : null,
     createdAt: item.created_at,
     archivedAt: item.archived_at,
     deletedAt: item.deleted_at
@@ -191,8 +225,22 @@ function mapApiThinkingSpace(item: ApiThinkingSpace): ThinkingSpace {
     rootQuestionText: item.root_question_text,
     status: item.status,
     createdAt: item.created_at,
+    lastActivityAt: typeof item.last_activity_at === "string" ? item.last_activity_at : item.created_at,
     frozenAt: item.frozen_at,
     sourceTimeDoubtId: item.source_time_doubt_id
+  };
+}
+
+function mapApiThinkingScratch(item: ApiThinkingScratch): ThinkingScratchItem {
+  return {
+    id: item.id,
+    rawText: item.raw_text,
+    createdAt: item.created_at,
+    updatedAt: item.updated_at,
+    archivedAt: item.archived_at,
+    deletedAt: item.deleted_at,
+    derivedSpaceId: item.derived_space_id,
+    fedTimeDoubtId: item.fed_time_doubt_id
   };
 }
 
@@ -207,6 +255,8 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
     lastTrackId: typeof item.last_track_id === "string" ? item.last_track_id : null,
     lastOrganizedOrder: Number.isFinite(item.last_organized_order) ? Number(item.last_organized_order) : -1,
     parkingTrackId: typeof item.parking_track_id === "string" ? item.parking_track_id : null,
+    pendingTrackId: typeof item.pending_track_id === "string" ? item.pending_track_id : null,
+    emptyTrackIds: Array.isArray(item.empty_track_ids) ? item.empty_track_ids.filter((id) => typeof id === "string") : [],
     milestoneNodeIds: Array.isArray(item.milestone_node_ids) ? item.milestone_node_ids.filter((id) => typeof id === "string") : [],
     trackDirectionHints:
       item.track_direction_hints && typeof item.track_direction_hints === "object" && !Array.isArray(item.track_direction_hints)
@@ -244,10 +294,12 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
           ? track.direction_hint
           : null,
       isParking: track.is_parking === true,
+      isEmpty: track.is_empty === true,
       nodes: (track.nodes ?? []).map((node) => ({
         id: node.id,
         questionText: node.raw_question_text,
         noteText: typeof node.note_text === "string" ? node.note_text : null,
+        answerText: typeof node.answer_text === "string" ? node.answer_text : null,
         isSuggested: Boolean(node.is_suggested),
         isMilestone: node.is_milestone === true,
         hasRelatedLink: node.has_related_link === true,
@@ -258,6 +310,7 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
       nodeCount: Math.max(0, track.node_count ?? 0)
     })),
     parkingTrackId: typeof payload.parking_track_id === "string" ? payload.parking_track_id : null,
+    pendingTrackId: typeof payload.pending_track_id === "string" ? payload.pending_track_id : null,
     milestoneNodeIds: Array.isArray(payload.milestone_node_ids) ? payload.milestone_node_ids.filter((id) => typeof id === "string") : [],
     suggestedQuestions: (payload.suggested_questions ?? []).filter((item) => typeof item === "string"),
     freezeNote: payload.freeze_note ?? null,
@@ -280,6 +333,7 @@ export function TimeArchive() {
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
   const [thinkingProgressByDoubt, setThinkingProgressByDoubt] = useState<Record<string, ThinkingProgressSummary>>({});
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
+  const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
@@ -335,7 +389,7 @@ export function TimeArchive() {
   const syncLifeFromApi = useCallback(
     async (silent = false) => {
       try {
-        const response = await fetch("/v1/doubts?range=all&include_archived=true&include_notes=true", {
+        const response = await fetch("/v1/doubts?range=all&include_notes=true", {
           method: "GET",
           cache: "no-store"
         });
@@ -413,7 +467,7 @@ export function TimeArchive() {
             : [];
           nextProgress[link.doubt_id] = {
             spaceId: link.space_id,
-            status: link.status === "active" || link.status === "frozen" || link.status === "archived" ? link.status : "active",
+            status: link.status === "active" || link.status === "hidden" ? link.status : "active",
             freezeNote: typeof link.freeze_note === "string" ? link.freeze_note : null,
             milestonePreviews: Array.isArray(link.milestone_previews)
               ? link.milestone_previews.filter((item) => typeof item === "string").slice(0, 3)
@@ -432,6 +486,30 @@ export function TimeArchive() {
           spaceMeta
         }));
         return spaces;
+      } catch {
+        if (!silent) showNotice("网络异常，请稍后再试");
+        return [];
+      }
+    },
+    [handleUnauthorized, showNotice]
+  );
+
+  const syncThinkingScratchFromApi = useCallback(
+    async (silent = false) => {
+      try {
+        const response = await fetch("/v1/thinking/scratch", { method: "GET", cache: "no-store" });
+        if (handleUnauthorized(response)) return [];
+        if (!response.ok) {
+          if (!silent) showNotice("随记同步失败");
+          return [];
+        }
+        const payload = (await response.json()) as { scratch?: ApiThinkingScratch[] };
+        const scratch = Array.isArray(payload.scratch) ? payload.scratch.map(mapApiThinkingScratch) : [];
+        setThinkingStore((prev) => ({
+          ...prev,
+          scratch
+        }));
+        return scratch;
       } catch {
         if (!silent) showNotice("网络异常，请稍后再试");
         return [];
@@ -472,25 +550,6 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return false;
         if (!response.ok) {
           showNotice("放入失败，请稍后再试");
-          return false;
-        }
-        void syncLifeFromApi(true);
-        return true;
-      } catch {
-        showNotice("网络异常，请稍后再试");
-        return false;
-      }
-    },
-    [handleUnauthorized, showNotice, syncLifeFromApi]
-  );
-
-  const archiveLifeDoubt = useCallback(
-    async (doubtId: string) => {
-      try {
-        const response = await fetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) {
-          showNotice("归档操作失败");
           return false;
         }
         void syncLifeFromApi(true);
@@ -657,6 +716,11 @@ export function TimeArchive() {
 
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser) return;
+    void syncThinkingScratchFromApi(true);
+  }, [authReady, hydrated, sessionUser, syncThinkingScratchFromApi]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser) return;
     void (async () => {
       const spaces = await syncThinkingSpacesFromApi(true);
       const initial = pickDefaultSpaceId(spaces);
@@ -715,6 +779,21 @@ export function TimeArchive() {
     };
   }, []);
 
+  const hideLifeDoubtFromTimeline = useCallback(
+    async (doubtId: string) => {
+      try {
+        const response = await fetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        void syncLifeFromApi(true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnauthorized, syncLifeFromApi]
+  );
+
   const handleImportToThinking = useCallback(
     (doubt: { id: string; rawText: string }) => {
       void (async () => {
@@ -722,37 +801,63 @@ export function TimeArchive() {
           const response = await fetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
           if (handleUnauthorized(response)) return;
           if (response.status === 409) {
-            showNotice(`活跃空间上限为 ${MAX_ACTIVE_SPACES}`);
+            showNotice(RESTORE_OVER_LIMIT_NOTICE);
             return;
           }
           if (!response.ok) {
             showNotice("创建思考空间失败");
             return;
           }
-          const payload = (await response.json()) as { space_id?: string };
+          const payload = (await response.json()) as { space_id?: string; created?: boolean };
           const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
           if (!spaceId) {
-            showNotice("创建思考空间失败");
+            showNotice("恢复思考失败");
             return;
           }
           await syncThinkingSpacesFromApi(true);
           setActiveSpaceId(spaceId);
           await loadThinkingViewFromApi(spaceId, true);
+          void hideLifeDoubtFromTimeline(doubt.id);
           setTab("thinking");
-          showNotice("已创建思考空间");
+          setThinkingJumpTarget({ spaceId, mode: "root" });
+          showNotice(payload.created ? "已进入思路" : "已恢复原空间");
         } catch {
           showNotice("网络异常，请稍后再试");
         }
       })();
     },
-    [handleUnauthorized, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
+    [handleUnauthorized, hideLifeDoubtFromTimeline, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
   );
 
-  const handleJumpToThinking = useCallback((target: ThinkingJumpTarget) => {
-    setTab("thinking");
-    setThinkingJumpTarget(target);
-    setActiveSpaceId(target.spaceId);
-  }, []);
+  const handleJumpToThinking = useCallback(
+    (target: ThinkingJumpTarget) => {
+      void (async () => {
+        const targetSpace = thinkingStore.spaces.find((space) => space.id === target.spaceId) ?? null;
+        if (targetSpace?.status === "hidden") {
+          const response = await fetch(`/v1/thinking/spaces/${target.spaceId}/status`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ status: "active" })
+          }).catch(() => null);
+          if (!response || handleUnauthorized(response)) return;
+          if (!response.ok) {
+            if (response.status === 409) {
+              showNotice(RESTORE_OVER_LIMIT_NOTICE);
+              return;
+            }
+            showNotice("恢复思考失败");
+            return;
+          }
+          await syncThinkingSpacesFromApi(true);
+        }
+        setTab("thinking");
+        setThinkingJumpTarget(target);
+        setActiveSpaceId(target.spaceId);
+        if (target.doubtId) void hideLifeDoubtFromTimeline(target.doubtId);
+      })();
+    },
+    [handleUnauthorized, hideLifeDoubtFromTimeline, showNotice, syncThinkingSpacesFromApi, thinkingStore.spaces]
+  );
 
   const handleCreateThinkingFromInput = useCallback(
     async (rawInput: string) => {
@@ -768,6 +873,80 @@ export function TimeArchive() {
       };
     },
     [createThinkingSpaceApi]
+  );
+
+  const handleCreateThinkingScratch = useCallback(
+    async (rawText: string) => {
+      try {
+        const response = await fetch("/v1/thinking/scratch", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ raw_text: rawText })
+        });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        await syncThinkingScratchFromApi(true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnauthorized, syncThinkingScratchFromApi]
+  );
+
+  const handleFeedThinkingScratchToTime = useCallback(
+    async (scratchId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        await syncLifeFromApi(true);
+        await syncThinkingScratchFromApi(true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnauthorized, syncLifeFromApi, syncThinkingScratchFromApi]
+  );
+
+  const handleDeleteThinkingScratch = useCallback(
+    async (scratchId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        await syncThinkingScratchFromApi(true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [handleUnauthorized, syncThinkingScratchFromApi]
+  );
+
+  const handleScratchToSpace = useCallback(
+    async (scratchId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/scratch/${scratchId}/to-space`, { method: "POST" });
+        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+        const body = (await response.json().catch(() => ({}))) as { space_id?: string };
+        if (response.status === 409) return { ok: false as const, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
+        if (!response.ok || typeof body.space_id !== "string") return { ok: false as const, message: "转为空间失败" };
+
+        const spaceId = body.space_id;
+        const spaces = await syncThinkingSpacesFromApi(true);
+        await syncThinkingScratchFromApi(true);
+        setActiveSpaceId(spaceId);
+        if (spaces.some((space) => space.id === spaceId)) {
+          await loadThinkingViewFromApi(spaceId, true);
+        }
+        return { ok: true as const, spaceId };
+      } catch {
+        return { ok: false as const, message: "网络异常，请稍后再试" };
+      }
+    },
+    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingScratchFromApi, syncThinkingSpacesFromApi]
   );
 
   const handleThinkingAddQuestion = useCallback(
@@ -927,6 +1106,64 @@ export function TimeArchive() {
     [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
   );
 
+  const handleThinkingUpdateNode = useCallback(
+    async (nodeId: string, rawQuestionText: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/nodes/${nodeId}/update`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ raw_question_text: rawQuestionText })
+        });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+  );
+
+  const handleThinkingCopyNode = useCallback(
+    async (nodeId: string, targetTrackId?: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/nodes/${nodeId}/copy`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(targetTrackId ? { target_track_id: targetTrackId } : {})
+        });
+        if (handleUnauthorized(response)) return null;
+        const body = (await response.json().catch(() => ({}))) as { node_id?: string };
+        if (!response.ok) return null;
+        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        return typeof body.node_id === "string" ? body.node_id : null;
+      } catch {
+        return null;
+      }
+    },
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+  );
+
+  const handleThinkingSaveNodeAnswer = useCallback(
+    async (nodeId: string, answerText: string | null) => {
+      try {
+        const response = await fetch(`/v1/thinking/nodes/${nodeId}/answer`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ answer_text: answerText })
+        });
+        if (handleUnauthorized(response)) return false;
+        if (!response.ok) return false;
+        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        return true;
+      } catch {
+        return false;
+      }
+    },
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+  );
+
   const handleThinkingMisplacedNode = useCallback(
     async (nodeId: string) => {
       try {
@@ -961,6 +1198,25 @@ export function TimeArchive() {
     [handleUnauthorized, loadThinkingViewFromApi]
   );
 
+  const handleThinkingCreateTrack = useCallback(
+    async (spaceId: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/tracks`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" }
+        });
+        if (handleUnauthorized(response)) return null;
+        const body = (await response.json().catch(() => ({}))) as { track_id?: string };
+        if (!response.ok) return null;
+        await loadThinkingViewFromApi(spaceId, true);
+        return typeof body.track_id === "string" ? body.track_id : null;
+      } catch {
+        return null;
+      }
+    },
+    [handleUnauthorized, loadThinkingViewFromApi]
+  );
+
   const handleThinkingTrackDirection = useCallback(
     async (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => {
       try {
@@ -970,7 +1226,10 @@ export function TimeArchive() {
           body: JSON.stringify({ track_id: trackId, direction_hint: directionHint })
         });
         if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
+        if (!response.ok) {
+          await loadThinkingViewFromApi(spaceId, true);
+          return false;
+        }
         await loadThinkingViewFromApi(spaceId, true);
         return true;
       } catch {
@@ -1009,55 +1268,27 @@ export function TimeArchive() {
     [handleUnauthorized, loadThinkingViewFromApi]
   );
 
-  const handleThinkingFreeze = useCallback(
-    async (spaceId: string, userFreezeNote: string | null, milestoneNodeIds: string[]) => {
+  const handleThinkingWriteToTime = useCallback(
+    async (spaceId: string) => {
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/freeze`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ user_freeze_note: userFreezeNote, milestone_node_ids: milestoneNodeIds.slice(0, 3) })
-        });
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, { method: "POST" });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         if (!response.ok) {
           if (response.status === 404) return { ok: false as const, message: "空间不存在" };
-          return { ok: false as const, message: "冻结失败，请稍后再试" };
+          return { ok: false as const, message: "写入时间失败" };
         }
-        const payload = (await response.json()) as { frozen_at?: string | null; user_freeze_note?: string | null };
-        await syncThinkingSpacesFromApi(true);
-        await loadThinkingViewFromApi(spaceId, true);
-        return {
-          ok: true as const,
-          frozenAt: typeof payload.frozen_at === "string" ? payload.frozen_at : new Date().toISOString(),
-          freezeNote: typeof payload.user_freeze_note === "string" ? payload.user_freeze_note : null
-        };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
-      }
-    },
-    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
-  );
-
-  const handleThinkingToggleArchive = useCallback(
-    async (spaceId: string, targetStatus: "active" | "archived") => {
-      try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/status`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ status: targetStatus })
-        });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        if (!response.ok) {
-          if (response.status === 409) return { ok: false as const, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
-          return { ok: false as const, message: "状态更新失败" };
-        }
-        await syncThinkingSpacesFromApi(true);
-        if (activeSpaceId === spaceId) await loadThinkingViewFromApi(spaceId, true);
+        await syncLifeFromApi(true);
+        const spaces = await syncThinkingSpacesFromApi(true);
+        const nextActive = pickDefaultSpaceId(spaces);
+        setActiveSpaceId(nextActive);
+        if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+        else setThinkingView(null);
         return { ok: true as const };
       } catch {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+    [handleUnauthorized, loadThinkingViewFromApi, syncLifeFromApi, syncThinkingSpacesFromApi]
   );
 
   const handleThinkingDeleteSpace = useCallback(
@@ -1094,6 +1325,34 @@ export function TimeArchive() {
     }
   }, [handleUnauthorized]);
 
+  const handleThinkingRenameSpace = useCallback(
+    async (spaceId: string, rootQuestionText: string) => {
+      try {
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/rename`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ root_question_text: rootQuestionText })
+        });
+        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+        const payload = (await response.json().catch(() => ({}))) as { error?: string; root_question_text?: string };
+        if (!response.ok) {
+          return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "重命名失败" };
+        }
+        const spaces = await syncThinkingSpacesFromApi(true);
+        if (activeSpaceId && spaces.some((space) => space.id === activeSpaceId)) {
+          await loadThinkingViewFromApi(activeSpaceId, true);
+        }
+        return {
+          ok: true as const,
+          rootQuestionText: typeof payload.root_question_text === "string" ? payload.root_question_text : rootQuestionText
+        };
+      } catch {
+        return { ok: false as const, message: "网络异常，请稍后再试" };
+      }
+    },
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+  );
+
   const handleSystemExport = useCallback(
     async (format: "json" | "markdown") => {
       try {
@@ -1123,19 +1382,6 @@ export function TimeArchive() {
     })();
   }, [showNotice]);
 
-  const appendThinkingFreezeToLife = useCallback(
-    (payload: { rootQuestionText: string; createdAt: string; frozenAt: string; freezeNote: string | null }) => {
-      const lines = [`[思路阶段] ${payload.rootQuestionText}`, `时间范围：${payload.createdAt.slice(0, 10)} ~ ${payload.frozenAt.slice(0, 10)}`];
-      if (payload.freezeNote) lines.push(`当前状态：${payload.freezeNote}`);
-      const rawText = lines.join("\n");
-      void (async () => {
-        const ok = await createLifeDoubt(rawText);
-        if (ok) showNotice("已记入时间档案馆");
-      })();
-    },
-    [createLifeDoubt, showNotice]
-  );
-
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
     setActiveSpaceId(null);
@@ -1155,6 +1401,40 @@ export function TimeArchive() {
     [lifeStore, thinkingStore]
   );
 
+  const linkedSpacePreview = useMemo<LinkedSpacePreview | null>(() => {
+    if (!thinkingView) return null;
+    const space = thinkingStore.spaces.find((item) => item.id === thinkingView.spaceId);
+    if (!space) return null;
+    const orderedNodes = thinkingView.tracks
+      .flatMap((track) =>
+        track.nodes.map((node, index) => ({
+          text: node.questionText,
+          createdAtMs: node.createdAt ? new Date(node.createdAt).getTime() : Number.NaN,
+          order: index
+        }))
+      )
+      .sort((a, b) => {
+        const aValid = Number.isFinite(a.createdAtMs);
+        const bValid = Number.isFinite(b.createdAtMs);
+        if (aValid && bValid) return a.createdAtMs - b.createdAtMs;
+        if (aValid) return -1;
+        if (bValid) return 1;
+        return a.order - b.order;
+      })
+      .map((item) => item.text.trim())
+      .filter((text) => text.length > 0)
+      .filter((text, index, source) => source.indexOf(text) === index);
+    const firstNode = orderedNodes[0] ?? "";
+    const lastNode = orderedNodes[orderedNodes.length - 1] ?? firstNode;
+    if (!firstNode) return null;
+    return {
+      spaceId: space.id,
+      title: space.rootQuestionText,
+      firstNode,
+      lastNode
+    };
+  }, [thinkingStore.spaces, thinkingView]);
+
   if (!authReady) {
     return (
       <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
@@ -1167,6 +1447,13 @@ export function TimeArchive() {
     return <AuthPanel onAuthed={() => void syncAuth()} />;
   }
 
+  const thinkingChromeHidden = tab === "thinking" && (thinkingFocusMode || thinkingViewMode === "detail");
+  const isLifeTab = tab === "life";
+  const isThinkingTab = tab === "thinking";
+  const isSettingsTab = tab === "settings";
+  const showGlobalHeader = !thinkingChromeHidden;
+  const mainFlushTop = thinkingChromeHidden || isLifeTab;
+
   return (
     <div
       className={cn(
@@ -1174,39 +1461,51 @@ export function TimeArchive() {
         tab === "life" ? "life-surface" : tab === "thinking" ? "thinking-surface text-slate-900" : "settings-surface"
       )}
     >
-      {!(tab === "thinking" && thinkingFocusMode) ? (
+      {showGlobalHeader ? (
       <header
         className={cn(
-          "absolute left-0 top-0 z-30 w-full border-b px-4 py-3 backdrop-blur md:px-6",
-          tab === "thinking" ? "border-black/8 bg-[#f5f3f0]/76" : "border-slate-200/10 bg-black/20"
+          "absolute left-0 top-0 z-30 w-full px-4 py-4 md:px-6",
+          tab === "thinking"
+            ? "border-black/8 bg-[#f5f3f0]/76"
+            : isLifeTab
+              ? "border-transparent bg-transparent"
+              : "border-b border-slate-200/10 bg-black/20 backdrop-blur"
         )}
       >
-        <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
-          <div className={cn("text-sm tracking-[0.2em]", tab === "thinking" ? "text-slate-700" : "text-slate-300/80")}>
-            知惑 Zhihuo
+        {isLifeTab ? (
+          <div className="mx-auto flex w-full max-w-[1680px] items-center justify-end">
+            <nav className="flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
+              <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle />
+              <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
+              <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={false} subtle />
+            </nav>
           </div>
-          <nav className="flex items-center gap-2">
-            <TopTab label="时间" active={tab === "life"} onClick={() => setTab("life")} daytime={false} />
-            <TopTab label="思路" active={tab === "thinking"} onClick={() => setTab("thinking")} daytime />
-            <TopTab label="设置" active={tab === "settings"} onClick={() => setTab("settings")} daytime={tab !== "life"} />
-            <button
-              type="button"
-              className={cn(
-                "rounded-full border px-3 py-1 text-xs tracking-[0.08em] transition-colors",
-                tab === "thinking"
-                  ? "border-slate-500/20 bg-slate-50/20 text-slate-700 hover:bg-slate-50/45"
-                  : "border-slate-300/20 bg-slate-900/20 text-slate-300/80 hover:bg-slate-900/50"
-              )}
-              onClick={logout}
-            >
-              退出
-            </button>
-          </nav>
-        </div>
+        ) : (
+          <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
+            <div className={cn("text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}>知惑 Zhihuo</div>
+            <nav className="flex items-center gap-2">
+              <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
+              <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
+              <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
+              <button
+                type="button"
+                className={cn(
+                  "rounded-full border px-3 py-1 text-xs tracking-[0.12em] transition-colors",
+                  tab === "thinking"
+                    ? "border-slate-500/20 bg-slate-50/20 text-slate-700 hover:bg-slate-50/45"
+                    : "border-slate-300/20 bg-slate-900/20 text-slate-300/80 hover:bg-slate-900/50"
+                )}
+                onClick={logout}
+              >
+                退出
+              </button>
+            </nav>
+          </div>
+        )}
       </header>
       ) : null}
 
-      <main className={cn("h-full", tab === "thinking" && thinkingFocusMode ? "pt-0" : "pt-[62px]")}>
+      <main className={cn("h-full", mainFlushTop ? "pt-0" : "pt-[62px]")}>
         <AnimatePresence mode="wait">
           {tab === "life" ? (
             <motion.section
@@ -1220,6 +1519,8 @@ export function TimeArchive() {
               <LifeLayer
                 store={lifeStore}
                 setStore={setLifeStore}
+                timezone={thinkingStore.timezone}
+                linkedSpacePreview={linkedSpacePreview}
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
@@ -1227,7 +1528,6 @@ export function TimeArchive() {
                 onJumpToThinking={handleJumpToThinking}
                 onImportToThinking={handleImportToThinking}
                 onCreateDoubt={createLifeDoubt}
-                onArchiveDoubt={archiveLifeDoubt}
                 onSaveDoubtNote={saveLifeDoubtNote}
                 onDeleteDoubt={deleteLifeDoubtWithDerived}
                 showNotice={showNotice}
@@ -1246,6 +1546,7 @@ export function TimeArchive() {
               <ThinkingLayer
                 store={thinkingStore}
                 setStore={setThinkingStore}
+                timezone={thinkingStore.timezone}
                 activeSpaceId={activeSpaceId}
                 setActiveSpaceId={setActiveSpaceId}
                 spaceView={thinkingView}
@@ -1257,16 +1558,25 @@ export function TimeArchive() {
                 onMoveNode={handleThinkingMoveNode}
                 onMarkMisplaced={handleThinkingMisplacedNode}
                 onDeleteNode={handleThinkingDeleteNode}
+                onUpdateNodeQuestion={handleThinkingUpdateNode}
+                onCopyNode={handleThinkingCopyNode}
+                onSaveNodeAnswer={handleThinkingSaveNodeAnswer}
                 onSetActiveTrack={handleThinkingSetActiveTrack}
+                onCreateTrack={handleThinkingCreateTrack}
                 onSaveBackground={handleThinkingSaveBackground}
-                onFreezeSpace={handleThinkingFreeze}
-                onToggleArchiveSpace={handleThinkingToggleArchive}
+                onWriteSpaceToTime={handleThinkingWriteToTime}
                 onDeleteSpace={handleThinkingDeleteSpace}
+                onRenameSpace={handleThinkingRenameSpace}
                 onExportSpace={handleThinkingExport}
                 onUpdateTrackDirection={handleThinkingTrackDirection}
-                onFreezeToLife={appendThinkingFreezeToLife}
+                scratchItems={thinkingStore.scratch}
+                onCreateScratch={handleCreateThinkingScratch}
+                onFeedScratchToTime={handleFeedThinkingScratchToTime}
+                onDeleteScratch={handleDeleteThinkingScratch}
+                onScratchToSpace={handleScratchToSpace}
                 focusMode={thinkingFocusMode}
                 onFocusModeChange={setThinkingFocusMode}
+                onViewModeChange={setThinkingViewMode}
                 reentryTarget={thinkingJumpTarget}
                 onReentryHandled={() => setThinkingJumpTarget(null)}
                 showNotice={showNotice}
@@ -1284,8 +1594,8 @@ export function TimeArchive() {
             >
               <SettingsLayer
                 payload={appPayload}
-                assistEnabled={thinkingStore.assistEnabled}
-                setAssistEnabled={(enabled) => setThinkingStore((prev) => ({ ...prev, assistEnabled: enabled }))}
+                timezone={thinkingStore.timezone}
+                setTimezone={(timezone) => setThinkingStore((prev) => ({ ...prev, timezone: sanitizeTimeZone(timezone) }))}
                 onSystemExport={handleSystemExport}
                 onClearAll={clearAllData}
                 showNotice={showNotice}
@@ -1307,7 +1617,7 @@ export function TimeArchive() {
   );
 }
 
-function TopTab(props: { label: string; active: boolean; onClick: () => void; daytime: boolean }) {
+function TopTab(props: { label: string; active: boolean; onClick: () => void; daytime: boolean; subtle?: boolean }) {
   return (
     <Button
       type="button"
@@ -1315,6 +1625,11 @@ function TopTab(props: { label: string; active: boolean; onClick: () => void; da
       variant="ghost"
       className={cn(
         "rounded-full border px-3 text-xs tracking-[0.12em] transition-colors",
+        props.subtle
+          ? props.active
+            ? "border-white/[0.06] bg-white/[0.03] text-[rgba(236,233,226,0.8)]"
+            : "border-white/[0.03] bg-transparent text-[rgba(224,219,211,0.38)] hover:bg-white/[0.025] hover:text-[rgba(236,233,226,0.68)]"
+          :
         props.active
           ? props.daytime
             ? "border-slate-600/35 bg-slate-100/75 text-slate-900"

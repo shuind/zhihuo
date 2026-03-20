@@ -77,6 +77,57 @@ async function run() {
   const statementSpaceId = createStatementSpace.json?.space_id;
   assert(typeof statementSpaceId === "string", "statement space id missing");
 
+  const createScratch = await request("POST", "/v1/thinking/scratch", {
+    raw_text: "也许这条只是先记一下"
+  });
+  assert(createScratch.status === 201, `create scratch failed: ${createScratch.status}`);
+  const scratchId = createScratch.json?.scratch?.id;
+  assert(typeof scratchId === "string", "scratch id missing");
+
+  const scratchList = await request("GET", "/v1/thinking/scratch");
+  assert(scratchList.status === 200, `scratch list failed: ${scratchList.status}`);
+  assert(Array.isArray(scratchList.json?.scratch), "scratch list should be array");
+
+  const scratchToSpace = await request("POST", `/v1/thinking/scratch/${scratchId}/to-space`);
+  assert(scratchToSpace.status === 200, `scratch to space failed: ${scratchToSpace.status}`);
+  const scratchSpaceId = scratchToSpace.json?.space_id;
+  assert(typeof scratchSpaceId === "string", "scratch to space should return space_id");
+
+  const scratchListAfterConvert = await request("GET", "/v1/thinking/scratch");
+  assert(scratchListAfterConvert.status === 200, `scratch list after convert failed: ${scratchListAfterConvert.status}`);
+  assert(
+    !scratchListAfterConvert.json?.scratch?.some((item) => item.id === scratchId),
+    "converted scratch should disappear from scratch list"
+  );
+
+  const secondScratch = await request("POST", "/v1/thinking/scratch", {
+    raw_text: "这条随记稍后放入时间"
+  });
+  assert(secondScratch.status === 201, `second scratch create failed: ${secondScratch.status}`);
+  const secondScratchId = secondScratch.json?.scratch?.id;
+  const secondScratchCreatedAt = secondScratch.json?.scratch?.created_at;
+  assert(typeof secondScratchId === "string", "second scratch id missing");
+  assert(typeof secondScratchCreatedAt === "string", "second scratch created_at missing");
+
+  const feedScratch = await request("POST", `/v1/thinking/scratch/${secondScratchId}/feed-to-time`);
+  assert(feedScratch.status === 200, `feed scratch to time failed: ${feedScratch.status}`);
+  const fedDoubtId = feedScratch.json?.doubt_id;
+  assert(typeof fedDoubtId === "string", "feed scratch should return doubt_id");
+
+  const feedScratchAgain = await request("POST", `/v1/thinking/scratch/${secondScratchId}/feed-to-time`);
+  assert(feedScratchAgain.status === 200, `feed scratch to time should be idempotent, got ${feedScratchAgain.status}`);
+  assert(feedScratchAgain.json?.doubt_id === fedDoubtId, "feed-to-time should return the same doubt on repeat");
+
+  const scratchListAfterFeed = await request("GET", "/v1/thinking/scratch");
+  assert(scratchListAfterFeed.status === 200, `scratch list after feed failed: ${scratchListAfterFeed.status}`);
+  assert(!scratchListAfterFeed.json?.scratch?.some((item) => item.id === secondScratchId), "fed scratch should disappear from list");
+
+  const doubtsAfterFeed = await request("GET", "/v1/doubts?range=all");
+  assert(doubtsAfterFeed.status === 200, `doubts after feed failed: ${doubtsAfterFeed.status}`);
+  const fedDoubt = doubtsAfterFeed.json?.doubts?.find((item) => item.id === fedDoubtId);
+  assert(fedDoubt?.raw_text === "这条随记稍后放入时间", "fed scratch should create time-layer doubt with original text");
+  assert(fedDoubt?.created_at === secondScratchCreatedAt, "fed scratch should preserve scratch created_at");
+
   const addQuestion = await request("POST", `/v1/thinking/spaces/${spaceId}/questions`, {
     raw_text: "Is the risk underestimated?"
   });
@@ -92,6 +143,11 @@ async function run() {
   assert((statementQuestion.json?.suggested_questions ?? []).length === 0, "default suggestions should be empty");
   const secondNodeId = statementQuestion.json?.node_id;
   assert(typeof secondNodeId === "string", "missing node id for second question");
+
+  const blankQuestion = await request("POST", `/v1/thinking/spaces/${spaceId}/questions`, {
+    raw_text: "   "
+  });
+  assert(blankQuestion.status === 400, `blank question should fail with 400, got ${blankQuestion.status}`);
 
   const link = await request("POST", `/v1/thinking/nodes/${firstNodeId}/link`, {
     target_node_id: secondNodeId
@@ -117,18 +173,55 @@ async function run() {
   assert(apply.status === 200, `organize apply failed: ${apply.status}`);
   assert(typeof apply.json?.moved_count === "number", "organize apply missing moved_count");
 
-  const freeze = await request("POST", `/v1/thinking/spaces/${spaceId}/freeze`, {
-    user_freeze_note: "阶段冻结测试",
-    milestone_node_ids: [firstNodeId, secondNodeId]
-  });
-  assert(freeze.status === 200, `freeze failed: ${freeze.status}`);
-  assert(Array.isArray(freeze.json?.milestone_node_ids), "freeze should return milestone ids");
-
   const detail = await request("GET", `/v1/thinking/spaces/${spaceId}`);
   assert(detail.status === 200, `space detail failed: ${detail.status}`);
   assert(Array.isArray(detail.json?.tracks), "tracks should be array");
   assert(Array.isArray(detail.json?.milestone_node_ids), "detail should include milestone ids");
   assert(detail.json?.tracks?.every((track) => "direction_hint" in track), "track detail should include direction_hint");
+  const detailFirstNode = detail.json?.tracks?.flatMap((track) => track.nodes ?? []).find((node) => node.id === firstNodeId);
+  assert(detailFirstNode?.answer_text === null, "new node should default answer_text to null");
+
+  const answer = await request("POST", `/v1/thinking/nodes/${firstNodeId}/answer`, {
+    answer_text: "先承认这件事对我有吸引力"
+  });
+  assert(answer.status === 200, `save answer failed: ${answer.status}`);
+  assert(answer.json?.answer_text === "先承认这件事对我有吸引力", "answer text should round-trip");
+
+  const detailAfterAnswer = await request("GET", `/v1/thinking/spaces/${spaceId}`);
+  assert(detailAfterAnswer.status === 200, `detail after answer failed: ${detailAfterAnswer.status}`);
+  const answeredNode = detailAfterAnswer.json?.tracks?.flatMap((track) => track.nodes ?? []).find((node) => node.id === firstNodeId);
+  assert(answeredNode?.answer_text === "先承认这件事对我有吸引力", "detail should include saved answer_text");
+
+  const clearAnswer = await request("POST", `/v1/thinking/nodes/${firstNodeId}/answer`, {
+    answer_text: ""
+  });
+  assert(clearAnswer.status === 200, `clear answer failed: ${clearAnswer.status}`);
+  assert(clearAnswer.json?.answer_text === null, "empty answer should persist as null");
+
+  const updateNode = await request("POST", `/v1/thinking/nodes/${firstNodeId}/update`, {
+    raw_question_text: "现在最重要的阻力是什么"
+  });
+  assert(updateNode.status === 200, `update node failed: ${updateNode.status}`);
+  assert(updateNode.json?.raw_question_text === "现在最重要的阻力是什么", "updated question should round-trip");
+
+  const copyNode = await request("POST", `/v1/thinking/nodes/${firstNodeId}/copy`);
+  assert(copyNode.status === 200, `copy node failed: ${copyNode.status}`);
+  assert(typeof copyNode.json?.node_id === "string", "copy node should return node_id");
+
+  const copyTargetTrack = await request("POST", `/v1/thinking/spaces/${spaceId}/tracks`);
+  assert(copyTargetTrack.status === 200, `create copy target track failed: ${copyTargetTrack.status}`);
+  const copyTargetTrackId = copyTargetTrack.json?.track_id;
+  assert(typeof copyTargetTrackId === "string", "copy target track id missing");
+
+  const copyNodeToTrack = await request("POST", `/v1/thinking/nodes/${firstNodeId}/copy`, {
+    target_track_id: copyTargetTrackId
+  });
+  assert(copyNodeToTrack.status === 200, `copy node to target track failed: ${copyNodeToTrack.status}`);
+  assert(copyNodeToTrack.json?.track_id === copyTargetTrackId, "copied node should land in target track");
+
+  const writeToTime = await request("POST", `/v1/thinking/spaces/${spaceId}/write-to-time`);
+  assert(writeToTime.status === 200, `write-to-time failed: ${writeToTime.status}`);
+  assert(writeToTime.json?.status === "hidden", "write-to-time should hide the space");
 
   const targetTrackId = detail.json?.tracks?.[0]?.id;
   assert(typeof targetTrackId === "string", "missing track id for direction hint");
@@ -138,8 +231,78 @@ async function run() {
   });
   assert(updateDirection.status === 200, `track direction update failed: ${updateDirection.status}`);
 
+  const clearDirection = await request("POST", `/v1/thinking/spaces/${spaceId}/track-direction`, {
+    track_id: targetTrackId,
+    direction_hint: null
+  });
+  assert(clearDirection.status === 200, `track direction clear failed: ${clearDirection.status}`);
+
+  const detailAfterClear = await request("GET", `/v1/thinking/spaces/${spaceId}`);
+  assert(detailAfterClear.status === 200, `space detail after clear failed: ${detailAfterClear.status}`);
+  const clearedTrack = detailAfterClear.json?.tracks?.find((track) => track.id === targetTrackId);
+  assert(clearedTrack?.direction_hint === null, "direction_hint should stay null after clearing");
+
+  const statementSpaceQuestion = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/questions`, {
+    raw_text: "这是另一条线吗"
+  });
+  assert(statementSpaceQuestion.status === 200, `statement space question failed: ${statementSpaceQuestion.status}`);
+
+  const statementDetail = await request("GET", `/v1/thinking/spaces/${statementSpaceId}`);
+  assert(statementDetail.status === 200, `statement detail failed: ${statementDetail.status}`);
+  const parkingTrackId = statementDetail.json?.parking_track_id;
+  assert(typeof parkingTrackId === "string", "parking track id missing");
+
+  const setParkingActive = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/active-track`, {
+    track_id: parkingTrackId
+  });
+  assert(setParkingActive.status === 200, `set parking track active failed: ${setParkingActive.status}`);
+
+  const statementDetailAfterParking = await request("GET", `/v1/thinking/spaces/${statementSpaceId}`);
+  assert(statementDetailAfterParking.status === 200, `statement detail after parking failed: ${statementDetailAfterParking.status}`);
+  assert(statementDetailAfterParking.json?.current_track_id === parkingTrackId, "parking track should remain active after refresh");
+
+  const createEmptyTrack = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/tracks`);
+  assert(createEmptyTrack.status === 200, `create empty track failed: ${createEmptyTrack.status}`);
+  assert(typeof createEmptyTrack.json?.track_id === "string", "empty track should return track_id");
+  const emptyTrackId = createEmptyTrack.json?.track_id;
+
+  const createEmptyTrackAgain = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/tracks`);
+  assert(createEmptyTrackAgain.status === 200, `second create empty track failed: ${createEmptyTrackAgain.status}`);
+  assert(createEmptyTrackAgain.json?.track_id === emptyTrackId, "pending track should be idempotent before first question");
+
+  const statementDetailAfterEmptyTrack = await request("GET", `/v1/thinking/spaces/${statementSpaceId}`);
+  assert(statementDetailAfterEmptyTrack.status === 200, `statement detail after empty track failed: ${statementDetailAfterEmptyTrack.status}`);
+  assert(statementDetailAfterEmptyTrack.json?.pending_track_id === emptyTrackId, "pending track id should round-trip");
+  assert(
+    statementDetailAfterEmptyTrack.json?.tracks?.some((track) => track.id === emptyTrackId && track.is_empty === true),
+    "empty track should appear in detail view"
+  );
+
+  const setEmptyActive = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/active-track`, {
+    track_id: emptyTrackId
+  });
+  assert(setEmptyActive.status === 200, `set empty track active failed: ${setEmptyActive.status}`);
+
+  const firstQuestionOnEmptyTrack = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/questions`, {
+    raw_text: "这是新方向的第一条",
+    track_id: emptyTrackId
+  });
+  assert(firstQuestionOnEmptyTrack.status === 200, `add question to empty track failed: ${firstQuestionOnEmptyTrack.status}`);
+
+  const statementDetailAfterFirstQuestion = await request("GET", `/v1/thinking/spaces/${statementSpaceId}`);
+  assert(statementDetailAfterFirstQuestion.status === 200, `statement detail after first empty-track question failed: ${statementDetailAfterFirstQuestion.status}`);
+  const promotedTrack = statementDetailAfterFirstQuestion.json?.tracks?.find((track) => track.id === emptyTrackId);
+  assert(promotedTrack?.node_count === 1, "empty track should become normal track after first question");
+  assert(promotedTrack?.is_empty === false, "empty track flag should clear after first question");
+  assert(statementDetailAfterFirstQuestion.json?.pending_track_id == null, "pending track should clear after first question");
+
+  const createNextEmptyTrack = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/tracks`);
+  assert(createNextEmptyTrack.status === 200, `next create empty track failed: ${createNextEmptyTrack.status}`);
+  assert(createNextEmptyTrack.json?.track_id !== emptyTrackId, "after first question, next pending track should be new");
+
   const spaces = await request("GET", "/v1/thinking/spaces");
   assert(spaces.status === 200, `spaces list failed: ${spaces.status}`);
+  assert(typeof spaces.json?.spaces?.[0]?.last_activity_at === "string", "spaces list should include last_activity_at");
   assert(spaces.json?.time_links?.[0]?.reentry?.question_entry, "time link should include reentry.question_entry");
 
   const deleteSpace = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/delete`);

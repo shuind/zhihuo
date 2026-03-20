@@ -6,6 +6,7 @@
   TrackDirectionHint,
   ThinkingNodeLinkRecord,
   ThinkingNodeRecord,
+  ThinkingScratchRecord,
   ThinkingSnapshot,
   ThinkingSpaceMetaRecord,
   ThinkingSpaceRecord
@@ -48,6 +49,10 @@ function isTrackDirectionHint(value: unknown): value is TrackDirectionHint {
   );
 }
 
+function isTrackDirectionSetting(value: unknown): value is TrackDirectionHint | null {
+  return value === null || isTrackDirectionHint(value);
+}
+
 function parseRange(range: string | null) {
   if (range === "week" || range === "month" || range === "all") return range;
   return "all";
@@ -68,12 +73,31 @@ function userSpaces(db: DbState, userId: string) {
   return db.thinking_spaces.filter((item) => item.user_id === userId);
 }
 
+function normalizeSpaceStatus(status: string | null | undefined): "active" | "hidden" {
+  return status === "active" ? "active" : "hidden";
+}
+
+function isSpaceActive(space: ThinkingSpaceRecord) {
+  return normalizeSpaceStatus(space.status) === "active";
+}
+
+function userScratch(db: DbState, userId: string) {
+  return db.thinking_scratch.filter((item) => item.user_id === userId);
+}
+
 function requireDoubt(db: DbState, userId: string, doubtId: string) {
   return db.doubts.find((item) => item.id === doubtId && item.user_id === userId && !item.deleted_at) ?? null;
 }
 
 function requireSpace(db: DbState, userId: string, spaceId: string) {
-  return db.thinking_spaces.find((space) => space.id === spaceId && space.user_id === userId) ?? null;
+  const space = db.thinking_spaces.find((item) => item.id === spaceId && item.user_id === userId) ?? null;
+  if (!space) return null;
+  space.status = normalizeSpaceStatus(space.status);
+  return space;
+}
+
+function requireScratch(db: DbState, userId: string, scratchId: string) {
+  return db.thinking_scratch.find((item) => item.id === scratchId && item.user_id === userId && !item.deleted_at) ?? null;
 }
 
 function maxOrderIndex(nodes: ThinkingNodeRecord[]) {
@@ -158,6 +182,8 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   if (!Object.prototype.hasOwnProperty.call(meta, "last_track_id")) meta.last_track_id = null;
   if (!Object.prototype.hasOwnProperty.call(meta, "last_organized_order")) meta.last_organized_order = -1;
   if (!Object.prototype.hasOwnProperty.call(meta, "parking_track_id")) meta.parking_track_id = createId();
+  if (!Object.prototype.hasOwnProperty.call(meta, "pending_track_id")) meta.pending_track_id = null;
+  if (!Object.prototype.hasOwnProperty.call(meta, "empty_track_ids")) meta.empty_track_ids = [];
   if (!Object.prototype.hasOwnProperty.call(meta, "milestone_node_ids")) meta.milestone_node_ids = [];
   if (!Object.prototype.hasOwnProperty.call(meta, "track_direction_hints")) meta.track_direction_hints = {};
   if (typeof meta.background_version !== "number" || !Number.isFinite(meta.background_version) || meta.background_version < 0) {
@@ -172,6 +198,18 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   if (typeof meta.parking_track_id !== "string" || !meta.parking_track_id.trim()) {
     meta.parking_track_id = createId();
   }
+  if (typeof meta.pending_track_id !== "string" || !meta.pending_track_id.trim()) {
+    meta.pending_track_id = null;
+  }
+  if (!Array.isArray(meta.empty_track_ids)) {
+    meta.empty_track_ids = [];
+  } else {
+    meta.empty_track_ids = meta.empty_track_ids.filter((id) => typeof id === "string" && id.trim());
+  }
+  if (!meta.pending_track_id && meta.empty_track_ids.length) {
+    meta.pending_track_id = meta.empty_track_ids[0] ?? null;
+  }
+  meta.empty_track_ids = meta.pending_track_id ? [meta.pending_track_id] : [];
   if (!Array.isArray(meta.milestone_node_ids)) {
     meta.milestone_node_ids = [];
   } else {
@@ -181,7 +219,7 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
     meta.track_direction_hints = {};
   } else {
     meta.track_direction_hints = Object.fromEntries(
-      Object.entries(meta.track_direction_hints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionHint(hint))
+      Object.entries(meta.track_direction_hints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionSetting(hint))
     );
   }
   return meta;
@@ -200,6 +238,8 @@ function ensureMeta(db: DbState, spaceId: string) {
     last_track_id: null,
     last_organized_order: -1,
     parking_track_id: createId(),
+    pending_track_id: null,
+    empty_track_ids: [],
     milestone_node_ids: [],
     track_direction_hints: {}
   };
@@ -220,6 +260,26 @@ function getParkingTrackId(meta: ThinkingSpaceMetaRecord) {
   return next;
 }
 
+function getEmptyTrackIds(meta: ThinkingSpaceMetaRecord) {
+  sanitizeMeta(meta);
+  return meta.empty_track_ids ?? [];
+}
+
+function removeEmptyTrackId(meta: ThinkingSpaceMetaRecord, trackId: string) {
+  meta.empty_track_ids = getEmptyTrackIds(meta).filter((id) => id !== trackId);
+  if (meta.pending_track_id === trackId) meta.pending_track_id = null;
+}
+
+function getPendingTrackId(meta: ThinkingSpaceMetaRecord) {
+  sanitizeMeta(meta);
+  return meta.pending_track_id ?? null;
+}
+
+function setPendingTrackId(meta: ThinkingSpaceMetaRecord, trackId: string | null) {
+  meta.pending_track_id = trackId;
+  meta.empty_track_ids = trackId ? [trackId] : [];
+}
+
 function getTrackDirectionHints(meta: ThinkingSpaceMetaRecord) {
   sanitizeMeta(meta);
   return meta.track_direction_hints ?? {};
@@ -228,14 +288,14 @@ function getTrackDirectionHints(meta: ThinkingSpaceMetaRecord) {
 function pruneTrackDirectionHints(meta: ThinkingSpaceMetaRecord, trackIds: Iterable<string>) {
   const allowed = new Set(trackIds);
   const next = Object.fromEntries(
-    Object.entries(getTrackDirectionHints(meta)).filter(([trackId, hint]) => allowed.has(trackId) && isTrackDirectionHint(hint))
+    Object.entries(getTrackDirectionHints(meta)).filter(([trackId, hint]) => allowed.has(trackId) && isTrackDirectionSetting(hint))
   );
   meta.track_direction_hints = next;
   return next;
 }
 
 function inferTrackDirectionHint(trackNodes: ThinkingNodeRecord[], isParkingTrack: boolean): TrackDirectionHint | null {
-  if (isParkingTrack) return "aside";
+  if (isParkingTrack) return null;
   if (!trackNodes.length) return null;
 
   const text = trackNodes.slice(0, 3).map((node) => node.raw_question_text).join(" ");
@@ -263,8 +323,10 @@ function resolveTrackDirectionHint(
   trackNodes: ThinkingNodeRecord[],
   parkingTrackId: string
 ) {
-  const saved = getTrackDirectionHints(meta)[trackId];
-  if (isTrackDirectionHint(saved)) return saved;
+  const hints = getTrackDirectionHints(meta);
+  if (Object.prototype.hasOwnProperty.call(hints, trackId)) {
+    return hints[trackId] ?? null;
+  }
   return inferTrackDirectionHint(trackNodes, trackId === parkingTrackId);
 }
 
@@ -292,6 +354,26 @@ function findRelatedCandidate(nodes: ThinkingNodeRecord[], node: ThinkingNodeRec
   return best;
 }
 
+function deriveTrackEdgePreview(nodes: ThinkingNodeRecord[]) {
+  if (!nodes.length) return { firstNode: null, lastNode: null } as const;
+  const ordered = [...nodes].sort((a, b) => {
+    const aTime = new Date(a.created_at).getTime();
+    const bTime = new Date(b.created_at).getTime();
+    const aValid = Number.isFinite(aTime);
+    const bValid = Number.isFinite(bTime);
+    if (aValid && bValid && aTime !== bTime) return aTime - bTime;
+    if (aValid && !bValid) return -1;
+    if (!aValid && bValid) return 1;
+    return a.order_index - b.order_index;
+  });
+  const firstNode = collapseWhitespace(ordered[0]?.raw_question_text ?? "");
+  const lastNode = collapseWhitespace(ordered[ordered.length - 1]?.raw_question_text ?? "");
+  return {
+    firstNode: firstNode || null,
+    lastNode: lastNode || firstNode || null
+  } as const;
+}
+
 function echoKey(text: string) {
   return text.toLowerCase().replace(/[^\p{Script=Han}A-Za-z0-9]/gu, "");
 }
@@ -315,7 +397,6 @@ export function listDoubts(db: DbState, userId: string, query: { range: string |
   const range = parseRange(query.range);
   return userDoubts(db, userId)
     .filter((item) => !item.deleted_at)
-    .filter((item) => (query.includeArchived ? true : !item.archived_at))
     .filter((item) => isWithinRange(item.created_at, range))
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
@@ -323,11 +404,19 @@ export function listDoubts(db: DbState, userId: string, query: { range: string |
 export function createDoubt(db: DbState, userId: string, rawText: string) {
   const normalized = collapseWhitespace(rawText);
   if (!normalized) return null;
+  return createDoubtAt(db, userId, normalized, nowIso());
+}
+
+export function createDoubtAt(db: DbState, userId: string, rawText: string, createdAt: string) {
+  const normalized = collapseWhitespace(rawText);
+  if (!normalized) return null;
   const item: DoubtRecord = {
     id: createId(),
     user_id: userId,
     raw_text: normalized,
-    created_at: nowIso(),
+    first_node_preview: null,
+    last_node_preview: null,
+    created_at: createdAt,
     archived_at: null,
     deleted_at: null
   };
@@ -411,7 +500,7 @@ export function createThinkingSpace(
   const suggestedQuestions = normalized.suggested_questions.slice(0, 3);
   const questionSuggestion = suggestedQuestions[0] ?? null;
 
-  const activeCount = userSpaces(db, userId).filter((space) => space.status === "active").length;
+  const activeCount = userSpaces(db, userId).filter((space) => isSpaceActive(space)).length;
   if (activeCount >= MAX_ACTIVE_SPACES) return { over_limit: true as const };
   const now = nowIso();
   const space: ThinkingSpaceRecord = {
@@ -434,6 +523,8 @@ export function createThinkingSpace(
     last_track_id: null,
     last_organized_order: -1,
     parking_track_id: createId(),
+    pending_track_id: null,
+    empty_track_ids: [],
     milestone_node_ids: [],
     track_direction_hints: {}
   });
@@ -448,8 +539,8 @@ export function createThinkingSpace(
 }
 
 export function listThinkingSpaces(db: DbState, userId: string) {
-  const spaces = userSpaces(db, userId).sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
-  const ids = new Set(spaces.map((space) => space.id));
+  const rawSpaces = userSpaces(db, userId);
+  const ids = new Set(rawSpaces.map((space) => space.id));
   const spaceMeta = db.thinking_space_meta.filter((meta) => ids.has(meta.space_id)).map(sanitizeMeta);
   const nodesBySpace = new Map<string, ThinkingNodeRecord[]>();
   for (const node of db.thinking_nodes.filter((node) => ids.has(node.space_id) && node.state === "normal")) {
@@ -457,8 +548,27 @@ export function listThinkingSpaces(db: DbState, userId: string) {
     if (list) list.push(node);
     else nodesBySpace.set(node.space_id, [node]);
   }
+  const spaces = rawSpaces
+    .map((space) => ({
+      ...space,
+      status: normalizeSpaceStatus(space.status),
+      last_activity_at: getSpaceLastActivity(space, nodesBySpace.get(space.id) ?? [])
+    }))
+    .sort((a, b) => new Date(b.last_activity_at).getTime() - new Date(a.last_activity_at).getTime());
+  const seenBindings = new Set<string>();
+  const seenDoubtIds = new Set<string>();
+  const seenSpaceIds = new Set<string>();
   const timeLinks = spaces
     .filter((space) => typeof space.source_time_doubt_id === "string")
+    .filter((space) => {
+      const doubtId = space.source_time_doubt_id as string;
+      const bindingKey = `${space.id}:${doubtId}`;
+      if (seenBindings.has(bindingKey) || seenDoubtIds.has(doubtId) || seenSpaceIds.has(space.id)) return false;
+      seenBindings.add(bindingKey);
+      seenDoubtIds.add(doubtId);
+      seenSpaceIds.add(space.id);
+      return true;
+    })
     .map((space) => {
       const meta = spaceMeta.find((item) => item.space_id === space.id);
       const nodes = nodesBySpace.get(space.id) ?? [];
@@ -528,7 +638,102 @@ export function listThinkingSpaces(db: DbState, userId: string) {
 export function createThinkingSpaceFromDoubt(db: DbState, userId: string, doubtId: string) {
   const doubt = requireDoubt(db, userId, doubtId);
   if (!doubt) return null;
+  const existing = userSpaces(db, userId)
+    .filter((space) => space.source_time_doubt_id === doubt.id)
+    .map((space) => ({ space, lastActivityAt: getSpaceLastActivity(space, getSpaceNodes(db, space.id)) }))
+    .sort((a, b) => new Date(b.lastActivityAt).getTime() - new Date(a.lastActivityAt).getTime())[0]?.space;
+  if (existing) {
+    existing.status = normalizeSpaceStatus(existing.status);
+    if (existing.status === "hidden") {
+      const activeCount = userSpaces(db, userId).filter((space) => isSpaceActive(space)).length;
+      if (activeCount >= MAX_ACTIVE_SPACES) return { over_limit: true as const };
+      existing.status = "active";
+    }
+    return { over_limit: false as const, space: existing, restored: true as const };
+  }
   return createThinkingSpace(db, userId, doubt.raw_text, doubt.id);
+}
+
+function getSpaceLastActivity(space: ThinkingSpaceRecord, nodes: ThinkingNodeRecord[]) {
+  let latest = new Date(space.created_at).getTime();
+  if (space.frozen_at) latest = Math.max(latest, new Date(space.frozen_at).getTime());
+  for (const node of nodes) {
+    latest = Math.max(latest, new Date(node.created_at).getTime());
+  }
+  return new Date(latest).toISOString();
+}
+
+export function listThinkingScratch(db: DbState, userId: string) {
+  return userScratch(db, userId)
+    .filter((item) => !item.deleted_at && !item.archived_at && !item.derived_space_id && !item.fed_time_doubt_id)
+    .slice()
+    .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+}
+
+export function createThinkingScratch(db: DbState, userId: string, rawText: string) {
+  const normalized = collapseWhitespace(rawText);
+  if (!normalized) return null;
+  const now = nowIso();
+  const scratch: ThinkingScratchRecord = {
+    id: createId(),
+    user_id: userId,
+    raw_text: normalized,
+    created_at: now,
+    updated_at: now,
+    archived_at: null,
+    deleted_at: null,
+    derived_space_id: null,
+    fed_time_doubt_id: null
+  };
+  db.thinking_scratch.unshift(scratch);
+  return scratch;
+}
+
+export function deleteThinkingScratch(db: DbState, userId: string, scratchId: string) {
+  const scratch = requireScratch(db, userId, scratchId);
+  if (!scratch) return null;
+  scratch.deleted_at = nowIso();
+  return scratch;
+}
+
+export function convertScratchToSpace(db: DbState, userId: string, scratchId: string) {
+  const scratch = requireScratch(db, userId, scratchId);
+  if (!scratch) return { kind: "not_found" as const };
+  if (scratch.fed_time_doubt_id) return { kind: "not_available" as const };
+
+  if (scratch.derived_space_id) {
+    const existing = requireSpace(db, userId, scratch.derived_space_id);
+    if (existing) return { kind: "ok" as const, space: existing, converted: false as const };
+  }
+
+  const result = createThinkingSpace(db, userId, scratch.raw_text, null);
+  if (!result) return { kind: "invalid" as const };
+  if (result.over_limit) return { kind: "over_limit" as const };
+
+  scratch.derived_space_id = result.space.id;
+  scratch.updated_at = nowIso();
+  return { kind: "ok" as const, space: result.space, converted: true as const };
+}
+
+export function feedScratchToTime(db: DbState, userId: string, scratchId: string) {
+  const scratch = requireScratch(db, userId, scratchId);
+  if (!scratch) return { kind: "not_found" as const };
+  if (scratch.derived_space_id) return { kind: "not_available" as const };
+
+  if (scratch.fed_time_doubt_id) {
+    const existing = requireDoubt(db, userId, scratch.fed_time_doubt_id);
+    if (existing) {
+      return { kind: "ok" as const, doubt: existing, created: false as const };
+    }
+  }
+
+  const doubt = createDoubtAt(db, userId, scratch.raw_text, scratch.created_at);
+  if (!doubt) return { kind: "invalid" as const };
+
+  scratch.fed_time_doubt_id = doubt.id;
+  scratch.updated_at = nowIso();
+
+  return { kind: "ok" as const, doubt, created: true as const };
 }
 
 export function addQuestionToSpace(
@@ -559,9 +764,14 @@ export function addQuestionToSpace(
   const nodes = getSpaceNodes(db, spaceId);
   const trackMap = getTrackMap(nodes);
   const requestedTrackId = normalizeTrackId(options?.track_id ?? null);
+  const pendingTrackId = getPendingTrackId(meta);
   let trackId: string | null = null;
-  if (requestedTrackId && requestedTrackId !== "__new__" && trackMap.has(requestedTrackId)) {
+  if (requestedTrackId && requestedTrackId !== "__new__" && pendingTrackId === requestedTrackId) {
     trackId = requestedTrackId;
+    removeEmptyTrackId(meta, requestedTrackId);
+  } else if (requestedTrackId && requestedTrackId !== "__new__" && trackMap.has(requestedTrackId)) {
+    trackId = requestedTrackId;
+    removeEmptyTrackId(meta, requestedTrackId);
   } else if (requestedTrackId === "__new__") {
     trackId = createId();
   } else if (meta.last_track_id && trackMap.has(meta.last_track_id)) {
@@ -578,6 +788,7 @@ export function addQuestionToSpace(
     parent_node_id: toTrackParentId(trackId),
     raw_question_text: normalized.text,
     note_text: normalized.raw_note,
+    answer_text: null,
     created_at: nowIso(),
     order_index: maxOrderIndex(nodes) + 1,
     is_suggested: Boolean(options?.from_suggestion),
@@ -600,6 +811,38 @@ export function addQuestionToSpace(
     suggested_questions: suggestedQuestions,
     related_candidate: relatedCandidate
   };
+}
+
+export function writeSpaceToTime(db: DbState, userId: string, spaceId: string) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const writtenAt = nowIso();
+  const edgePreview = deriveTrackEdgePreview(getSpaceNodes(db, spaceId));
+  let doubt: DoubtRecord | null = null;
+  if (space.source_time_doubt_id) {
+    doubt = requireDoubt(db, userId, space.source_time_doubt_id);
+  }
+  if (doubt) {
+    doubt.raw_text = space.root_question_text;
+    doubt.first_node_preview = edgePreview.firstNode;
+    doubt.last_node_preview = edgePreview.lastNode;
+    doubt.created_at = writtenAt;
+    doubt.archived_at = null;
+  } else {
+    doubt = createDoubtAt(db, userId, space.root_question_text, writtenAt);
+    if (!doubt) return { kind: "invalid" as const };
+    doubt.first_node_preview = edgePreview.firstNode;
+    doubt.last_node_preview = edgePreview.lastNode;
+    space.source_time_doubt_id = doubt.id;
+  }
+
+  space.status = "hidden";
+  space.frozen_at = writtenAt;
+  const meta = ensureMeta(db, spaceId);
+  meta.user_freeze_note = null;
+  return { kind: "ok" as const, space, doubt };
 }
 
 function computeOrganizeCandidates(
@@ -741,8 +984,12 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   const nodes = getSpaceNodes(db, spaceId);
   const meta = ensureMeta(db, spaceId);
   const parkingTrackId = getParkingTrackId(meta);
+  const pendingTrackId = getPendingTrackId(meta);
   const tracks = getTrackMap(nodes);
   if (!tracks.has(parkingTrackId)) tracks.set(parkingTrackId, []);
+  if (pendingTrackId && pendingTrackId !== parkingTrackId && !tracks.has(pendingTrackId)) {
+    tracks.set(pendingTrackId, []);
+  }
   const milestoneSet = new Set((meta.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
   const links = db.thinking_node_links.filter((item) => item.space_id === spaceId && item.link_type === "related");
   const nodeLinkedSet = new Set<string>();
@@ -765,9 +1012,10 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     .map(([trackId, trackNodes]) => ({
       trackId,
       firstOrder: trackNodes[0]?.order_index ?? Number.MAX_SAFE_INTEGER,
-      title: trackId === parkingTrackId ? "先放这里" : trackNodes[0]?.raw_question_text ?? "未命名疑问",
+      title: trackId === parkingTrackId ? "先放这里" : trackNodes[0]?.raw_question_text ?? "新方向",
       directionHint: resolveTrackDirectionHint(meta, trackId, trackNodes, parkingTrackId),
       isParking: trackId === parkingTrackId,
+      isEmpty: trackId === pendingTrackId && trackNodes.length === 0,
       nodes: trackNodes
     }))
     .sort((a, b) => {
@@ -783,6 +1031,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     title_question_text: track.title,
     direction_hint: track.directionHint,
     is_parking: track.isParking,
+    is_empty: track.isEmpty,
     node_count: track.nodes.length,
     nodes: track.nodes.map((node) => {
       const key = echoKey(node.raw_question_text);
@@ -792,6 +1041,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
         id: node.id,
         raw_question_text: node.raw_question_text,
         note_text: node.note_text ?? null,
+        answer_text: node.answer_text ?? null,
         created_at: node.created_at,
         is_suggested: node.is_suggested,
         is_milestone: milestoneSet.has(node.id),
@@ -806,7 +1056,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   if (meta.last_track_id && tracks.has(meta.last_track_id)) currentTrackId = meta.last_track_id;
   if (!currentTrackId) currentTrackId = chooseFallbackTrackId(nodes);
   if (!currentTrackId) currentTrackId = trackRows.find((track) => track.trackId !== parkingTrackId)?.trackId ?? parkingTrackId;
-  if (currentTrackId === parkingTrackId && trackRows.some((track) => track.trackId !== parkingTrackId)) {
+  if (!meta.last_track_id && currentTrackId === parkingTrackId && trackRows.some((track) => track.trackId !== parkingTrackId)) {
     currentTrackId = trackRows.find((track) => track.trackId !== parkingTrackId)?.trackId ?? parkingTrackId;
   }
 
@@ -822,6 +1072,8 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     background_text: meta.background_text ?? null,
     background_version: meta.background_version ?? 0,
     parking_track_id: parkingTrackId,
+    pending_track_id: pendingTrackId,
+    empty_track_ids: getEmptyTrackIds(meta),
     milestone_node_ids: [...milestoneSet]
   };
 }
@@ -832,15 +1084,35 @@ export function setActiveTrack(db: DbState, userId: string, spaceId: string, tra
   const meta = ensureMeta(db, spaceId);
   const nodes = getSpaceNodes(db, spaceId);
   const tracks = getTrackMap(nodes);
+  const parkingTrackId = getParkingTrackId(meta);
   if (!trackId) {
     meta.last_track_id = null;
     return { kind: "ok" as const, track_id: null };
   }
   const normalized = normalizeTrackId(trackId);
   if (!normalized || normalized === "__new__") return { kind: "track_not_found" as const };
-  if (!tracks.has(normalized)) return { kind: "track_not_found" as const };
+  if (!tracks.has(normalized) && normalized !== parkingTrackId && getPendingTrackId(meta) !== normalized) {
+    return { kind: "track_not_found" as const };
+  }
   meta.last_track_id = normalized;
   return { kind: "ok" as const, track_id: normalized };
+}
+
+export function createEmptyTrack(db: DbState, userId: string, spaceId: string) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const meta = ensureMeta(db, spaceId);
+  const existing = getPendingTrackId(meta);
+  if (existing) {
+    meta.last_track_id = existing;
+    return { kind: "ok" as const, track_id: existing };
+  }
+  const trackId = createId();
+  setPendingTrackId(meta, trackId);
+  meta.last_track_id = trackId;
+  return { kind: "ok" as const, track_id: trackId };
 }
 
 export function updateTrackDirectionHint(
@@ -863,11 +1135,7 @@ export function updateTrackDirectionHint(
   if (directionHint !== null && !isTrackDirectionHint(directionHint)) return { kind: "invalid_hint" as const };
 
   const hints = { ...getTrackDirectionHints(meta) };
-  if (directionHint === null) {
-    delete hints[normalized];
-  } else {
-    hints[normalized] = directionHint;
-  }
+  hints[normalized] = directionHint;
   meta.track_direction_hints = hints;
   return { kind: "ok" as const, track_id: normalized, direction_hint: directionHint };
 }
@@ -895,6 +1163,21 @@ export function updateSpaceBackground(db: DbState, userId: string, spaceId: stri
   return { kind: "ok" as const, background_text: meta.background_text, background_version: meta.background_version ?? 0 };
 }
 
+export function updateSpaceRootQuestion(db: DbState, userId: string, spaceId: string, rootQuestionText: string) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+
+  const normalized = collapseWhitespace(rootQuestionText);
+  if (!normalized) return { kind: "invalid_empty" as const };
+  if (normalized.length > 220) return { kind: "invalid_length" as const };
+  if (space.root_question_text === normalized) {
+    return { kind: "ok" as const, root_question_text: space.root_question_text, changed: false as const };
+  }
+
+  space.root_question_text = normalized;
+  return { kind: "ok" as const, root_question_text: space.root_question_text, changed: true as const };
+}
+
 export function moveNode(db: DbState, userId: string, nodeId: string, targetTrackId: string) {
   const node = db.thinking_nodes.find((item) => item.id === nodeId);
   if (!node) return null;
@@ -903,13 +1186,62 @@ export function moveNode(db: DbState, userId: string, nodeId: string, targetTrac
   if (space.status !== "active") return { readonly: true as const };
 
   const normalizedTarget = normalizeTrackId(targetTrackId);
-  const meta = ensureMeta(db, node.space_id);
-  const parkingTrackId = getParkingTrackId(meta);
   const nextTrackId = normalizedTarget === "__new__" || !normalizedTarget ? createId() : normalizedTarget;
+  if (trackIdFromNode(node) === nextTrackId) return { readonly: false as const, node, track_id: nextTrackId };
+  const meta = ensureMeta(db, node.space_id);
+  removeEmptyTrackId(meta, nextTrackId);
   node.parent_node_id = toTrackParentId(nextTrackId);
+  node.order_index = maxOrderIndex(getSpaceNodes(db, node.space_id)) + 1;
   node.dimension = classifyDimension(node.raw_question_text);
-  if (nextTrackId !== parkingTrackId) meta.last_track_id = nextTrackId;
   return { readonly: false as const, node, track_id: nextTrackId };
+}
+
+export function updateNodeQuestion(db: DbState, userId: string, nodeId: string, rawQuestionText: string) {
+  const node = db.thinking_nodes.find((item) => item.id === nodeId);
+  if (!node) return { kind: "not_found" as const };
+  const space = requireSpace(db, userId, node.space_id);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const meta = ensureMeta(db, node.space_id);
+  const normalized = normalizeQuestionInput(rawQuestionText, meta.background_text ?? null);
+  if (!normalized.ok) return { kind: "invalid" as const };
+
+  node.raw_question_text = normalized.text;
+  node.dimension = classifyDimension(normalized.text);
+  db.thinking_node_links = db.thinking_node_links.filter((link) => link.source_node_id !== nodeId && link.target_node_id !== nodeId);
+  return { kind: "ok" as const, node };
+}
+
+export function copyNode(db: DbState, userId: string, nodeId: string, targetTrackId?: string | null) {
+  const node = db.thinking_nodes.find((item) => item.id === nodeId);
+  if (!node) return { kind: "not_found" as const };
+  const space = requireSpace(db, userId, node.space_id);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const normalizedTarget = normalizeTrackId(targetTrackId);
+  const nextTrackId =
+    normalizedTarget === "__new__" || !normalizedTarget ? trackIdFromNode(node) : normalizedTarget;
+  const meta = ensureMeta(db, node.space_id);
+  removeEmptyTrackId(meta, nextTrackId);
+
+  const nextNode: ThinkingNodeRecord = {
+    id: createId(),
+    space_id: node.space_id,
+    parent_node_id: toTrackParentId(nextTrackId),
+    raw_question_text: node.raw_question_text,
+    note_text: node.note_text ?? null,
+    answer_text: node.answer_text ?? null,
+    created_at: nowIso(),
+    order_index: maxOrderIndex(getSpaceNodes(db, node.space_id)) + 1,
+    is_suggested: false,
+    state: "normal",
+    dimension: classifyDimension(node.raw_question_text)
+  };
+  db.thinking_nodes.push(nextNode);
+  enforceMaxNodes(db, node.space_id);
+  return { kind: "ok" as const, node: nextNode, track_id: nextTrackId };
 }
 
 export function markNodeMisplaced(db: DbState, userId: string, nodeId: string) {
@@ -942,29 +1274,16 @@ export function deleteNode(db: DbState, userId: string, nodeId: string) {
   return { kind: "ok" as const, space_id: node.space_id };
 }
 
-export function freezeSpace(
-  db: DbState,
-  userId: string,
-  spaceId: string,
-  userFreezeNote: string | null,
-  milestoneNodeIds?: string[]
-) {
-  const space = requireSpace(db, userId, spaceId);
-  if (!space) return null;
-  if (space.status !== "active") return { already_frozen: true as const, space };
+export function updateNodeAnswer(db: DbState, userId: string, nodeId: string, answerText: string | null) {
+  const node = db.thinking_nodes.find((item) => item.id === nodeId);
+  if (!node) return { kind: "not_found" as const };
+  const space = requireSpace(db, userId, node.space_id);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
 
-  const note = userFreezeNote ? collapseWhitespace(userFreezeNote).slice(0, 48) : "";
-  space.status = "frozen";
-  space.frozen_at = nowIso();
-
-  const meta = ensureMeta(db, spaceId);
-  const milestones = Array.isArray(milestoneNodeIds) ? milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : [];
-  const nodeIds = new Set(getSpaceNodes(db, spaceId).map((node) => node.id));
-  meta.user_freeze_note = note || null;
-  meta.milestone_node_ids = milestones.filter((id) => nodeIds.has(id));
-  meta.export_version += 1;
-
-  return { already_frozen: false as const, space, freeze_note: meta.user_freeze_note, milestone_node_ids: meta.milestone_node_ids };
+  const normalized = typeof answerText === "string" ? answerText.trim() : "";
+  node.answer_text = normalized || null;
+  return { kind: "ok" as const, node };
 }
 
 export function linkThinkingNode(db: DbState, userId: string, nodeId: string, targetNodeIdInput: string) {
@@ -1003,17 +1322,17 @@ export function linkThinkingNode(db: DbState, userId: string, nodeId: string, ta
   return { kind: "ok" as const, link };
 }
 
-export function setSpaceStatus(db: DbState, userId: string, spaceId: string, targetStatus: "active" | "archived") {
+export function setSpaceStatus(db: DbState, userId: string, spaceId: string, targetStatus: "active" | "hidden") {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
 
-  if (targetStatus === "archived") {
-    space.status = "archived";
+  if (targetStatus === "hidden") {
+    space.status = "hidden";
     return { kind: "ok" as const, space };
   }
 
   if (space.status === "active") return { kind: "ok" as const, space };
-  const activeCount = userSpaces(db, userId).filter((item) => item.status === "active").length;
+  const activeCount = userSpaces(db, userId).filter((item) => isSpaceActive(item)).length;
   if (activeCount >= MAX_ACTIVE_SPACES) return { kind: "over_limit" as const };
   space.status = "active";
   return { kind: "ok" as const, space };
@@ -1061,13 +1380,26 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
   for (const key of Object.keys(inboxMap)) {
     inboxMap[key].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   }
+  const scratch = userScratch(db, userId)
+    .filter((item) => !item.deleted_at)
+    .map((item) => ({
+      id: item.id,
+      userId: item.user_id,
+      rawText: item.raw_text,
+      createdAt: item.created_at,
+      updatedAt: item.updated_at,
+      archivedAt: item.archived_at,
+      deletedAt: item.deleted_at,
+      derivedSpaceId: item.derived_space_id,
+      fedTimeDoubtId: item.fed_time_doubt_id
+    }));
 
   return {
     spaces: spaces.map((space) => ({
       id: space.id,
       userId: space.user_id,
       rootQuestionText: space.root_question_text,
-      status: space.status,
+      status: normalizeSpaceStatus(space.status),
       createdAt: space.created_at,
       frozenAt: space.frozen_at,
       sourceTimeDoubtId: space.source_time_doubt_id
@@ -1078,6 +1410,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       parentNodeId: node.parent_node_id,
       rawQuestionText: node.raw_question_text,
       noteText: node.note_text ?? null,
+      answerText: node.answer_text ?? null,
       createdAt: node.created_at,
       orderIndex: node.order_index,
       isSuggested: node.is_suggested,
@@ -1094,6 +1427,8 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       lastTrackId: meta.last_track_id ?? null,
       lastOrganizedOrder: meta.last_organized_order ?? -1,
       parkingTrackId: meta.parking_track_id ?? null,
+      pendingTrackId: meta.pending_track_id ?? null,
+      emptyTrackIds: meta.empty_track_ids ?? [],
       milestoneNodeIds: meta.milestone_node_ids ?? [],
       trackDirectionHints: meta.track_direction_hints ?? {}
     })),
@@ -1107,6 +1442,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       createdAt: link.created_at
     })),
     inbox: inboxMap,
+    scratch,
     assistEnabled: true
   };
 }
@@ -1116,7 +1452,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     id: typeof space.id === "string" ? space.id : createId(),
     user_id: userId,
     root_question_text: collapseWhitespace(space.rootQuestionText ?? ""),
-    status: space.status === "active" || space.status === "frozen" || space.status === "archived" ? space.status : "active",
+    status: normalizeSpaceStatus(space.status),
     created_at: typeof space.createdAt === "string" ? space.createdAt : nowIso(),
     frozen_at: typeof space.frozenAt === "string" ? space.frozenAt : null,
     source_time_doubt_id: typeof space.sourceTimeDoubtId === "string" ? space.sourceTimeDoubtId : null
@@ -1131,6 +1467,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
       parent_node_id: typeof node.parentNodeId === "string" ? node.parentNodeId : null,
       raw_question_text: collapseWhitespace(node.rawQuestionText ?? ""),
       note_text: typeof node.noteText === "string" ? collapseWhitespace(node.noteText) : null,
+      answer_text: typeof node.answerText === "string" ? node.answerText.trim() || null : null,
       created_at: typeof node.createdAt === "string" ? node.createdAt : nowIso(),
       order_index: Number.isFinite(node.orderIndex) ? node.orderIndex : 0,
       is_suggested: Boolean(node.isSuggested),
@@ -1159,13 +1496,17 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
         last_organized_order:
           Number.isFinite(meta.lastOrganizedOrder) && typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
         parking_track_id: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
+        pending_track_id: typeof meta.pendingTrackId === "string" ? meta.pendingTrackId : null,
+        empty_track_ids: Array.isArray(meta.emptyTrackIds)
+          ? meta.emptyTrackIds.filter((id) => typeof id === "string")
+          : [],
         milestone_node_ids: Array.isArray(meta.milestoneNodeIds)
           ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3)
           : [],
         track_direction_hints:
           meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
             ? Object.fromEntries(
-                Object.entries(meta.trackDirectionHints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionHint(hint))
+                Object.entries(meta.trackDirectionHints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionSetting(hint))
               )
             : {}
       })
@@ -1197,6 +1538,20 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
       }))
       .filter((item) => item.raw_text);
   });
+  const nextScratch: ThinkingScratchRecord[] = (snapshot.scratch ?? [])
+    .filter((item) => item && typeof item.id === "string")
+    .map((item) => ({
+      id: item.id,
+      user_id: userId,
+      raw_text: collapseWhitespace(item.rawText ?? ""),
+      created_at: typeof item.createdAt === "string" ? item.createdAt : nowIso(),
+      updated_at: typeof item.updatedAt === "string" ? item.updatedAt : nowIso(),
+      archived_at: typeof item.archivedAt === "string" ? item.archivedAt : null,
+      deleted_at: typeof item.deletedAt === "string" ? item.deletedAt : null,
+      derived_space_id: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
+      fed_time_doubt_id: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
+    }))
+    .filter((item) => item.raw_text);
 
   const userSpaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
   db.thinking_spaces = [...db.thinking_spaces.filter((space) => space.user_id !== userId), ...nextSpaces];
@@ -1207,6 +1562,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
   db.thinking_space_meta = [...db.thinking_space_meta.filter((meta) => !userSpaceIds.has(meta.space_id)), ...nextMeta];
   db.thinking_node_links = [...db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id)), ...nextLinks];
   db.thinking_inbox = [...db.thinking_inbox.filter((item) => !userSpaceIds.has(item.space_id)), ...nextInbox];
+  db.thinking_scratch = [...db.thinking_scratch.filter((item) => item.user_id !== userId), ...nextScratch];
 }
 
 export function exportSpace(db: DbState, userId: string, spaceId: string) {
@@ -1228,7 +1584,7 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   lines.push(`- 根问题：${space.root_question_text}`);
   lines.push(`- 状态：${space.status}`);
   lines.push(`- 创建时间：${formatDateTime(space.created_at)}`);
-  if (space.frozen_at) lines.push(`- 冻结时间：${formatDateTime(space.frozen_at)}`);
+  if (space.frozen_at) lines.push(`- 写入时间：${formatDateTime(space.frozen_at)}`);
   if (meta.background_text) {
     lines.push(`- 背景版本：v${meta.background_version ?? 0}`);
     lines.push(`- 背景说明：${meta.background_text}`);
@@ -1237,10 +1593,6 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
 
   orderedTracks.forEach(([trackId, trackNodes], index) => {
     lines.push(`## 方向 ${index + 1}`);
-    lines.push(`- 轨道ID：${trackId}`);
-    const directionHint = resolveTrackDirectionHint(meta, trackId, trackNodes, parkingTrackId);
-    if (directionHint) lines.push(`- 推进方向：${TRACK_DIRECTION_HINT_LABEL[directionHint]}`);
-    lines.push(`- 首条疑问：${trackNodes[0]?.raw_question_text ?? ""}`);
     for (const node of trackNodes) {
       const star = milestoneSet.has(node.id) ? "⭐ " : "";
       lines.push(`- ${star}${node.raw_question_text}`);
@@ -1271,7 +1623,8 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
     spaces: spaceIds.size,
     nodes: db.thinking_nodes.filter((node) => spaceIds.has(node.space_id)).length,
     inbox: db.thinking_inbox.filter((item) => spaceIds.has(item.space_id)).length,
-    links: db.thinking_node_links.filter((link) => spaceIds.has(link.space_id)).length
+    links: db.thinking_node_links.filter((link) => spaceIds.has(link.space_id)).length,
+    scratch: db.thinking_scratch.filter((item) => item.user_id === userId).length
   };
 
   db.doubt_notes = db.doubt_notes.filter((note) => !doubtIds.has(note.doubt_id));
@@ -1281,6 +1634,7 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
   db.thinking_space_meta = db.thinking_space_meta.filter((meta) => !spaceIds.has(meta.space_id));
   db.thinking_node_links = db.thinking_node_links.filter((link) => !spaceIds.has(link.space_id));
   db.thinking_spaces = db.thinking_spaces.filter((space) => space.user_id !== userId);
+  db.thinking_scratch = db.thinking_scratch.filter((item) => item.user_id !== userId);
 
   user.deleted_at = nowIso();
   appendAuditLog(db, {
@@ -1288,7 +1642,7 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
     action: "delete_all_data",
     targetType: "user",
     targetId: userId,
-    detail: `reason=${reason}; doubts=${counts.doubts}; notes=${counts.notes}; spaces=${counts.spaces}; nodes=${counts.nodes}; inbox=${counts.inbox}; links=${counts.links}`
+    detail: `reason=${reason}; doubts=${counts.doubts}; notes=${counts.notes}; spaces=${counts.spaces}; nodes=${counts.nodes}; inbox=${counts.inbox}; links=${counts.links}; scratch=${counts.scratch}`
   });
 
   return counts;

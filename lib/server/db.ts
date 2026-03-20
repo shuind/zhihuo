@@ -29,6 +29,7 @@ const EMPTY_DB: DbState = {
   thinking_spaces: [],
   thinking_nodes: [],
   thinking_inbox: [],
+  thinking_scratch: [],
   thinking_space_meta: [],
   thinking_node_links: [],
   users: [],
@@ -55,7 +56,13 @@ function getPool() {
 
 function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
   return {
-    doubts: Array.isArray(input?.doubts) ? input.doubts : [],
+    doubts: Array.isArray(input?.doubts)
+      ? input.doubts.map((row) => ({
+          ...row,
+          first_node_preview: typeof row.first_node_preview === "string" ? row.first_node_preview : null,
+          last_node_preview: typeof row.last_node_preview === "string" ? row.last_node_preview : null
+        }))
+      : [],
     doubt_notes: Array.isArray(input?.doubt_notes) ? input.doubt_notes : [],
     thinking_spaces: Array.isArray(input?.thinking_spaces) ? input.thinking_spaces : [],
     thinking_nodes: Array.isArray(input?.thinking_nodes)
@@ -65,6 +72,16 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
         }))
       : [],
     thinking_inbox: Array.isArray(input?.thinking_inbox) ? input.thinking_inbox : [],
+    thinking_scratch: Array.isArray(input?.thinking_scratch)
+      ? input.thinking_scratch.map((row) => ({
+          ...row,
+          updated_at: typeof row.updated_at === "string" ? row.updated_at : nowIso(),
+          archived_at: typeof row.archived_at === "string" ? row.archived_at : null,
+          deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null,
+          derived_space_id: typeof row.derived_space_id === "string" ? row.derived_space_id : null,
+          fed_time_doubt_id: typeof row.fed_time_doubt_id === "string" ? row.fed_time_doubt_id : null
+        }))
+      : [],
     thinking_space_meta: Array.isArray(input?.thinking_space_meta)
       ? input.thinking_space_meta.map((row) => ({
           ...row,
@@ -74,6 +91,8 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
           last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
           last_organized_order: Number.isFinite(row.last_organized_order) ? Number(row.last_organized_order) : -1,
           parking_track_id: typeof row.parking_track_id === "string" ? row.parking_track_id : null,
+          pending_track_id: typeof row.pending_track_id === "string" ? row.pending_track_id : null,
+          empty_track_ids: Array.isArray(row.empty_track_ids) ? row.empty_track_ids.filter((id) => typeof id === "string") : [],
           milestone_node_ids: Array.isArray(row.milestone_node_ids)
             ? row.milestone_node_ids.filter((id) => typeof id === "string")
             : [],
@@ -233,9 +252,9 @@ async function migrateLegacyBlobIfNeeded(client: PoolClient) {
 }
 
 async function readDbFromPg(client: PoolClient): Promise<DbState> {
-  const [users, doubts, doubtNotes, spaces, nodes, inbox, spaceMeta, nodeLinks, auditLogs] = await Promise.all([
+  const [users, doubts, doubtNotes, spaces, nodes, inbox, scratch, spaceMeta, nodeLinks, auditLogs] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
-    client.query("SELECT id, user_id, raw_text, created_at, archived_at, deleted_at FROM doubts"),
+    client.query("SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
     client.query(
       "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
@@ -244,8 +263,9 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       "SELECT id, space_id, parent_node_id, raw_question_text, note_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
     ),
     client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox"),
+    client.query("SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"),
     client.query(
-      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
     ),
     client.query(
       "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
@@ -265,6 +285,13 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       note_text: typeof row.note_text === "string" ? row.note_text : null
     })) as DbState["thinking_nodes"],
     thinking_inbox: inbox.rows as DbState["thinking_inbox"],
+    thinking_scratch: scratch.rows.map((row) => ({
+      ...row,
+      archived_at: typeof row.archived_at === "string" ? row.archived_at : null,
+      deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null,
+      derived_space_id: typeof row.derived_space_id === "string" ? row.derived_space_id : null,
+      fed_time_doubt_id: typeof row.fed_time_doubt_id === "string" ? row.fed_time_doubt_id : null
+    })) as DbState["thinking_scratch"],
     thinking_space_meta: spaceMeta.rows.map((row) => ({
       ...row,
       export_version: Number(row.export_version),
@@ -274,6 +301,8 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
       last_organized_order: Number(row.last_organized_order ?? -1),
       parking_track_id: typeof row.parking_track_id === "string" ? row.parking_track_id : null,
+      pending_track_id: typeof row.pending_track_id === "string" ? row.pending_track_id : null,
+      empty_track_ids: Array.isArray(row.empty_track_ids) ? row.empty_track_ids.filter((id: unknown) => typeof id === "string") : [],
       milestone_node_ids: Array.isArray(row.milestone_node_ids)
         ? row.milestone_node_ids.filter((id: unknown) => typeof id === "string")
         : [],
@@ -331,8 +360,17 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
   await replaceTable(
     client,
     "doubts",
-    ["id", "user_id", "raw_text", "created_at", "archived_at", "deleted_at"],
-    db.doubts.map((row) => [row.id, row.user_id, row.raw_text, row.created_at, row.archived_at, row.deleted_at])
+    ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+    db.doubts.map((row) => [
+      row.id,
+      row.user_id,
+      row.raw_text,
+      row.first_node_preview ?? null,
+      row.last_node_preview ?? null,
+      row.created_at,
+      row.archived_at,
+      row.deleted_at
+    ])
   );
   await replaceTable(
     client,
@@ -367,6 +405,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       "last_track_id",
       "last_organized_order",
       "parking_track_id",
+      "pending_track_id",
+      "empty_track_ids",
       "milestone_node_ids",
       "track_direction_hints"
     ],
@@ -380,6 +420,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       row.last_track_id ?? null,
       row.last_organized_order ?? -1,
       row.parking_track_id ?? null,
+      row.pending_track_id ?? null,
+      row.empty_track_ids ?? [],
       row.milestone_node_ids ?? [],
       row.track_direction_hints ?? {}
     ])
@@ -406,6 +448,22 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_inbox",
     ["id", "space_id", "raw_text", "created_at"],
     db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
+  );
+  await replaceTable(
+    client,
+    "thinking_scratch",
+    ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
+    db.thinking_scratch.map((row) => [
+      row.id,
+      row.user_id,
+      row.raw_text,
+      row.created_at,
+      row.updated_at,
+      row.archived_at,
+      row.deleted_at,
+      row.derived_space_id,
+      row.fed_time_doubt_id
+    ])
   );
   await replaceTable(
     client,

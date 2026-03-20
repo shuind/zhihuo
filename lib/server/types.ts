@@ -1,5 +1,5 @@
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
-export type ThinkingSpaceStatus = "active" | "frozen" | "archived";
+export type ThinkingSpaceStatus = "active" | "hidden";
 export type ThinkingNodeState = "normal" | "hidden";
 export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
@@ -7,6 +7,8 @@ export type DoubtRecord = {
   id: string;
   user_id: string;
   raw_text: string;
+  first_node_preview: string | null;
+  last_node_preview: string | null;
   created_at: string;
   archived_at: string | null;
   deleted_at: string | null;
@@ -35,6 +37,7 @@ export type ThinkingNodeRecord = {
   parent_node_id: string | null;
   raw_question_text: string;
   note_text?: string | null;
+  answer_text?: string | null;
   created_at: string;
   order_index: number;
   is_suggested: boolean;
@@ -49,6 +52,18 @@ export type ThinkingInboxRecord = {
   created_at: string;
 };
 
+export type ThinkingScratchRecord = {
+  id: string;
+  user_id: string;
+  raw_text: string;
+  created_at: string;
+  updated_at: string;
+  archived_at: string | null;
+  deleted_at: string | null;
+  derived_space_id: string | null;
+  fed_time_doubt_id: string | null;
+};
+
 export type ThinkingSpaceMetaRecord = {
   space_id: string;
   user_freeze_note: string | null;
@@ -59,6 +74,8 @@ export type ThinkingSpaceMetaRecord = {
   last_track_id?: string | null;
   last_organized_order?: number;
   parking_track_id?: string | null;
+  pending_track_id?: string | null;
+  empty_track_ids?: string[];
   milestone_node_ids?: string[];
   track_direction_hints?: Record<string, TrackDirectionHint | null>;
 };
@@ -79,6 +96,7 @@ export type DbState = {
   thinking_spaces: ThinkingSpaceRecord[];
   thinking_nodes: ThinkingNodeRecord[];
   thinking_inbox: ThinkingInboxRecord[];
+  thinking_scratch: ThinkingScratchRecord[];
   thinking_space_meta: ThinkingSpaceMetaRecord[];
   thinking_node_links: ThinkingNodeLinkRecord[];
   users: UserRecord[];
@@ -119,6 +137,7 @@ export type ThinkingSnapshot = {
     parentNodeId: string | null;
     rawQuestionText: string;
     noteText?: string | null;
+    answerText?: string | null;
     createdAt: string;
     orderIndex: number;
     isSuggested: boolean;
@@ -135,6 +154,8 @@ export type ThinkingSnapshot = {
     lastTrackId?: string | null;
     lastOrganizedOrder?: number;
     parkingTrackId?: string | null;
+    pendingTrackId?: string | null;
+    emptyTrackIds?: string[];
     milestoneNodeIds?: string[];
     trackDirectionHints?: Record<string, TrackDirectionHint | null>;
   }>;
@@ -155,5 +176,16 @@ export type ThinkingSnapshot = {
       createdAt: string;
     }>
   >;
+  scratch?: Array<{
+    id: string;
+    userId: string;
+    rawText: string;
+    createdAt: string;
+    updatedAt: string;
+    archivedAt: string | null;
+    deletedAt: string | null;
+    derivedSpaceId: string | null;
+    fedTimeDoubtId: string | null;
+  }>;
   assistEnabled?: boolean;
 };

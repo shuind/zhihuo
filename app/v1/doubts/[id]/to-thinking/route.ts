@@ -13,6 +13,7 @@ export const POST = withApiRoute(
 
     let found = false;
     let overLimit = false;
+    let created = false;
     let spaceId: string | null = null;
 
     await updateDb((db) => {
@@ -24,11 +25,12 @@ export const POST = withApiRoute(
         return;
       }
       spaceId = result.space.id;
+      created = !("restored" in result);
     });
 
-    if (!found) return errorJson(404, "条目不存在");
+    if (!found) return errorJson(404, "时间记录不存在");
     if (overLimit) return errorJson(409, "活跃空间已达上限");
-    return okJson({ space_id: spaceId }, { status: 201 });
+    return okJson({ space_id: spaceId, created }, { status: created ? 201 : 200 });
   },
   { rateLimit: { bucket: "doubts-to-thinking", max: 60, windowMs: 60 * 1000 } }
 );

@@ -5,6 +5,8 @@ export type LifeRange = "week" | "month" | "all";
 export type LifeDoubt = {
   id: string;
   rawText: string;
+  firstNodePreview: string | null;
+  lastNodePreview: string | null;
   createdAt: string;
   archivedAt: string | null;
   deletedAt: string | null;
@@ -25,7 +27,7 @@ export type LifeStore = {
   };
 };
 
-export type ThinkingSpaceStatus = "active" | "frozen" | "archived";
+export type ThinkingSpaceStatus = "active" | "hidden";
 export type ThinkingNodeState = "normal" | "hidden";
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
 export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
@@ -36,8 +38,20 @@ export type ThinkingSpace = {
   rootQuestionText: string;
   status: ThinkingSpaceStatus;
   createdAt: string;
+  lastActivityAt?: string;
   frozenAt: string | null;
   sourceTimeDoubtId: string | null;
+};
+
+export type ThinkingScratchItem = {
+  id: string;
+  rawText: string;
+  createdAt: string;
+  updatedAt: string;
+  archivedAt: string | null;
+  deletedAt: string | null;
+  derivedSpaceId: string | null;
+  fedTimeDoubtId: string | null;
 };
 
 export type ThinkingNode = {
@@ -62,6 +76,8 @@ export type ThinkingSpaceMeta = {
   lastTrackId?: string | null;
   lastOrganizedOrder?: number;
   parkingTrackId?: string | null;
+  pendingTrackId?: string | null;
+  emptyTrackIds?: string[];
   milestoneNodeIds?: string[];
   trackDirectionHints?: Record<string, TrackDirectionHint | null>;
 };
@@ -76,8 +92,10 @@ export type ThinkingStore = {
   spaces: ThinkingSpace[];
   nodes: ThinkingNode[];
   spaceMeta: ThinkingSpaceMeta[];
+  scratch: ThinkingScratchItem[];
   inbox: Record<string, ThinkingInboxItem[]>;
   assistEnabled: boolean;
+  timezone: string;
 };
 
 export type StarDot = {
@@ -92,6 +110,7 @@ export type StarDot = {
 export const LIFE_STORAGE_KEY = "zhihuo_life_v1";
 export const THINKING_STORAGE_KEY = "zhihuo_thinking_v16";
 const LEGACY_STORAGE_KEY = "time_archive_v2";
+export const DEFAULT_TIMEZONE = "Asia/Shanghai";
 
 export const OPENING_MS = 600;
 export const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
@@ -123,8 +142,10 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   spaces: [],
   nodes: [],
   spaceMeta: [],
+  scratch: [],
   inbox: {},
-  assistEnabled: true
+  assistEnabled: true,
+  timezone: DEFAULT_TIMEZONE
 };
 
 export function createId() {
@@ -154,6 +175,63 @@ export function formatDateTime(iso: string) {
   const hour = String(date.getHours()).padStart(2, "0");
   const minute = String(date.getMinutes()).padStart(2, "0");
   return `${year}.${month}.${day} ${hour}:${minute}`;
+}
+
+export function sanitizeTimeZone(input: unknown) {
+  if (typeof input !== "string" || !input.trim()) return DEFAULT_TIMEZONE;
+  try {
+    new Intl.DateTimeFormat("zh-CN", { timeZone: input }).format(new Date());
+    return input;
+  } catch {
+    return DEFAULT_TIMEZONE;
+  }
+}
+
+export function formatDateTimeInTimeZone(iso: string, timeZone: string) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  const normalized = sanitizeTimeZone(timeZone);
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: normalized,
+    hour12: false,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  const hour = parts.find((part) => part.type === "hour")?.value ?? "";
+  const minute = parts.find((part) => part.type === "minute")?.value ?? "";
+  return `${year}.${month}.${day} ${hour}:${minute}`;
+}
+
+export function formatTimeInTimeZone(iso: string, timeZone: string) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    timeZone: sanitizeTimeZone(timeZone),
+    hour12: false,
+    hour: "2-digit",
+    minute: "2-digit"
+  }).format(date);
+}
+
+export function getDateKeyInTimeZone(iso: string, timeZone: string) {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return "";
+  const parts = new Intl.DateTimeFormat("zh-CN", {
+    timeZone: sanitizeTimeZone(timeZone),
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit"
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === "year")?.value ?? "";
+  const month = parts.find((part) => part.type === "month")?.value ?? "";
+  const day = parts.find((part) => part.type === "day")?.value ?? "";
+  return `${year}-${month}-${day}`;
 }
 
 export function isOlderThanOneYear(iso: string) {
@@ -282,7 +360,15 @@ export function loadLifeStore(): LifeStore {
       const rawText = typeof item.text === "string" ? collapseWhitespace(item.text) : "";
       if (!rawText) continue;
       const id = typeof item.id === "string" ? item.id : createId();
-      doubts.push({ id, rawText, createdAt: toIso(item.createdAt), archivedAt: item.archivedAt ? toIso(item.archivedAt) : null, deletedAt: null });
+      doubts.push({
+        id,
+        rawText,
+        firstNodePreview: null,
+        lastNodePreview: null,
+        createdAt: toIso(item.createdAt),
+        archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
+        deletedAt: null
+      });
       if (item.note && collapseWhitespace(item.note)) {
         notes.push({ id: createId(), doubtId: id, noteText: collapseWhitespace(item.note).slice(0, 42), createdAt: new Date().toISOString() });
       }
@@ -318,6 +404,8 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
   const doubts = (store.doubts ?? []).map((item) => ({
     id: typeof item.id === "string" ? item.id : createId(),
     rawText: collapseWhitespace(typeof item.rawText === "string" ? item.rawText : ""),
+    firstNodePreview: typeof item.firstNodePreview === "string" ? item.firstNodePreview : null,
+    lastNodePreview: typeof item.lastNodePreview === "string" ? item.lastNodePreview : null,
     createdAt: toIso(item.createdAt),
     archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
     deletedAt: item.deletedAt ? toIso(item.deletedAt) : null
@@ -333,16 +421,14 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
 
 function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
   const spaces: ThinkingSpace[] = (store.spaces ?? []).map((space) => {
-    const status: ThinkingSpaceStatus =
-      space.status === "frozen" || space.status === "archived" || space.status === "active"
-        ? space.status
-        : "active";
+    const status: ThinkingSpaceStatus = space.status === "active" ? "active" : "hidden";
     return {
       id: typeof space.id === "string" ? space.id : createId(),
       userId: typeof space.userId === "string" ? space.userId : USER_ID,
       rootQuestionText: typeof space.rootQuestionText === "string" ? space.rootQuestionText : "Untitled?",
       status,
       createdAt: toIso(space.createdAt),
+      lastActivityAt: typeof space.lastActivityAt === "string" ? toIso(space.lastActivityAt) : toIso(space.createdAt),
       frozenAt: space.frozenAt ? toIso(space.frozenAt) : null,
       sourceTimeDoubtId: typeof space.sourceTimeDoubtId === "string" ? space.sourceTimeDoubtId : null
     };
@@ -383,7 +469,27 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
       createdAt: toIso(item.createdAt)
     })).filter((item) => item.rawText);
   }
-  return { spaces, nodes, spaceMeta, inbox, assistEnabled: store.assistEnabled !== false };
+  const scratch: ThinkingScratchItem[] = (store.scratch ?? [])
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      rawText: collapseWhitespace(typeof item.rawText === "string" ? item.rawText : ""),
+      createdAt: toIso(item.createdAt),
+      updatedAt: toIso(item.updatedAt),
+      archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
+      deletedAt: item.deletedAt ? toIso(item.deletedAt) : null,
+      derivedSpaceId: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
+      fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
+    }))
+    .filter((item) => item.rawText);
+  return {
+    spaces,
+    nodes,
+    spaceMeta,
+    scratch,
+    inbox,
+    assistEnabled: store.assistEnabled !== false,
+    timezone: sanitizeTimeZone(store.timezone)
+  };
 }
 
 function toIso(input: unknown) {

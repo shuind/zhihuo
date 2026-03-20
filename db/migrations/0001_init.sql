@@ -26,7 +26,7 @@ CREATE TABLE IF NOT EXISTS thinking_spaces (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
   root_question_text TEXT NOT NULL,
-  status TEXT NOT NULL CHECK (status IN ('active', 'frozen', 'archived')),
+  status TEXT NOT NULL CHECK (status IN ('active', 'hidden')),
   created_at TEXT NOT NULL,
   frozen_at TEXT,
   source_time_doubt_id TEXT

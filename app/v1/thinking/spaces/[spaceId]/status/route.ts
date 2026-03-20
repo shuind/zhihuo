@@ -10,7 +10,9 @@ export const POST = withApiRoute(
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
     const body = await parseJsonBody<{ status?: string }>(request);
     const status = body?.status;
-    if (status !== "active" && status !== "archived") return errorJson(400, "status 仅支持 active 或 archived");
+    if (status !== "active" && status !== "hidden") {
+      return errorJson(400, "status 仅支持 active 或 hidden");
+    }
 
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();

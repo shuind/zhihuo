@@ -8,10 +8,18 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
 
+const TIMEZONE_OPTIONS = [
+  { value: "Asia/Shanghai", label: "北京时间 (UTC+08:00)" },
+  { value: "Asia/Tokyo", label: "东京时间 (UTC+09:00)" },
+  { value: "America/Los_Angeles", label: "洛杉矶时间 (UTC-08:00/-07:00)" },
+  { value: "America/New_York", label: "纽约时间 (UTC-05:00/-04:00)" },
+  { value: "Europe/London", label: "伦敦时间 (UTC+00:00/+01:00)" }
+];
+
 export function SettingsLayer(props: {
   payload: unknown;
-  assistEnabled: boolean;
-  setAssistEnabled: (enabled: boolean) => void;
+  timezone: string;
+  setTimezone: (timezone: string) => void;
   onSystemExport: (format: "json" | "markdown") => Promise<string | null>;
   onClearAll: () => void;
   showNotice: (message: string) => void;
@@ -21,6 +29,10 @@ export function SettingsLayer(props: {
   const [exportText, setExportText] = useState("");
   const [loadingExport, setLoadingExport] = useState(false);
   const payloadText = useMemo(() => JSON.stringify(props.payload, null, 2), [props.payload]);
+  const timezoneOptions = useMemo(() => {
+    if (TIMEZONE_OPTIONS.some((item) => item.value === props.timezone)) return TIMEZONE_OPTIONS;
+    return [{ value: props.timezone, label: `${props.timezone} (当前)` }, ...TIMEZONE_OPTIONS];
+  }, [props.timezone]);
 
   const loadExport = () => {
     setLoadingExport(true);
@@ -37,12 +49,26 @@ export function SettingsLayer(props: {
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
             <CardTitle>系统设置</CardTitle>
-            <CardDescription>关闭提示后，只保留最小记录能力。</CardDescription>
+            <CardDescription>调整时间显示与导出参数。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            <label className="flex items-center justify-between rounded-lg border border-slate-300 bg-white px-3 py-2">
-              <span className="text-sm text-slate-700">启用思路层辅助提示</span>
-              <input type="checkbox" checked={props.assistEnabled} onChange={(event) => props.setAssistEnabled(event.target.checked)} />
+            <label className="grid gap-2 rounded-lg border border-slate-300 bg-white px-3 py-3">
+              <span className="text-sm text-slate-700">时区</span>
+              <select
+                value={props.timezone}
+                className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                onChange={(event) => {
+                  props.setTimezone(event.target.value);
+                  props.showNotice("时区已更新");
+                }}
+              >
+                {timezoneOptions.map((item) => (
+                  <option key={item.value} value={item.value}>
+                    {item.label}
+                  </option>
+                ))}
+              </select>
+              <span className="text-xs text-slate-500">时间层与思路卡片时间会按所选时区显示。</span>
             </label>
           </CardContent>
         </Card>
