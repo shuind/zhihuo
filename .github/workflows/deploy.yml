@@ -44,11 +44,16 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          tar -czf /tmp/zhihuo-deploy.tgz \
-            app components lib db public scripts \
-            package.json pnpm-lock.yaml next.config.mjs next-env.d.ts \
-            postcss.config.mjs tailwind.config.ts tsconfig.json \
-            Dockerfile docker-compose.yml .dockerignore .npmrc
+          files=(
+            app components lib db public scripts
+            package.json pnpm-lock.yaml next.config.mjs next-env.d.ts
+            postcss.config.mjs tailwind.config.ts tsconfig.json
+            Dockerfile docker-compose.yml .dockerignore
+          )
+          if [ -f .npmrc ]; then
+            files+=(.npmrc)
+          fi
+          tar -czf /tmp/zhihuo-deploy.tgz "${files[@]}"
           scp -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -P "${{ secrets.DEPLOY_PORT || 22 }}" \
             /tmp/zhihuo-deploy.tgz "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}:/tmp/zhihuo-deploy.tgz"
           ssh -o StrictHostKeyChecking=no -i ~/.ssh/deploy_key -p "${{ secrets.DEPLOY_PORT || 22 }}" "${{ secrets.DEPLOY_USER }}@${{ secrets.DEPLOY_HOST }}" \
