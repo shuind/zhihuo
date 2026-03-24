@@ -15,6 +15,10 @@ function minutesFromNow(minutes: number) {
   return new Date(Date.now() + minutes * 60 * 1000).toISOString();
 }
 
+function shouldBypassEmailSendInCi() {
+  return process.env.CI === "true";
+}
+
 export const POST = withApiRoute(
   "auth.register.send_code",
   async (request: NextRequest) => {
@@ -46,10 +50,12 @@ export const POST = withApiRoute(
     if (!canSend) return errorJson(409, "请稍后再试或邮箱已存在");
 
     const code = generateEmailVerificationCode();
-    try {
-      await sendRegisterVerificationCode(email, code);
-    } catch {
-      return errorJson(500, "验证码发送失败");
+    if (!shouldBypassEmailSendInCi()) {
+      try {
+        await sendRegisterVerificationCode(email, code);
+      } catch {
+        return errorJson(500, "验证码发送失败");
+      }
     }
 
     await updateDb((db) => {
@@ -69,6 +75,9 @@ export const POST = withApiRoute(
       });
     });
 
+    if (shouldBypassEmailSendInCi()) {
+      return NextResponse.json({ ok: true, debug_code: code });
+    }
     return NextResponse.json({ ok: true });
   },
   { rateLimit: { bucket: "auth-register-send-code", max: 5, windowMs: 10 * 60 * 1000 } }

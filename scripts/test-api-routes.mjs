@@ -48,7 +48,12 @@ async function request(method, path, body) {
 async function run() {
   console.log(`[api-test] base=${baseUrl}`);
 
-  const register = await request("POST", "/v1/auth/register", { email, password });
+  const sendCode = await request("POST", "/v1/auth/register/send-code", { email });
+  assert(sendCode.status === 200, `send register code failed: ${sendCode.status}`);
+  const code = sendCode.json?.debug_code;
+  assert(typeof code === "string" && /^\d{6}$/.test(code), "send register code should return 6-digit debug_code in CI");
+
+  const register = await request("POST", "/v1/auth/register", { email, password, code });
   assert(register.status === 200, `register failed: ${register.status}`);
 
   const me = await request("GET", "/v1/auth/me");
