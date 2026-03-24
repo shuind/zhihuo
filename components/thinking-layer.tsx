@@ -48,12 +48,12 @@ function formatNodeClockTime(createdAt: string | undefined, timeZone: string) {
 }
 
 function trackCardTitle(track: ThinkingTrackView) {
-  if (track.isParking) return track.nodes[0]?.questionText ?? "其他方向";
+  if (track.isParking) return track.nodes[0]?.questionText ?? "新方向";
   return track.titleQuestionText;
 }
 
 function trackCardPreview(track: ThinkingTrackView) {
-  const content = track.nodes.slice(0, 2).map((node) => node.questionText).join(" ");
+  const content = track.nodes.slice(1, 3).map((node) => node.questionText).join(" ");
   return content.length > 92 ? `${content.slice(0, 92)}…` : content;
 }
 
@@ -204,15 +204,12 @@ export function ThinkingLayer(props: {
   const [renameSpaceHint, setRenameSpaceHint] = useState("");
   const [isRenamingSpace, setIsRenamingSpace] = useState(false);
   const [justAddedNodeId, setJustAddedNodeId] = useState<string | null>(null);
-  const [relatedCandidate, setRelatedCandidate] = useState<{ sourceNodeId: string; targetNodeId: string; preview: string } | null>(null);
   const [isAddingQuestion, setIsAddingQuestion] = useState(false);
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
   const [isCreatingScratch, setIsCreatingScratch] = useState(false);
   const [pausedTrackIds, setPausedTrackIds] = useState<Record<string, boolean>>({});
-  const [organizingSpaceId, setOrganizingSpaceId] = useState<string | null>(null);
   const [organizeCandidates, setOrganizeCandidates] = useState<Array<OrganizeCandidate & { targetTrackId: string; selected: boolean }>>([]);
   const [organizePanelOpen, setOrganizePanelOpen] = useState(false);
-  const [organizeHintCount, setOrganizeHintCount] = useState(0);
   const [focusMenuNodeId, setFocusMenuNodeId] = useState<string | null>(null);
   const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
@@ -230,7 +227,6 @@ export function ThinkingLayer(props: {
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
   const questionInputRef = useRef<HTMLInputElement | null>(null);
   const scratchInputRef = useRef<HTMLInputElement | null>(null);
-  const organizeTimerRef = useRef<number | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
@@ -317,9 +313,7 @@ export function ThinkingLayer(props: {
     setPausedTrackIds({});
     setBackgroundDraft(props.spaceView?.backgroundText ?? "");
     setOrganizeCandidates([]);
-    setOrganizeHintCount(0);
     setOrganizePanelOpen(false);
-    setRelatedCandidate(null);
     setFocusMenuNodeId(null);
     setDeleteSpaceOpen(false);
     setExpandedNodeId(null);
@@ -368,7 +362,6 @@ export function ThinkingLayer(props: {
 
   useEffect(() => {
     return () => {
-      if (organizeTimerRef.current) window.clearTimeout(organizeTimerRef.current);
       if (clearAddedTimerRef.current) window.clearTimeout(clearAddedTimerRef.current);
     };
   }, []);
@@ -596,27 +589,12 @@ export function ThinkingLayer(props: {
     [activeTrackId, centerNodeInTrack, rememberTrackPosition]
   );
 
-  const scheduleOrganize = useCallback(
-    (spaceId: string) => {
-      if (organizeTimerRef.current) window.clearTimeout(organizeTimerRef.current);
-      organizeTimerRef.current = window.setTimeout(() => {
-        setOrganizingSpaceId(spaceId);
-        void (async () => {
-          const candidates = await props.onOrganizePreview(spaceId);
-          setOrganizeHintCount(candidates.length);
-          setOrganizeCandidates(
-            candidates.map((item) => ({
-              ...item,
-              targetTrackId: item.suggestedTrackId,
-              selected: true
-            }))
-          );
-          setOrganizingSpaceId((prev) => (prev === spaceId ? null : prev));
-        })();
-      }, ORGANIZE_IDLE_MS);
-    },
-    [props]
-  );
+  useEffect(() => {
+    if (!activeSpace || !activeTrack || !justAddedNodeId) return;
+    if (!activeTrack.nodes.some((node) => node.id === justAddedNodeId)) return;
+    const cleanup = centerAddedNodeWithRetry(justAddedNodeId, activeSpace.id, activeTrack.id);
+    return cleanup;
+  }, [activeSpace, activeTrack, centerAddedNodeWithRetry, justAddedNodeId]);
 
   const applyOrganize = useCallback(() => {
     if (!activeSpace) return;
@@ -640,27 +618,10 @@ export function ThinkingLayer(props: {
         return;
       }
       setOrganizePanelOpen(false);
-      setOrganizeHintCount(0);
       recenterLatest();
       props.showNotice(`已安放 ${result.movedCount} 条念头`);
     })();
   }, [activeSpace, activeTrack, activeTrackId, centerAddedNodeWithRetry, organizeCandidates, props]);
-
-  const openOrganizePanel = useCallback(() => {
-    if (!activeSpace) return;
-    setOrganizePanelOpen(true);
-    void (async () => {
-      const candidates = await props.onOrganizePreview(activeSpace.id);
-      setOrganizeHintCount(candidates.length);
-      setOrganizeCandidates(
-        candidates.map((item) => ({
-          ...item,
-          targetTrackId: item.suggestedTrackId,
-          selected: true
-        }))
-      );
-    })();
-  }, [activeSpace, props]);
 
   const createSpace = useCallback(() => {
     const rawInput = newSpaceInput.trim();
@@ -763,38 +724,15 @@ export function ThinkingLayer(props: {
           setJustAddedNodeId(result.nodeId);
           clearAddedFlagLater();
           setFocusMenuNodeId(null);
-          if (result.relatedCandidate?.nodeId) {
-            setRelatedCandidate({
-              sourceNodeId: result.nodeId,
-              targetNodeId: result.relatedCandidate.nodeId,
-              preview: result.relatedCandidate.preview
-            });
-          } else {
-            setRelatedCandidate(null);
-          }
           if (result.trackId !== activeTrackId) setLocalPendingTrackId(result.trackId);
           centerAddedNodeWithRetry(result.nodeId, activeSpace.id, result.trackId);
-          scheduleOrganize(activeSpace.id);
         } finally {
           setIsAddingQuestion(false);
         }
       })();
     },
-    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props, scheduleOrganize]
+    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props]
   );
-
-  const confirmRelatedLink = useCallback(() => {
-    if (!relatedCandidate) return;
-    void (async () => {
-      const ok = await props.onLinkNodes(relatedCandidate.sourceNodeId, relatedCandidate.targetNodeId);
-      if (!ok) {
-        props.showNotice("关联失败，请稍后再试");
-        return;
-      }
-      setRelatedCandidate(null);
-      props.showNotice("已添加关联");
-    })();
-  }, [props, relatedCandidate]);
 
   const saveBackground = useCallback(() => {
     if (!activeSpace) return;
@@ -1053,7 +991,10 @@ export function ThinkingLayer(props: {
         activeSpace.status === "active" &&
         (clipboardMode === "cut" || activeTrack.id !== clipboardSourceTrackId)
     );
-  const showNewDirectionCard = !(pendingTrackId && activeTrackId === pendingTrackId);
+  const showNewDirectionCard =
+    (activeTrack?.nodes.length ?? 0) > 0 &&
+    activeSpace?.status === "active" &&
+    !(pendingTrackId && activeTrackId === pendingTrackId);
 
   return (
     <div className={cn("h-full overflow-hidden", detailOpen ? "px-0 pb-0 pt-0" : "px-3 pb-4 pt-3 md:px-6")}>
@@ -1126,14 +1067,6 @@ export function ThinkingLayer(props: {
                       onClick={() => {
                         setMoreOpen(false);
                         setBackgroundOpen(true);
-                      }}
-                    />
-                    <MenuItem
-                      label="整理一下"
-                      disabled={!activeSpace || activeSpace.status !== "active"}
-                      onClick={() => {
-                        setMoreOpen(false);
-                        openOrganizePanel();
                       }}
                     />
                     <MenuItem
@@ -1585,27 +1518,7 @@ export function ThinkingLayer(props: {
                     </button>
                   </div>
 
-                  {organizingSpaceId === activeSpace.id ? <p className="mt-2 text-[11px] text-slate-500/90">正在形成结构…</p> : null}
-                  {organizeHintCount > 0 ? (
-                    <div className="mt-2 inline-flex items-center gap-2 rounded-full border border-black/[0.06] bg-white/54 px-3 py-1 text-[11px] text-slate-500">
-                      <span>这几条像是另一条线上的内容</span>
-                      <button type="button" className="text-slate-700 hover:underline" onClick={openOrganizePanel}>
-                        整理一下
-                      </button>
-                    </div>
-                  ) : null}
                   <p className={cn("mt-2 min-h-[1.1em] text-[11px] text-slate-500/85", inputHint ? "opacity-100" : "opacity-0")}>{inputHint}</p>
-                  {relatedCandidate ? (
-                    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-500/95">
-                      <span>发现相关节点：{relatedCandidate.preview}</span>
-                      <button type="button" className="text-slate-700 hover:underline" onClick={confirmRelatedLink}>
-                        关联
-                      </button>
-                      <button type="button" className="text-slate-500/90 hover:underline" onClick={() => setRelatedCandidate(null)}>
-                        忽略
-                      </button>
-                    </div>
-                  ) : null}
                   {inputSuggestions.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {inputSuggestions.map((suggestion) => (

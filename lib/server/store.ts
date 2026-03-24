@@ -493,11 +493,11 @@ export function createThinkingSpace(
   if (!cleaned) return null;
 
   const normalized = normalizeQuestionInput(cleaned, null);
-  if (!normalized.ok) return null;
-  const finalRootText = normalized.text;
-  const converted = normalized.converted;
-  const createdAsStatement = !normalized.is_question;
-  const suggestedQuestions = normalized.suggested_questions.slice(0, 3);
+  // Space titles should accept short scratch content (e.g. single-character notes).
+  const finalRootText = normalized.ok ? normalized.text : cleaned;
+  const converted = normalized.ok ? normalized.converted : false;
+  const createdAsStatement = normalized.ok ? !normalized.is_question : true;
+  const suggestedQuestions = normalized.ok ? normalized.suggested_questions.slice(0, 3) : [];
   const questionSuggestion = suggestedQuestions[0] ?? null;
 
   const activeCount = userSpaces(db, userId).filter((space) => isSpaceActive(space)).length;
