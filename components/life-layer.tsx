@@ -51,6 +51,7 @@ type LinkedSpacePreview = {
 };
 
 const EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
+const EASE_GENTLE: [number, number, number, number] = [0.2, 0.72, 0.22, 1];
 
 export function LifeLayer(props: {
   store: LifeStore;
@@ -199,21 +200,25 @@ export function LifeLayer(props: {
     <div className="time-serif relative h-full overflow-hidden" data-life-layout="true">
       <div className="pointer-events-none absolute inset-0 life-surface" />
       <div className="pointer-events-none absolute inset-0 opacity-60">
-        <div className="grain absolute inset-0 opacity-[0.022]" />
+        <div className="grain absolute inset-0 opacity-[0.012]" />
       </div>
 
       <div className="relative z-10 flex h-full min-h-0">
         <motion.div
           className="flex min-h-0 flex-1 flex-col"
           animate={{ width: !isMobile && selectedDoubt ? "60%" : "100%" }}
-          transition={{ duration: 0.5, ease: [0.32, 0.72, 0, 1] }}
+          transition={{ duration: 0.64, ease: EASE_GENTLE }}
         >
-          <header className="sticky top-0 z-10 bg-[rgba(2,2,3,0.82)] backdrop-blur-xl" data-life-hero="true">
+          <header className="sticky top-0 z-10" data-life-hero="true">
             <div className="mx-auto w-full max-w-2xl px-8 lg:px-12">
               <div className="flex items-end justify-between pb-8 pt-16">
                 <div className="space-y-2">
-                  <h1 className="time-serif text-xl font-light tracking-[0.2em] text-[var(--time-text-strong)]">{"\u65F6\u95F4\u6863\u6848\u9986"}</h1>
-                  <p className="text-xs tracking-[0.18em] text-[var(--time-text-soft)]">
+                  <h1
+                    className="time-serif text-[1.35rem] font-normal tracking-[0.1em] text-[var(--life-title-amber)] [text-shadow:0_1px_0_rgba(246,239,226,0.02)]"
+                  >
+                    {"\u65F6\u95F4\u6863\u6848\u9986"}
+                  </h1>
+                  <p className="text-[13px] tracking-[0.08em] text-[var(--life-title-amber-soft)]">
                     {allDoubts.length}
                     {" \u4E2A\u95EE\u9898\u5728\u6B64\u6C89\u6DC0"}
                   </p>
@@ -226,11 +231,7 @@ export function LifeLayer(props: {
               </div>
 
               <div className="pb-10" data-life-input-mode={isSplitView ? "search" : "compose"}>
-                <div className={cn("time-input-shell relative max-w-[42rem] transition-all duration-500", fieldFocused ? "scale-[1.006]" : "")}>
-                  <div
-                    className="absolute -inset-3 rounded-[1.25rem] bg-white/[0.024] opacity-0 transition-opacity duration-500"
-                    style={{ opacity: fieldFocused ? 1 : 0 }}
-                  />
+                <div className="time-input-shell relative max-w-[46rem] transition-all duration-700">
                   {!isSplitView ? (
                     <div className="relative">
                       <Textarea
@@ -239,7 +240,12 @@ export function LifeLayer(props: {
                         maxLength={280}
                         placeholder={"\u6B64\u523B\uFF0C\u5728\u60F3\u4EC0\u4E48..."}
                         data-life-composer="true"
-                        className="min-h-[2.6rem] w-full resize-none border-0 bg-transparent px-0 py-0 text-[1.06rem] font-light leading-[1.95] tracking-[0.04em] text-[var(--time-text-strong)] shadow-none ring-0 placeholder:text-[var(--time-text-soft)] focus-visible:ring-0"
+                        className={cn(
+                          "min-h-[2.6rem] w-full resize-none border-0 bg-transparent px-0 py-0 text-[0.95rem] font-light leading-[1.95] tracking-[0.03em] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-500 focus-visible:ring-0",
+                          fieldFocused
+                            ? "placeholder:text-[rgba(150,145,138,0.52)] hover:placeholder:text-[rgba(150,145,138,0.52)]"
+                            : "placeholder:text-[rgba(124,129,132,0.4)] hover:placeholder:text-[rgba(124,129,132,0.4)]"
+                        )}
                         onChange={(event) => setInputValue(event.target.value)}
                         onFocus={() => setFieldFocused(true)}
                         onBlur={() => setFieldFocused(false)}
@@ -248,25 +254,25 @@ export function LifeLayer(props: {
                         }}
                       />
                       <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
-                        <p className={cn("transition-opacity duration-300", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
+                        <p className={cn("transition-opacity duration-700", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
                         <div className="flex items-center gap-3">
-                          <span className={cn("transition-opacity", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
-                          <Button type="button" variant="ghost" className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={() => void saveDoubt()}>
+                          <span className={cn("transition-opacity duration-700", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
+                          <Button type="button" variant="ghost" className="time-subtle-button life-compose-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={() => void saveDoubt()}>
                             {"\u5B58\u5165\u6B64\u523B"}
                           </Button>
                         </div>
                       </div>
                     </div>
                   ) : (
-                    <div className="relative">
+                    <div className="relative pt-1.5">
                       <div className="flex items-center gap-3">
-                        <span className="text-[11px] tracking-[0.22em] text-[var(--time-text-soft)]">{"\u68C0\u7D22"}</span>
+                        <span className="text-[12px] tracking-[0.1em] text-[var(--time-text-soft)]">{"\u63A2\u7D22"}</span>
                         <input
                           ref={searchRef}
                           value={searchQuery}
                           data-life-search="true"
-                          placeholder={"\u641C\u7D22\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41\u91CC\u7684\u95EE\u9898"}
-                          className="h-10 flex-1 border-0 bg-transparent px-0 text-[0.98rem] font-light tracking-[0.06em] text-[var(--time-text-strong)] outline-none placeholder:text-[var(--time-text-soft)]"
+                          placeholder={"\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41..."}
+                          className="h-10 flex-1 border-0 bg-transparent px-0 text-[0.92rem] font-light tracking-[0.05em] text-[rgba(188,194,198,0.74)] outline-none placeholder:text-[rgba(132,138,142,0.48)]"
                           onChange={(event) => setSearchQuery(event.target.value)}
                           onFocus={() => setFieldFocused(true)}
                           onBlur={() => setFieldFocused(false)}
@@ -275,13 +281,11 @@ export function LifeLayer(props: {
                           {"\u9000\u51FA\u7EC6\u8BFB"}
                         </Button>
                       </div>
-                      <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
-                        <span>{normalizedSearch ? `\u5339\u914D\u5230 ${matchedCount} \u6761\u95EE\u9898` : "\u6CBF\u65F6\u95F4\u68C0\u7D22"}</span>
-                        <span>{groupedTimeline.reduce((sum, group) => sum + group.items.length, 0)} {"\u6761"}</span>
+                      <div className="mt-3 flex items-center justify-between gap-4 text-[12px] tracking-[0.06em] text-[var(--time-text-soft)]">
+                        <span>{normalizedSearch ? `\u5339\u914D\u5230 ${matchedCount} \u6761\u95EE\u9898` : ""}</span>
                       </div>
                     </div>
                   )}
-                  <motion.div className="mt-3 h-px bg-gradient-to-r from-transparent via-white/18 to-transparent" animate={{ opacity: fieldFocused ? 0.82 : 0.3 }} transition={{ duration: 0.3 }} />
                 </div>
               </div>
             </div>
@@ -299,6 +303,7 @@ export function LifeLayer(props: {
                       label={group.label}
                       count={group.items.length}
                       items={group.items}
+                      mode={!isMobile && !isSplitView ? "home-desktop" : !isMobile ? "split" : "mobile"}
                       selectedId={selectedDoubtId}
                       notesMap={notesMap}
                       progressByDoubt={props.thinkingProgressByDoubt}
@@ -394,34 +399,28 @@ function TimeClusterGroup(props: {
   label: string;
   count: number;
   items: LifeDoubt[];
+  mode: "home-desktop" | "split" | "mobile";
   selectedId: string | null;
   notesMap: Map<string, string>;
   progressByDoubt: Record<string, ThinkingProgress>;
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
 }) {
+  const selectedIndex = props.selectedId ? props.items.findIndex((entry) => entry.id === props.selectedId) : -1;
+
   return (
     <section className="relative">
-      <div
-        className="sticky top-0 z-10 mb-6"
-        style={{ background: "linear-gradient(180deg, rgba(2,2,3,0.98), rgba(2,2,3,0.82))" }}
-        data-life-group="true"
-      >
-        <div className="flex items-center gap-4 py-1">
-          <span className="text-[10px] uppercase tracking-[0.3em] text-[var(--time-text-soft)]">{props.label}</span>
-          <div className="h-px flex-1 bg-gradient-to-r from-white/12 to-transparent" />
-          <span className="text-[10px] tabular-nums text-[var(--time-text-soft)]/75">{props.count}</span>
-        </div>
-      </div>
-
-      <div className="space-y-1">
-        {props.items.map((item) => (
+      <div className="life-river-list" data-life-mode={props.mode}>
+        {props.items.map((item, index) => (
           <TimeEntryCard
             key={item.id}
             doubt={item}
             noteText={props.notesMap.get(item.id) ?? ""}
             progress={props.progressByDoubt[item.id] ?? null}
+            mode={props.mode}
             isSelected={props.selectedId === item.id}
+            isAdjacent={selectedIndex >= 0 && Math.abs(selectedIndex - index) === 1}
+            itemIndex={index}
             rowRefs={props.rowRefs}
             onSelect={props.onSelect}
           />
@@ -435,18 +434,33 @@ function TimeEntryCard(props: {
   doubt: LifeDoubt;
   noteText: string;
   progress: ThinkingProgress | null;
+  mode: "home-desktop" | "split" | "mobile";
   isSelected: boolean;
+  isAdjacent: boolean;
+  itemIndex: number;
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
 }) {
   const statusTone = resolveStatusTone(props.progress);
+  const driftOffsets = [0, 6, 2, 8, 3, 7];
+  const driftOffset = props.mode === "home-desktop" ? 0 : driftOffsets[props.itemIndex % driftOffsets.length];
 
   return (
-    <motion.article layout className="group relative">
+    <motion.article
+      layout
+      className="group life-river-item relative"
+      data-life-mode={props.mode}
+      data-life-adjacent={props.isAdjacent ? "true" : "false"}
+      data-life-selected={props.isSelected ? "true" : "false"}
+      style={{ marginLeft: `${driftOffset}px` }}
+    >
       <motion.div
-        className="absolute -left-4 top-1/2 h-0 w-0.5 -translate-y-1/2 rounded-full bg-[var(--time-accent)]/65"
-        animate={{ height: props.isSelected ? "56%" : 0, opacity: props.isSelected ? 0.78 : 0 }}
-        transition={{ duration: 0.3 }}
+        className="absolute left-[2px] top-1/2 h-0 w-px -translate-y-1/2 rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(196,203,206,0.2),rgba(255,255,255,0))]"
+        animate={{
+          height: props.isSelected ? (props.mode === "home-desktop" ? "42%" : "34%") : props.isAdjacent ? "14%" : "0%",
+          opacity: props.isSelected ? (props.mode === "home-desktop" ? 0.3 : 0.22) : props.isAdjacent ? 0.08 : 0,
+        }}
+        transition={{ duration: 0.64, ease: EASE_GENTLE }}
       />
 
       <button
@@ -455,41 +469,38 @@ function TimeEntryCard(props: {
         }}
         type="button"
         className={cn(
-          "-mx-3 w-full rounded-[1.35rem] px-3 py-6 text-left transition-all duration-500",
-          "hover:bg-white/[0.024]",
-          props.isSelected && "bg-white/[0.03] shadow-[inset_0_0_0_1px_rgba(255,255,255,0.03)]"
+          "life-pearl-card -mx-2 w-full rounded-[1.25rem] px-3 py-5 text-left transition-all duration-700 cursor-default",
+          props.isAdjacent && "is-adjacent",
+          props.isSelected && "is-selected"
         )}
         data-life-item="true"
         data-life-item-selected={props.isSelected ? "true" : "false"}
         onClick={() => props.onSelect(props.doubt.id)}
       >
-        <div className="flex items-start gap-4">
-          <div className="relative mt-2.5 shrink-0">
+        <div className="relative z-10 flex items-start gap-3.5">
+          <div className="relative mt-2 shrink-0">
             <span className={cn("time-status-dot", statusTone.dotClass)} />
           </div>
 
           <div className="min-w-0 flex-1">
             <p
               className={cn(
-                "text-[var(--time-text)] font-light leading-[1.9] tracking-[0.04em] transition-colors duration-300",
-                "group-hover:text-[var(--time-text-strong)]",
+                "text-[var(--time-text)] text-[1.02rem] font-light leading-[1.92] tracking-[0.015em] transition-colors duration-700",
+                props.mode === "home-desktop" && "text-[rgba(168,174,176,0.7)]",
+                props.mode === "home-desktop" && "group-hover:text-[rgba(202,208,210,0.9)]",
+                props.mode === "split" && "text-[var(--time-text-strong)]/94",
+                props.isAdjacent && "text-[var(--time-text)]/84",
                 props.isSelected && "text-[var(--time-text-strong)]"
               )}
             >
               {props.doubt.rawText}
             </p>
 
-            <div className="mt-4 flex items-center gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
-              <time>{formatRelativeTime(props.doubt.createdAt)}</time>
+            <div className="mt-3 flex items-center gap-4 text-[12px] tracking-[0.04em] text-[var(--time-text-soft)]">
+              <time className="life-time-meta transition-colors duration-700">{formatRelativeTime(props.doubt.createdAt)}</time>
               {props.progress ? <span>{props.progress.status === "active" ? "\u6709\u5EF6\u7EED" : statusTone.label}</span> : null}
               {props.noteText ? <span>{"\u6709\u6CE8\u8BB0"}</span> : null}
             </div>
-          </div>
-
-          <div className={cn("flex h-5 w-5 shrink-0 items-center justify-center transition-all duration-300", "opacity-0 group-hover:opacity-100")}>
-            <svg width="6" height="10" viewBox="0 0 6 10" fill="none" className="transition-transform duration-300">
-              <path d="M1 1L5 5L1 9" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" className="text-white/30" />
-            </svg>
           </div>
         </div>
       </button>
@@ -516,7 +527,7 @@ function DetailPanel(props: {
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      transition={{ duration: 0.24, ease: EASE }}
+      transition={{ duration: 0.56, ease: EASE_GENTLE }}
     >
       <DetailBody {...props} />
     </motion.aside>
@@ -537,19 +548,20 @@ function MobileDetailDrawer(props: {
 }) {
   return (
     <motion.section
-      className="absolute inset-0 z-30 bg-black/45 backdrop-blur-sm lg:hidden"
+      className="absolute inset-0 z-30 bg-black/40 lg:hidden"
       data-life-detail="mobile"
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
+      transition={{ duration: 0.52, ease: EASE_GENTLE }}
       onClick={props.onClose}
     >
       <motion.div
         className="time-sheet absolute bottom-0 left-0 right-0 max-h-[80vh] overflow-y-auto rounded-t-[2rem] border border-b-0 border-white/8 pb-8 shadow-[0_-24px_80px_rgba(0,0,0,0.44)]"
-        initial={{ y: '100%' }}
+        initial={{ y: "100%" }}
         animate={{ y: 0 }}
-        exit={{ y: '100%' }}
-        transition={{ duration: 0.34, ease: EASE }}
+        exit={{ y: "100%" }}
+        transition={{ duration: 0.62, ease: EASE_GENTLE }}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mx-auto mt-3 h-1.5 w-16 rounded-full bg-white/10" />
@@ -623,12 +635,11 @@ function DetailBody(props: {
 
   return (
     <div className={cn("flex h-full flex-col", props.compact && "px-6 pt-4 md:px-8")}>
-      <div className={cn("flex items-center justify-between border-b border-white/8 px-8 py-6", props.compact && "px-0")}>
-        <div className="flex items-center gap-3">
-          <span className="h-1.5 w-1.5 rounded-full bg-[var(--time-accent)]/60" />
-          <span className="text-xs uppercase tracking-[0.28em] text-[var(--time-text)]/80">{"\u7EC6\u8282"}</span>
+      <div className={cn("flex items-center justify-between px-8 py-7", props.compact && "px-0")}>
+        <div>
+          <span className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">{"\u7EC6\u8282"}</span>
         </div>
-        <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
+        <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-700 hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
           {"\u5173\u95ED"}
         </button>
       </div>
@@ -636,55 +647,61 @@ function DetailBody(props: {
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
           key={props.doubt.id}
-          className={cn("flex-1 overflow-y-auto px-8 py-10", props.compact ? "px-0 py-6" : "")}
+          className={cn("flex-1 overflow-y-auto px-8 py-5", props.compact ? "px-0 py-4" : "")}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
-          transition={{ duration: 0.2 }}
+          transition={{ duration: 0.48, ease: EASE_GENTLE }}
         >
-          <div className="mb-12">
-            <p className="text-[25px] font-light leading-relaxed tracking-wide text-[var(--time-text-strong)] md:text-[31px]" data-life-selected-title="true">
+          <div className="mb-7 mt-1">
+            <p className="text-[16px] font-light leading-[1.65] tracking-[0.01em] text-[var(--time-text-strong)] md:text-[22px]" data-life-selected-title="true">
               {props.doubt.rawText}
             </p>
           </div>
 
-        <div className="mb-12 flex flex-wrap items-center gap-6 text-xs text-[var(--time-text)]/74">
-          <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
+        <div className="mb-6 mt-2 flex flex-wrap items-center gap-6 text-[13px] tracking-[0.03em] text-[rgba(124,130,134,0.34)]">
+          <span className="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" className="shrink-0 text-current opacity-90">
+              <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.2" />
+              <path d="M7 3.9V7.2L9.25 8.45" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+            </svg>
+            <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
+          </span>
           {props.progress?.status === "active" ? <span className="text-[var(--time-accent)]/85">{"\u601D\u8003\u4E2D"}</span> : null}
         </div>
 
-          <div className="mb-12 h-px bg-gradient-to-r from-white/16 via-white/8 to-transparent" />
+          <div className="mb-6 h-px bg-gradient-to-r from-transparent via-white/[0.1] to-transparent" />
 
           {props.noteText ? (
-            <div className="mb-10">
-              <h3 className="mb-4 text-[10px] uppercase tracking-[0.2em] text-[var(--time-text)]/72">{"\u6CE8\u8BB0"}</h3>
-              <p className="border-l-2 border-white/15 pl-4 text-sm italic leading-relaxed text-[var(--time-text)]/92">{props.noteText}</p>
+            <div className="mb-12">
+              <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u6CE8\u8BB0"}</h3>
+              <p className="text-[15px] italic leading-[1.95] text-[var(--time-text)]/94">{props.noteText}</p>
             </div>
           ) : null}
 
           {props.progress ? (
-            <div className="mb-10">
+            <div className="mb-12">
               {shouldShowTrackEdgeSummary ? (
-                <div className="space-y-3">
-                  <p className="text-sm leading-relaxed text-[var(--time-text)]/94">最初：{firstTrackNode}</p>
+                <div className="space-y-4">
+                  <p className="text-[15px] leading-[1.95] text-[var(--time-text)]/94">{"\u6700\u521D\uFF1A"}{firstTrackNode}</p>
                   {shouldShowLastTrackNode ? (
-                    <p className="text-sm leading-relaxed text-[var(--time-text)]/94">最后：{lastTrackNode}</p>
+                    <p className="text-[15px] leading-[1.95] text-[var(--time-text)]/94">{"\u6700\u540E\uFF1A"}{lastTrackNode}</p>
                   ) : null}
                 </div>
               ) : null}
             </div>
           ) : (
-            <div className="mb-10" />
+            <div className="mb-12" />
           )}
 
           {canEditNote ? (
-            <div className="mb-10">
-              <h3 className="mb-4 text-[10px] uppercase tracking-[0.2em] text-[var(--time-text)]/72">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
+            <div className="mb-12">
+              <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
               <input
                 defaultValue={props.noteText}
                 maxLength={42}
                 placeholder={"\u7559\u4E00\u53E5\u8BDD"}
-                className="h-11 w-full border-0 border-b border-white/8 bg-transparent px-0 text-[16px] text-[var(--time-text-strong)] outline-none transition-colors placeholder:text-[var(--time-text-soft)] focus:border-[var(--time-accent)]/22"
+                className="h-12 w-full border-0 border-b border-white/[0.13] bg-transparent px-0 text-[16px] text-[var(--time-text-strong)] outline-none transition-colors duration-700 placeholder:text-[var(--time-text-soft)] focus:border-[var(--time-accent)]/30"
                 onBlur={(event) => props.onSaveNote(event.target.value)}
               />
             </div>
@@ -692,12 +709,12 @@ function DetailBody(props: {
         </motion.div>
       </AnimatePresence>
 
-      <div className={cn("border-t border-white/8 px-8 py-6", props.compact && "px-0")}>
+      <div className={cn("border-t border-white/[0.05] px-8 py-7", props.compact && "px-0")}>
         <div className="flex items-center gap-4">
-          <button type="button" className="flex-1 rounded-lg bg-[var(--time-accent-soft)] px-4 py-3 text-sm text-[var(--time-text-strong)] transition-all duration-300 hover:bg-[var(--time-accent)]/18" onClick={handlePrimaryAction}>
+          <button type="button" className="life-action-primary flex-1 rounded-[0.95rem] px-4 py-3 text-sm text-[var(--time-text-strong)] transition-all duration-700" onClick={handlePrimaryAction}>
             {actionLabel}
           </button>
-          <button type="button" className="rounded-lg px-4 py-3 text-sm text-[var(--time-text-soft)] transition-all duration-300 hover:bg-white/[0.04] hover:text-[var(--time-text)]" onClick={props.onDelete}>
+          <button type="button" className="rounded-[0.95rem] px-4 py-3 text-sm text-[var(--time-text-soft)] transition-all duration-700 hover:bg-white/[0.03] hover:text-[var(--time-text)]" onClick={props.onDelete}>
             {"\u5220\u9664"}
           </button>
         </div>
@@ -708,8 +725,14 @@ function DetailBody(props: {
 
 function ConfirmDialog(props: { title: string; description: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {
   return (
-    <motion.section className="absolute inset-0 z-40 grid place-items-center bg-black/60 p-4 backdrop-blur-sm" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-      <div className="w-full max-w-md rounded-[1.8rem] border border-white/8 bg-[rgba(5,5,7,0.94)] px-6 py-6 shadow-[0_24px_64px_rgba(0,0,0,0.36)]">
+    <motion.section
+      className="absolute inset-0 z-40 grid place-items-center bg-black/56 p-4"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.44, ease: EASE_GENTLE }}
+    >
+      <div className="w-full max-w-md rounded-[1.8rem] border border-white/[0.08] bg-[rgba(8,10,12,0.94)] px-6 py-6 shadow-[0_24px_64px_rgba(0,0,0,0.22)]">
         <div className="space-y-3">
           <h3 className="time-serif text-2xl text-[var(--time-text-strong)]">{props.title}</h3>
           <p className="text-sm leading-8 text-[var(--time-text-soft)]">{props.description}</p>
@@ -730,7 +753,13 @@ function ConfirmDialog(props: { title: string; description: string; confirmLabel
 function LifeOpeningOverlay(props: { phase: OpeningPhase; stars: StarDot[] }) {
   const { phase } = props;
   return (
-    <motion.div className="absolute inset-0 z-20 bg-black" initial={{ opacity: 1 }} animate={{ opacity: phase === "ready" ? 0 : 1 }} exit={{ opacity: 0 }} transition={{ duration: 0.45 }}>
+    <motion.div
+      className="absolute inset-0 z-20 bg-[radial-gradient(120%_100%_at_50%_24%,rgba(84,103,109,0.22),rgba(2,2,3,1)_64%)]"
+      initial={{ opacity: 1 }}
+      animate={{ opacity: phase === "ready" ? 0 : 1 }}
+      exit={{ opacity: 0 }}
+      transition={{ duration: 0.6, ease: EASE_GENTLE }}
+    >
       <div className="absolute inset-0 grid place-items-center">
         <p className={cn("time-serif text-lg tracking-[0.28em] text-white/74 transition-opacity duration-700", phase === "text" ? "opacity-100" : "opacity-0")}>
           {"\u65F6\u95F4\u6B63\u5728\u663E\u5F71"}
