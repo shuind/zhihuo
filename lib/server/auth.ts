@@ -1,4 +1,4 @@
-import { createHmac, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
+import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 
 const AUTH_COOKIE = "zhihuo_session";
 const DEFAULT_AUTH_SECRET = "zhihuo_dev_only_change_me";
@@ -67,6 +67,27 @@ export function verifyPassword(password: string, encoded: string) {
   const [salt, expectedHash] = encoded.split(":");
   if (!salt || !expectedHash) return false;
   const actual = scryptSync(password, salt, 64).toString("hex");
+  const expectedBuffer = Buffer.from(expectedHash, "hex");
+  const actualBuffer = Buffer.from(actual, "hex");
+  if (expectedBuffer.length !== actualBuffer.length) return false;
+  return timingSafeEqual(expectedBuffer, actualBuffer);
+}
+
+export function generateEmailVerificationCode() {
+  return String(randomInt(0, 1_000_000)).padStart(6, "0");
+}
+
+export function hashEmailVerificationCode(email: string, purpose: "register" | "reset_password", code: string) {
+  return createHmac("sha256", getSecret()).update(`${purpose}:${email}:${code}`).digest("hex");
+}
+
+export function verifyEmailVerificationCode(
+  email: string,
+  purpose: "register" | "reset_password",
+  code: string,
+  expectedHash: string
+) {
+  const actual = hashEmailVerificationCode(email, purpose, code);
   const expectedBuffer = Buffer.from(expectedHash, "hex");
   const actualBuffer = Buffer.from(actual, "hex");
   if (expectedBuffer.length !== actualBuffer.length) return false;

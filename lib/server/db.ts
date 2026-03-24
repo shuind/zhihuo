@@ -32,6 +32,7 @@ const EMPTY_DB: DbState = {
   thinking_scratch: [],
   thinking_space_meta: [],
   thinking_node_links: [],
+  email_verification_codes: [],
   users: [],
   audit_logs: []
 };
@@ -128,6 +129,13 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
               typeof row.source_node_id === "string" &&
               typeof row.target_node_id === "string"
           )
+      : [],
+    email_verification_codes: Array.isArray(input?.email_verification_codes)
+      ? input.email_verification_codes.map((row) => ({
+          ...row,
+          consumed_at: typeof row.consumed_at === "string" ? row.consumed_at : null,
+          send_count: Number.isFinite(row.send_count) ? Number(row.send_count) : 1
+        }))
       : [],
     users: Array.isArray(input?.users) ? input.users : [],
     audit_logs: Array.isArray(input?.audit_logs) ? input.audit_logs : []
@@ -252,7 +260,7 @@ async function migrateLegacyBlobIfNeeded(client: PoolClient) {
 }
 
 async function readDbFromPg(client: PoolClient): Promise<DbState> {
-  const [users, doubts, doubtNotes, spaces, nodes, inbox, scratch, spaceMeta, nodeLinks, auditLogs] = await Promise.all([
+  const [users, doubts, doubtNotes, spaces, nodes, inbox, scratch, spaceMeta, nodeLinks, emailVerificationCodes, auditLogs] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
     client.query("SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
@@ -269,6 +277,9 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     ),
     client.query(
       "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
+    ),
+    client.query(
+      "SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at, last_sent_at, send_count FROM email_verification_codes"
     ),
     client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs")
   ]);
@@ -328,6 +339,12 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       link_type: "related" as const,
       score: Number(row.score ?? 0)
     })) as DbState["thinking_node_links"],
+    email_verification_codes: emailVerificationCodes.rows.map((row) => ({
+      ...row,
+      purpose: "register" as const,
+      consumed_at: typeof row.consumed_at === "string" ? row.consumed_at : null,
+      send_count: Number(row.send_count ?? 1)
+    })) as DbState["email_verification_codes"],
     audit_logs: auditLogs.rows as DbState["audit_logs"]
   });
 }
@@ -477,6 +494,22 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       row.link_type,
       row.score,
       row.created_at
+    ])
+  );
+  await replaceTable(
+    client,
+    "email_verification_codes",
+    ["id", "email", "purpose", "code_hash", "expires_at", "consumed_at", "created_at", "last_sent_at", "send_count"],
+    db.email_verification_codes.map((row) => [
+      row.id,
+      row.email,
+      row.purpose,
+      row.code_hash,
+      row.expires_at,
+      row.consumed_at,
+      row.created_at,
+      row.last_sent_at,
+      row.send_count
     ])
   );
   await replaceTable(

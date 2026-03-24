@@ -99,6 +99,7 @@ export type DbState = {
   thinking_scratch: ThinkingScratchRecord[];
   thinking_space_meta: ThinkingSpaceMetaRecord[];
   thinking_node_links: ThinkingNodeLinkRecord[];
+  email_verification_codes: EmailVerificationCodeRecord[];
   users: UserRecord[];
   audit_logs: AuditLogRecord[];
 };
@@ -109,6 +110,18 @@ export type UserRecord = {
   password_hash: string;
   created_at: string;
   deleted_at: string | null;
+};
+
+export type EmailVerificationCodeRecord = {
+  id: string;
+  email: string;
+  purpose: "register" | "reset_password";
+  code_hash: string;
+  expires_at: string;
+  consumed_at: string | null;
+  created_at: string;
+  last_sent_at: string;
+  send_count: number;
 };
 
 export type AuditLogRecord = {
