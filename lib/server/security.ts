@@ -37,6 +37,18 @@ function sha256Hex(input: string) {
   return createHash("sha256").update(input).digest("hex");
 }
 
+function formatFriendlyDateTime(value: string | null | undefined) {
+  if (!value) return "-";
+  const date = new Date(value);
+  if (!Number.isFinite(date.getTime())) return value;
+  const y = date.getFullYear();
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  const hh = String(date.getHours()).padStart(2, "0");
+  const mm = String(date.getMinutes()).padStart(2, "0");
+  return `${y}.${m}.${d} ${hh}:${mm}`;
+}
+
 export function buildUserExport(db: DbState, userId: string, userEmail: string): { payload: UserExportData; checksum: string } {
   const spaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
   const doubtIds = new Set(db.doubts.filter((doubt) => doubt.user_id === userId).map((doubt) => doubt.id));
@@ -80,61 +92,140 @@ function stripTrackPrefix(value: string | null | undefined) {
   return value.startsWith(TRACK_PREFIX) ? value.slice(TRACK_PREFIX.length) : value;
 }
 
-export function buildUserExportMarkdown(db: DbState, userId: string, userEmail: string) {
-  const spaces = db.thinking_spaces
+export function buildUserExportMarkdown(
+  db: DbState,
+  userId: string,
+  userEmail: string,
+  options?: { includeLife?: boolean; includeThinking?: boolean }
+) {
+  const includeLife = options?.includeLife !== false;
+  const includeThinking = options?.includeThinking !== false;
+
+  const allUserSpaces = db.thinking_spaces
     .filter((space) => space.user_id === userId)
     .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
-  const spaceIds = new Set(spaces.map((space) => space.id));
 
-  const nodes = db.thinking_nodes
-    .filter((node) => spaceIds.has(node.space_id) && node.state === "normal")
+  const activeSpaces = allUserSpaces.filter((space) => space.status === "active");
+  const writtenToTimeSpaces = allUserSpaces.filter((space) => space.status === "hidden" || Boolean(space.frozen_at));
+
+  const activeSpaceIds = new Set(activeSpaces.map((space) => space.id));
+  const allMetaMap = new Map(
+    db.thinking_space_meta
+      .filter((meta) => allUserSpaces.some((space) => space.id === meta.space_id))
+      .map((meta) => [meta.space_id, meta])
+  );
+
+  const nodesForActiveSpaces = db.thinking_nodes
+    .filter((node) => activeSpaceIds.has(node.space_id) && node.state === "normal")
     .sort((a, b) => a.order_index - b.order_index);
-  const metaMap = new Map(db.thinking_space_meta.filter((meta) => spaceIds.has(meta.space_id)).map((meta) => [meta.space_id, meta]));
 
-  const lines: string[] = [];
-  lines.push("# 知惑系统导出（Markdown）");
-  lines.push("");
-  lines.push(`- 用户：${userEmail}`);
-  lines.push(`- 用户ID：${userId}`);
-  lines.push(`- 导出时间：${new Date().toISOString()}`);
-  lines.push("");
+  const lifeDoubts = db.doubts
+    .filter((doubt) => doubt.user_id === userId && !doubt.deleted_at)
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const lifeDoubtIds = new Set(lifeDoubts.map((doubt) => doubt.id));
 
-  if (!spaces.length) {
-    lines.push("暂无思考空间。");
-    return lines.join("\n");
+  const lifeNotes = db.doubt_notes
+    .filter((note) => lifeDoubtIds.has(note.doubt_id))
+    .sort((a, b) => new Date(a.created_at).getTime() - new Date(b.created_at).getTime());
+  const notesByDoubt = new Map<string, typeof lifeNotes>();
+  for (const note of lifeNotes) {
+    const list = notesByDoubt.get(note.doubt_id);
+    if (list) list.push(note);
+    else notesByDoubt.set(note.doubt_id, [note]);
   }
 
-  for (const [spaceIndex, space] of spaces.entries()) {
-    const meta = metaMap.get(space.id);
-    const milestones = new Set((meta?.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
-    const spaceNodes = nodes.filter((node) => node.space_id === space.id);
-    const trackMap = new Map<string, typeof spaceNodes>();
-    for (const node of spaceNodes) {
-      const trackId = stripTrackPrefix(node.parent_node_id);
-      const list = trackMap.get(trackId);
-      if (list) list.push(node);
-      else trackMap.set(trackId, [node]);
-    }
-    const orderedTracks = [...trackMap.entries()].sort(
-      (a, b) => (a[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER) - (b[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER)
-    );
+  const lines: string[] = [];
+  lines.push("# 知惑导出（Markdown）");
+  lines.push("");
+  lines.push(`- 导出时间：${formatFriendlyDateTime(new Date().toISOString())}`);
+  lines.push(`- 导出范围：${includeLife ? "时间层" : ""}${includeLife && includeThinking ? " + " : ""}${includeThinking ? "思路层" : ""}`);
+  lines.push("");
 
-    lines.push(`## 空间 ${spaceIndex + 1}：${space.root_question_text}`);
-    lines.push(`- 状态：${space.status}`);
-    lines.push(`- 创建：${space.created_at}`);
-    if (space.frozen_at) lines.push(`- 冻结：${space.frozen_at}`);
-    if (meta?.user_freeze_note) lines.push(`- 当前状态：${meta.user_freeze_note}`);
+  if (includeLife) {
+    lines.push("## 时间层");
     lines.push("");
 
-    for (const [trackIndex, [, trackNodes]] of orderedTracks.entries()) {
-      lines.push(`### 轨道 ${trackIndex + 1}`);
-      for (const node of trackNodes) {
-        const star = milestones.has(node.id) ? "⭐ " : "";
-        lines.push(`- ${star}${node.raw_question_text}`);
-        if (node.note_text) lines.push(`  - 附注：${node.note_text}`);
+    if (!lifeDoubts.length) {
+      lines.push("- 暂无时间层内容");
+      lines.push("");
+    } else {
+      for (const [index, doubt] of lifeDoubts.entries()) {
+        lines.push(`### 条目 ${index + 1}`);
+        lines.push(`- 内容：${doubt.raw_text}`);
+        lines.push(`- 创建时间：${formatFriendlyDateTime(doubt.created_at)}`);
+        if (doubt.archived_at) lines.push(`- 归档时间：${formatFriendlyDateTime(doubt.archived_at)}`);
+        const relatedNotes = notesByDoubt.get(doubt.id) ?? [];
+        if (relatedNotes.length) {
+          lines.push("- 注记：");
+          for (const note of relatedNotes) {
+            lines.push(`  - ${note.note_text}（${formatFriendlyDateTime(note.created_at)}）`);
+          }
+        }
+        lines.push("");
+      }
+    }
+
+    if (writtenToTimeSpaces.length) {
+      lines.push("### 来自思路层（已写入时间）");
+      lines.push("");
+      for (const [index, space] of writtenToTimeSpaces.entries()) {
+        const meta = allMetaMap.get(space.id);
+        lines.push(`- ${index + 1}. ${space.root_question_text}`);
+        lines.push(`  - 写回时间：${formatFriendlyDateTime(space.frozen_at)}`);
+        if (meta?.user_freeze_note) {
+          lines.push(`  - 批注：${meta.user_freeze_note}`);
+        }
       }
       lines.push("");
     }
+  }
+
+  if (includeThinking) {
+    lines.push("## 思路层（仅活跃）");
+    lines.push("");
+
+    if (!activeSpaces.length) {
+      lines.push("- 暂无活跃思路空间");
+      lines.push("");
+    } else {
+      for (const [spaceIndex, space] of activeSpaces.entries()) {
+        const meta = allMetaMap.get(space.id);
+        const milestones = new Set((meta?.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
+        const spaceNodes = nodesForActiveSpaces.filter((node) => node.space_id === space.id);
+        const trackMap = new Map<string, typeof spaceNodes>();
+
+        for (const node of spaceNodes) {
+          const trackId = stripTrackPrefix(node.parent_node_id);
+          const list = trackMap.get(trackId);
+          if (list) list.push(node);
+          else trackMap.set(trackId, [node]);
+        }
+
+        const orderedTracks = [...trackMap.entries()].sort(
+          (a, b) => (a[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER) - (b[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER)
+        );
+
+        lines.push(`### 空间 ${spaceIndex + 1}：${space.root_question_text}`);
+        lines.push(`- 创建时间：${formatFriendlyDateTime(space.created_at)}`);
+        if (meta?.user_freeze_note) lines.push(`- 批注：${meta.user_freeze_note}`);
+        lines.push("");
+
+        for (const [trackIndex, [, trackNodes]] of orderedTracks.entries()) {
+          lines.push(`#### 方向 ${trackIndex + 1}`);
+          for (const node of trackNodes) {
+            const star = milestones.has(node.id) ? "⭐ " : "";
+            lines.push(`- ${star}${node.raw_question_text}`);
+            if (node.note_text) lines.push(`  - 注记：${node.note_text}`);
+          }
+          lines.push("");
+        }
+      }
+    }
+  }
+
+  if (!includeLife && !includeThinking) {
+    lines.push("- 未选择导出范围");
+    lines.push("");
   }
 
   return lines.join("\n");

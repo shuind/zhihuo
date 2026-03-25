@@ -1359,14 +1359,17 @@ export function TimeArchive() {
   );
 
   const handleSystemExport = useCallback(
-    async (format: "json" | "markdown") => {
+    async (options: { includeLife: boolean; includeThinking: boolean }) => {
       try {
-        const response = await fetch(`/v1/system/export?format=${format}`, { method: "GET", cache: "no-store" });
+        const params = new URLSearchParams({
+          include_life: String(options.includeLife),
+          include_thinking: String(options.includeThinking)
+        });
+        const response = await fetch(`/v1/system/export?${params.toString()}`, { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return null;
         if (!response.ok) return null;
-        const payload = (await response.json().catch(() => ({}))) as { payload?: unknown; checksum?: string; markdown?: string };
-        if (format === "markdown") return typeof payload.markdown === "string" ? payload.markdown : null;
-        return typeof payload.payload !== "undefined" ? JSON.stringify(payload, null, 2) : null;
+        const payload = (await response.json().catch(() => ({}))) as { markdown?: string };
+        return typeof payload.markdown === "string" ? payload.markdown : null;
       } catch {
         return null;
       }
@@ -1400,11 +1403,6 @@ export function TimeArchive() {
     void syncThinkingSpacesFromApi(true);
     showNotice("本地缓存已清理");
   }, [showNotice, syncLifeFromApi, syncThinkingSpacesFromApi]);
-
-  const appPayload = useMemo(
-    () => ({ exportedAt: new Date().toISOString(), life: lifeStore, thinking: thinkingStore }),
-    [lifeStore, thinkingStore]
-  );
 
   const linkedSpacePreview = useMemo<LinkedSpacePreview | null>(() => {
     if (!thinkingView) return null;
@@ -1598,7 +1596,6 @@ export function TimeArchive() {
               transition={{ duration: 0.52 }}
             >
               <SettingsLayer
-                payload={appPayload}
                 timezone={thinkingStore.timezone}
                 setTimezone={(timezone) => setThinkingStore((prev) => ({ ...prev, timezone: sanitizeTimeZone(timezone) }))}
                 onSystemExport={handleSystemExport}
