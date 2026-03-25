@@ -3,6 +3,10 @@
 @tailwind utilities;
 
 :root {
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-right: env(safe-area-inset-right, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-left: env(safe-area-inset-left, 0px);
   --background: 226 38% 4%;
   --foreground: 220 33% 91%;
   --card: 225 35% 8%;
@@ -50,6 +54,9 @@ body {
 
 body {
   @apply bg-background text-foreground antialiased;
+  padding-left: var(--safe-left);
+  padding-right: var(--safe-right);
+  padding-bottom: var(--safe-bottom);
 }
 
 .time-serif {
