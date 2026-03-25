@@ -88,29 +88,6 @@ type ApiThinkingSpaceMeta = {
   track_direction_hints?: Record<string, TrackDirectionHint | null>;
 };
 
-type ApiReentryEntry = {
-  space_id?: string;
-  track_id?: string | null;
-  node_id?: string | null;
-  preview?: string | null;
-  root_question_text?: string;
-  freeze_note?: string | null;
-  frozen_at?: string | null;
-};
-
-type ApiThinkingTimeLink = {
-  doubt_id: string;
-  space_id: string;
-  status: "active" | "hidden";
-  freeze_note: string | null;
-  milestone_previews: string[];
-  reentry?: {
-    question_entry?: ApiReentryEntry | null;
-    freeze_entry?: ApiReentryEntry | null;
-    milestone_entries?: ApiReentryEntry[];
-  };
-};
-
 type ApiThinkingTrackNode = {
   id: string;
   raw_question_text: string;
@@ -153,33 +130,6 @@ type SessionUser = {
   email: string;
 };
 
-type ThinkingProgressSummary = {
-  spaceId: string;
-  status: "active" | "hidden";
-  freezeNote: string | null;
-  milestonePreviews: string[];
-  reentry: {
-    questionEntry: {
-      spaceId: string;
-      rootQuestionText: string;
-    } | null;
-    freezeEntry: {
-      spaceId: string;
-      trackId: string | null;
-      nodeId: string | null;
-      preview: string | null;
-      freezeNote: string | null;
-      frozenAt: string | null;
-    } | null;
-    milestoneEntries: Array<{
-      spaceId: string;
-      trackId: string | null;
-      nodeId: string | null;
-      preview: string | null;
-    }>;
-  };
-};
-
 type ThinkingJumpTarget = {
   spaceId: string;
   mode: "root" | "freeze" | "milestone";
@@ -189,13 +139,6 @@ type ThinkingJumpTarget = {
 };
 
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
-
-type LinkedSpacePreview = {
-  spaceId: string;
-  title: string;
-  firstNode: string;
-  lastNode: string;
-};
 
 function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
   return {
@@ -331,7 +274,6 @@ export function TimeArchive() {
   const [notice, setNotice] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
-  const [thinkingProgressByDoubt, setThinkingProgressByDoubt] = useState<Record<string, ThinkingProgressSummary>>({});
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
@@ -427,59 +369,9 @@ export function TimeArchive() {
         const payload = (await response.json()) as {
           spaces?: ApiThinkingSpace[];
           space_meta?: ApiThinkingSpaceMeta[];
-          time_links?: ApiThinkingTimeLink[];
         };
         const spaces = Array.isArray(payload.spaces) ? payload.spaces.map(mapApiThinkingSpace) : [];
         const spaceMeta = Array.isArray(payload.space_meta) ? payload.space_meta.map(mapApiThinkingMeta) : [];
-        const nextProgress: Record<string, ThinkingProgressSummary> = {};
-        for (const link of payload.time_links ?? []) {
-          if (typeof link?.doubt_id !== "string" || typeof link?.space_id !== "string") continue;
-          const questionEntry =
-            link.reentry?.question_entry && typeof link.reentry.question_entry.space_id === "string"
-              ? {
-                  spaceId: link.reentry.question_entry.space_id,
-                  rootQuestionText:
-                    typeof link.reentry.question_entry.root_question_text === "string"
-                      ? link.reentry.question_entry.root_question_text
-                      : ""
-                }
-              : null;
-          const freezeEntry =
-            link.reentry?.freeze_entry && typeof link.reentry.freeze_entry.space_id === "string"
-              ? {
-                  spaceId: link.reentry.freeze_entry.space_id,
-                  trackId: typeof link.reentry.freeze_entry.track_id === "string" ? link.reentry.freeze_entry.track_id : null,
-                  nodeId: typeof link.reentry.freeze_entry.node_id === "string" ? link.reentry.freeze_entry.node_id : null,
-                  preview: typeof link.reentry.freeze_entry.preview === "string" ? link.reentry.freeze_entry.preview : null,
-                  freezeNote: typeof link.reentry.freeze_entry.freeze_note === "string" ? link.reentry.freeze_entry.freeze_note : null,
-                  frozenAt: typeof link.reentry.freeze_entry.frozen_at === "string" ? link.reentry.freeze_entry.frozen_at : null
-                }
-              : null;
-          const milestoneEntries = Array.isArray(link.reentry?.milestone_entries)
-            ? link.reentry?.milestone_entries
-                .filter((entry) => typeof entry?.space_id === "string")
-                .map((entry) => ({
-                  spaceId: entry.space_id as string,
-                  trackId: typeof entry.track_id === "string" ? entry.track_id : null,
-                  nodeId: typeof entry.node_id === "string" ? entry.node_id : null,
-                  preview: typeof entry.preview === "string" ? entry.preview : null
-                }))
-            : [];
-          nextProgress[link.doubt_id] = {
-            spaceId: link.space_id,
-            status: link.status === "active" || link.status === "hidden" ? link.status : "active",
-            freezeNote: typeof link.freeze_note === "string" ? link.freeze_note : null,
-            milestonePreviews: Array.isArray(link.milestone_previews)
-              ? link.milestone_previews.filter((item) => typeof item === "string").slice(0, 3)
-              : [],
-            reentry: {
-              questionEntry,
-              freezeEntry,
-              milestoneEntries
-            }
-          };
-        }
-        setThinkingProgressByDoubt(nextProgress);
         setThinkingStore((prev) => ({
           ...prev,
           spaces,
@@ -827,36 +719,6 @@ export function TimeArchive() {
       })();
     },
     [handleUnauthorized, hideLifeDoubtFromTimeline, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
-  );
-
-  const handleJumpToThinking = useCallback(
-    (target: ThinkingJumpTarget) => {
-      void (async () => {
-        const targetSpace = thinkingStore.spaces.find((space) => space.id === target.spaceId) ?? null;
-        if (targetSpace?.status === "hidden") {
-          const response = await fetch(`/v1/thinking/spaces/${target.spaceId}/status`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ status: "active" })
-          }).catch(() => null);
-          if (!response || handleUnauthorized(response)) return;
-          if (!response.ok) {
-            if (response.status === 409) {
-              showNotice(RESTORE_OVER_LIMIT_NOTICE);
-              return;
-            }
-            showNotice("恢复思考失败");
-            return;
-          }
-          await syncThinkingSpacesFromApi(true);
-        }
-        setTab("thinking");
-        setThinkingJumpTarget(target);
-        setActiveSpaceId(target.spaceId);
-        if (target.doubtId) void hideLifeDoubtFromTimeline(target.doubtId);
-      })();
-    },
-    [handleUnauthorized, hideLifeDoubtFromTimeline, showNotice, syncThinkingSpacesFromApi, thinkingStore.spaces]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -1405,40 +1267,6 @@ export function TimeArchive() {
     showNotice("本地缓存已清理");
   }, [showNotice, syncLifeFromApi, syncThinkingSpacesFromApi]);
 
-  const linkedSpacePreview = useMemo<LinkedSpacePreview | null>(() => {
-    if (!thinkingView) return null;
-    const space = thinkingStore.spaces.find((item) => item.id === thinkingView.spaceId);
-    if (!space) return null;
-    const orderedNodes = thinkingView.tracks
-      .flatMap((track) =>
-        track.nodes.map((node, index) => ({
-          text: node.questionText,
-          createdAtMs: node.createdAt ? new Date(node.createdAt).getTime() : Number.NaN,
-          order: index
-        }))
-      )
-      .sort((a, b) => {
-        const aValid = Number.isFinite(a.createdAtMs);
-        const bValid = Number.isFinite(b.createdAtMs);
-        if (aValid && bValid) return a.createdAtMs - b.createdAtMs;
-        if (aValid) return -1;
-        if (bValid) return 1;
-        return a.order - b.order;
-      })
-      .map((item) => item.text.trim())
-      .filter((text) => text.length > 0)
-      .filter((text, index, source) => source.indexOf(text) === index);
-    const firstNode = orderedNodes[0] ?? "";
-    const lastNode = orderedNodes[orderedNodes.length - 1] ?? firstNode;
-    if (!firstNode) return null;
-    return {
-      spaceId: space.id,
-      title: space.rootQuestionText,
-      firstNode,
-      lastNode
-    };
-  }, [thinkingStore.spaces, thinkingView]);
-
   if (!authReady) {
     return (
       <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
@@ -1527,12 +1355,9 @@ export function TimeArchive() {
                 store={lifeStore}
                 setStore={setLifeStore}
                 timezone={thinkingStore.timezone}
-                linkedSpacePreview={linkedSpacePreview}
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
-                thinkingProgressByDoubt={thinkingProgressByDoubt}
-                onJumpToThinking={handleJumpToThinking}
                 onImportToThinking={handleImportToThinking}
                 onCreateDoubt={createLifeDoubt}
                 onSaveDoubtNote={saveLifeDoubtNote}
@@ -1612,19 +1437,20 @@ export function TimeArchive() {
       </main>
 
       {showThinkingMobileBottomNav ? (
-        <div className="absolute inset-x-0 bottom-0 z-30 px-4 pb-[calc(var(--safe-bottom)+10px)] md:hidden">
-          <nav className="mx-auto flex w-full max-w-md items-center justify-center gap-2 rounded-full border border-black/[0.09] bg-[#f5f2ee]/90 px-2.5 py-2 shadow-[0_-10px_24px_rgba(15,23,42,0.08)] backdrop-blur-[6px]">
-            <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime subtle={false} />
-            <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
-            <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime subtle={false} />
+        <div className="thinking-mobile-nav absolute inset-x-0 bottom-0 z-30 md:hidden">
+          <nav className="mx-auto grid h-14 w-full max-w-md grid-cols-3 px-3">
+            <MobileBottomTab label="时间" icon="life" active={isLifeTab} onClick={() => setTab("life")} />
+            <MobileBottomTab label="思路" icon="thinking" active={isThinkingTab} onClick={() => setTab("thinking")} />
+            <MobileBottomTab label="设置" icon="settings" active={isSettingsTab} onClick={() => setTab("settings")} />
           </nav>
+          <div className="h-[calc(var(--safe-bottom)+4px)]" />
         </div>
       ) : null}
 
       <p
         className={cn(
           "pointer-events-none absolute left-1/2 z-40 -translate-x-1/2 rounded-full border border-slate-400/20 bg-black/45 px-4 py-1.5 text-xs text-slate-200/80 backdrop-blur transition-all duration-300",
-          showThinkingMobileBottomNav ? "bottom-[calc(var(--safe-bottom)+82px)] md:bottom-4" : "bottom-4",
+          showThinkingMobileBottomNav ? "bottom-[calc(var(--safe-bottom)+64px)] md:bottom-4" : "bottom-4",
           notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
         )}
       >
@@ -1659,6 +1485,61 @@ function TopTab(props: { label: string; active: boolean; onClick: () => void; da
     >
       {props.label}
     </Button>
+  );
+}
+
+function MobileBottomTab(props: {
+  label: string;
+  active: boolean;
+  onClick: () => void;
+  icon: "life" | "thinking" | "settings";
+}) {
+  return (
+    <button
+      type="button"
+      data-active={props.active ? "true" : "false"}
+      className="thinking-mobile-nav-item relative flex h-full w-full flex-col items-center justify-center gap-[2px]"
+      onClick={props.onClick}
+    >
+      <span className="thinking-mobile-nav-icon" aria-hidden="true">
+        <MobileBottomTabIcon icon={props.icon} />
+      </span>
+      <span className="text-[11px] tracking-[0.08em]">{props.label}</span>
+      <span className="thinking-mobile-nav-indicator absolute bottom-0 h-[2px] w-8 rounded-full" />
+    </button>
+  );
+}
+
+function MobileBottomTabIcon(props: { icon: "life" | "thinking" | "settings" }) {
+  if (props.icon === "life") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <circle cx="9" cy="9" r="6.25" stroke="currentColor" strokeWidth="1.3" />
+        <path d="M9 5.6V9.2L11.2 10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      </svg>
+    );
+  }
+
+  if (props.icon === "thinking") {
+    return (
+      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+        <path d="M4.25 4.8H11.6M4.25 9H13.75M4.25 13.2H10.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+        <circle cx="13.8" cy="4.8" r="1.2" fill="currentColor" />
+      </svg>
+    );
+  }
+
+  return (
+    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
+      <path
+        d="M9 2.8L9.55 4.42C9.66 4.74 9.96 4.96 10.3 4.99L12.02 5.13C12.76 5.19 13.06 6.12 12.48 6.58L11.14 7.63C10.87 7.84 10.75 8.19 10.84 8.51L11.25 10.18C11.42 10.89 10.63 11.45 10.02 11L8.58 9.95C8.3 9.75 7.93 9.75 7.65 9.95L6.21 11C5.6 11.45 4.81 10.89 4.98 10.18L5.39 8.51C5.48 8.19 5.36 7.84 5.09 7.63L3.75 6.58C3.17 6.12 3.47 5.19 4.21 5.13L5.93 4.99C6.27 4.96 6.57 4.74 6.68 4.42L7.23 2.8C7.47 2.1 8.53 2.1 8.77 2.8Z"
+        stroke="currentColor"
+        strokeWidth="1.2"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+      <circle cx="9" cy="9" r="6.2" stroke="currentColor" strokeWidth="1.1" opacity="0.32" />
+    </svg>
   );
 }
 

@@ -18,36 +18,10 @@ import {
   isOlderThanOneYear
 } from "@/components/zhihuo-model";
 
-type ThinkingProgress = {
-  spaceId: string;
-  status: "active" | "hidden";
-  freezeNote: string | null;
-  milestonePreviews: string[];
-  reentry: {
-    questionEntry: { spaceId: string; rootQuestionText: string } | null;
-    freezeEntry: {
-      spaceId: string;
-      trackId: string | null;
-      nodeId: string | null;
-      preview: string | null;
-      freezeNote: string | null;
-      frozenAt: string | null;
-    } | null;
-    milestoneEntries: Array<{ spaceId: string; trackId: string | null; nodeId: string | null; preview: string | null }>;
-  };
-};
-
 type DateGroup = {
   key: string;
   label: string;
   items: LifeDoubt[];
-};
-
-type LinkedSpacePreview = {
-  spaceId: string;
-  title: string;
-  firstNode: string;
-  lastNode: string;
 };
 
 const EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
@@ -57,12 +31,9 @@ export function LifeLayer(props: {
   store: LifeStore;
   setStore: Dispatch<SetStateAction<LifeStore>>;
   timezone: string;
-  linkedSpacePreview: LinkedSpacePreview | null;
   ready: boolean;
   openingPhase: OpeningPhase;
   stars: StarDot[];
-  thinkingProgressByDoubt: Record<string, ThinkingProgress>;
-  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
   onImportToThinking: (doubt: LifeDoubt) => void;
   onCreateDoubt: (rawText: string) => Promise<boolean>;
   onSaveDoubtNote: (doubtId: string, noteText: string) => Promise<boolean>;
@@ -191,7 +162,6 @@ export function LifeLayer(props: {
     setMobileDetailOpen(false);
   }, []);
 
-  const selectedProgress = selectedDoubt ? props.thinkingProgressByDoubt[selectedDoubt.id] ?? null : null;
   const matchedCount = normalizedSearch
     ? allDoubts.filter((item) => item.rawText.toLocaleLowerCase().includes(normalizedSearch)).length
     : allDoubts.length;
@@ -306,7 +276,6 @@ export function LifeLayer(props: {
                       mode={!isMobile && !isSplitView ? "home-desktop" : !isMobile ? "split" : "mobile"}
                       selectedId={selectedDoubtId}
                       notesMap={notesMap}
-                      progressByDoubt={props.thinkingProgressByDoubt}
                       rowRefs={rowRefs}
                       onSelect={handleSelect}
                     />
@@ -323,13 +292,10 @@ export function LifeLayer(props: {
               key="detail-panel"
               doubt={selectedDoubt}
               timezone={props.timezone}
-              linkedSpacePreview={props.linkedSpacePreview}
               noteText={notesMap.get(selectedDoubt.id) ?? ""}
-              progress={selectedProgress}
               onClose={closeDetail}
               onDelete={() => setDeleteId(selectedDoubt.id)}
               onImport={() => props.onImportToThinking(selectedDoubt)}
-              onJumpToThinking={props.onJumpToThinking}
               onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
             />
           ) : null}
@@ -342,13 +308,10 @@ export function LifeLayer(props: {
             key="mobile-detail-drawer"
             doubt={selectedDoubt}
             timezone={props.timezone}
-            linkedSpacePreview={props.linkedSpacePreview}
             noteText={notesMap.get(selectedDoubt.id) ?? ""}
-            progress={selectedProgress}
             onClose={closeDetail}
             onDelete={() => setDeleteId(selectedDoubt.id)}
             onImport={() => props.onImportToThinking(selectedDoubt)}
-            onJumpToThinking={props.onJumpToThinking}
             onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
           />
         ) : null}
@@ -402,7 +365,6 @@ function TimeClusterGroup(props: {
   mode: "home-desktop" | "split" | "mobile";
   selectedId: string | null;
   notesMap: Map<string, string>;
-  progressByDoubt: Record<string, ThinkingProgress>;
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
 }) {
@@ -416,7 +378,6 @@ function TimeClusterGroup(props: {
             key={item.id}
             doubt={item}
             noteText={props.notesMap.get(item.id) ?? ""}
-            progress={props.progressByDoubt[item.id] ?? null}
             mode={props.mode}
             isSelected={props.selectedId === item.id}
             isAdjacent={selectedIndex >= 0 && Math.abs(selectedIndex - index) === 1}
@@ -433,7 +394,6 @@ function TimeClusterGroup(props: {
 function TimeEntryCard(props: {
   doubt: LifeDoubt;
   noteText: string;
-  progress: ThinkingProgress | null;
   mode: "home-desktop" | "split" | "mobile";
   isSelected: boolean;
   isAdjacent: boolean;
@@ -441,7 +401,6 @@ function TimeEntryCard(props: {
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
 }) {
-  const statusTone = resolveStatusTone(props.progress);
   const driftOffsets = [0, 6, 2, 8, 3, 7];
   const driftOffset = props.mode === "home-desktop" ? 0 : driftOffsets[props.itemIndex % driftOffsets.length];
 
@@ -479,7 +438,7 @@ function TimeEntryCard(props: {
       >
         <div className="relative z-10 flex items-start gap-4">
           <div className="relative flex h-[1.96rem] shrink-0 items-center">
-            <span className={cn("time-status-dot", statusTone.dotClass)} />
+            <span className={cn("time-status-dot", "time-status-dot--plain")} />
           </div>
 
           <div className="min-w-0 flex-1">
@@ -500,7 +459,6 @@ function TimeEntryCard(props: {
 
             <div className="mt-3 flex items-center gap-4 text-[12px] tracking-[0.04em] text-[var(--time-text-soft)]">
               <time className="life-time-meta transition-colors duration-700">{formatRelativeTime(props.doubt.createdAt)}</time>
-              {props.progress?.status === "active" ? <span>{"\u6709\u5EF6\u7EED"}</span> : null}
               {props.noteText ? <span>{"\u6709\u6CE8\u8BB0"}</span> : null}
             </div>
           </div>
@@ -513,13 +471,10 @@ function TimeEntryCard(props: {
 function DetailPanel(props: {
   doubt: LifeDoubt;
   timezone: string;
-  linkedSpacePreview: LinkedSpacePreview | null;
   noteText: string;
-  progress: ThinkingProgress | null;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
   onSaveNote: (value: string) => void;
 }) {
   return (
@@ -539,13 +494,10 @@ function DetailPanel(props: {
 function MobileDetailDrawer(props: {
   doubt: LifeDoubt;
   timezone: string;
-  linkedSpacePreview: LinkedSpacePreview | null;
   noteText: string;
-  progress: ThinkingProgress | null;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
   onSaveNote: (value: string) => void;
 }) {
   return (
@@ -576,64 +528,16 @@ function MobileDetailDrawer(props: {
 function DetailBody(props: {
   doubt: LifeDoubt;
   timezone: string;
-  linkedSpacePreview: LinkedSpacePreview | null;
   noteText: string;
-  progress: ThinkingProgress | null;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onJumpToThinking: (target: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null; doubtId?: string }) => void;
   onSaveNote: (value: string) => void;
   compact?: boolean;
 }) {
-  const continueTarget = props.progress?.reentry.freezeEntry
-    ? {
-        spaceId: props.progress.reentry.freezeEntry.spaceId,
-        mode: "freeze" as const,
-        trackId: props.progress.reentry.freezeEntry.trackId,
-        nodeId: props.progress.reentry.freezeEntry.nodeId
-      }
-    : props.progress?.reentry.questionEntry
-      ? { spaceId: props.progress.reentry.questionEntry.spaceId, mode: "root" as const }
-      : props.progress
-        ? { spaceId: props.progress.spaceId, mode: "root" as const }
-        : null;
   const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
-  const actionLabel = continueTarget ? "\u56DE\u5230\u8FD9\u6BB5\u601D\u8DEF" : "\u5E26\u5165\u601D\u8003";
-  const fallbackTrackNodes = useMemo(() => {
-    if (!props.progress) return [];
-    return [
-      ...(props.progress.milestonePreviews ?? []),
-      ...(props.progress.reentry.milestoneEntries.map((entry) => entry.preview ?? "").filter(Boolean) as string[]),
-      props.progress.reentry.freezeEntry?.preview ?? ""
-    ]
-      .map((item) => item.trim())
-      .filter((item, index, source) => item.length > 0 && source.indexOf(item) === index);
-  }, [props.progress]);
-  const matchedLinkedSpacePreview =
-    props.linkedSpacePreview && props.progress?.spaceId && props.linkedSpacePreview.spaceId === props.progress.spaceId
-      ? props.linkedSpacePreview
-      : null;
-  const firstTrackNode =
-    props.doubt.firstNodePreview?.trim() ||
-    matchedLinkedSpacePreview?.firstNode ||
-    fallbackTrackNodes[0] ||
-    "";
-  const lastTrackNode =
-    props.doubt.lastNodePreview?.trim() ||
-    matchedLinkedSpacePreview?.lastNode ||
-    fallbackTrackNodes[fallbackTrackNodes.length - 1] ||
-    firstTrackNode;
-  const freezeNoteText = props.progress?.freezeNote?.trim() ?? "";
-  const shouldShowFreezeNote = Boolean(freezeNoteText);
-  const shouldShowTrackEdgeSummary = Boolean(props.progress && firstTrackNode);
-  const shouldShowLastTrackNode = Boolean(lastTrackNode);
 
   const handlePrimaryAction = () => {
-    if (continueTarget) {
-      props.onJumpToThinking({ ...continueTarget, doubtId: props.doubt.id });
-      return;
-    }
     props.onImport();
   };
 
@@ -671,7 +575,6 @@ function DetailBody(props: {
             </svg>
             <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
           </span>
-          {props.progress?.status === "active" ? <span className="text-[rgba(172,182,188,0.58)]">{"\u601D\u8003\u4E2D"}</span> : null}
         </div>
 
           <div className="mb-6 h-px bg-gradient-to-r from-transparent via-white/[0.05] to-transparent" />
@@ -683,23 +586,7 @@ function DetailBody(props: {
             </div>
           ) : null}
 
-          {props.progress ? (
-            <div className="mb-12">
-              {shouldShowFreezeNote ? (
-                <p className="mb-16 text-[16px] leading-[1.9] text-[rgba(186,194,198,0.82)]">{freezeNoteText}</p>
-              ) : null}
-              {shouldShowTrackEdgeSummary ? (
-                <div className="space-y-4">
-                  <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"\u521D\uFF1A"}{firstTrackNode}</p>
-                  {shouldShowLastTrackNode ? (
-                    <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"\u7EC8\uFF1A"}{lastTrackNode}</p>
-                  ) : null}
-                </div>
-              ) : null}
-            </div>
-          ) : (
-            <div className="mb-12" />
-          )}
+          <div className="mb-12" />
 
           {canEditNote ? (
             <div className="mb-12">
@@ -719,7 +606,7 @@ function DetailBody(props: {
       <div className={cn("border-t border-white/[0.03] px-8 py-7", props.compact && "px-0")}>
         <div className="flex items-center gap-4">
           <button type="button" className="life-action-primary flex-1 rounded-[0.95rem] px-4 py-3 text-sm text-[rgba(192,199,204,0.82)] transition-all duration-700 hover:text-[rgba(202,209,214,0.87)]" onClick={handlePrimaryAction}>
-            {actionLabel}
+            {"\u5E26\u5165\u601D\u8003"}
           </button>
           <button type="button" className="rounded-[0.95rem] px-4 py-3 text-sm text-[rgba(140,148,153,0.56)] transition-all duration-700 hover:bg-white/[0.018] hover:text-[rgba(164,172,177,0.7)]" onClick={props.onDelete}>
             {"\u5220\u9664"}
@@ -804,12 +691,3 @@ function formatRelativeTime(iso: string) {
   return `${years} \u5E74\u524D`;
 }
 
-function resolveStatusTone(progress: ThinkingProgress | null) {
-  if (!progress) {
-    return { label: "\u9759\u7F6E\u4E2D", detail: "\u5C1A\u672A\u8FDB\u5165\u601D\u8003\u5C42", dotClass: "time-status-dot--plain" };
-  }
-  if (progress.status === "active") {
-    return { label: "\u601D\u8003\u4E2D", detail: "\u4ECD\u5728\u5EF6\u7EED", dotClass: "time-status-dot--linked" };
-  }
-  return { label: "\u5DF2\u5199\u56DE\u65F6\u95F4", detail: "\u53EF\u91CD\u65B0\u8FDB\u5165", dotClass: "time-status-dot--linked" };
-}
