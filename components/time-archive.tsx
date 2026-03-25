@@ -1285,7 +1285,7 @@ export function TimeArchive() {
   const isSettingsTab = tab === "settings";
   const showGlobalHeader = !thinkingChromeHidden;
   const mainFlushTop = thinkingChromeHidden || isLifeTab;
-  const showThinkingMobileBottomNav = isThinkingTab && !thinkingChromeHidden;
+  const showMobileMainBottomNav = (isThinkingTab && !thinkingChromeHidden) || isSettingsTab;
 
   return (
     <div
@@ -1317,7 +1317,7 @@ export function TimeArchive() {
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
             <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="flex items-center gap-2">
-              <div className={cn("items-center gap-2", isThinkingTab ? "hidden md:flex" : "flex")}>
+              <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
                 <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
                 <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
@@ -1436,8 +1436,8 @@ export function TimeArchive() {
         </AnimatePresence>
       </main>
 
-      {showThinkingMobileBottomNav ? (
-        <div className="thinking-mobile-nav absolute inset-x-0 bottom-0 z-30 md:hidden">
+      {showMobileMainBottomNav ? (
+        <div className="mobile-main-nav absolute inset-x-0 bottom-0 z-30 md:hidden">
           <nav className="mx-auto grid h-14 w-full max-w-md grid-cols-3 px-3">
             <MobileBottomTab label="时间" icon="life" active={isLifeTab} onClick={() => setTab("life")} />
             <MobileBottomTab label="思路" icon="thinking" active={isThinkingTab} onClick={() => setTab("thinking")} />
@@ -1450,7 +1450,7 @@ export function TimeArchive() {
       <p
         className={cn(
           "pointer-events-none absolute left-1/2 z-40 -translate-x-1/2 rounded-full border border-slate-400/20 bg-black/45 px-4 py-1.5 text-xs text-slate-200/80 backdrop-blur transition-all duration-300",
-          showThinkingMobileBottomNav ? "bottom-[calc(var(--safe-bottom)+64px)] md:bottom-4" : "bottom-4",
+          showMobileMainBottomNav ? "bottom-[calc(var(--safe-bottom)+64px)] md:bottom-4" : "bottom-4",
           notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
         )}
       >
@@ -1498,14 +1498,14 @@ function MobileBottomTab(props: {
     <button
       type="button"
       data-active={props.active ? "true" : "false"}
-      className="thinking-mobile-nav-item relative flex h-full w-full flex-col items-center justify-center gap-[2px]"
+      className="mobile-main-nav-item relative flex h-full w-full flex-col items-center justify-center gap-[2px]"
       onClick={props.onClick}
     >
-      <span className="thinking-mobile-nav-icon" aria-hidden="true">
+      <span className="mobile-main-nav-icon" aria-hidden="true">
         <MobileBottomTabIcon icon={props.icon} />
       </span>
       <span className="text-[11px] tracking-[0.08em]">{props.label}</span>
-      <span className="thinking-mobile-nav-indicator absolute bottom-0 h-[2px] w-8 rounded-full" />
+      <span className="mobile-main-nav-indicator absolute bottom-0 h-[2px] w-8 rounded-full" />
     </button>
   );
 }
