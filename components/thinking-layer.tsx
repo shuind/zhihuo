@@ -1787,7 +1787,7 @@ export function ThinkingLayer(props: {
           <div className="absolute right-4 top-16 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] md:right-8">
             <div className="flex items-center justify-between">
               <div>
-                <p className="text-sm text-slate-800">从一个困惑、判断或冲突开始</p>
+                <p className="text-sm text-slate-800">从任意念头开始</p>
                 <p className="mt-1 text-xs text-slate-500">它会成为这段思考的中心</p>
               </div>
               <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setCreateSpaceOpen(false)}>
@@ -1799,7 +1799,6 @@ export function ThinkingLayer(props: {
                 value={newSpaceInput}
                 maxLength={160}
                 className="h-10 rounded-full border border-black/12 bg-white px-4 text-sm text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-                placeholder="写下这段思考现在围着什么转"
                 onChange={(event) => setNewSpaceInput(event.target.value)}
                 onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), createSpace())}
               />
