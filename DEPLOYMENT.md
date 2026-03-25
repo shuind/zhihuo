@@ -21,6 +21,8 @@ Edit `.env.production`:
 - set `AUTH_SECRET` to a strong random value
 - set `POSTGRES_PASSWORD`
 - ensure `DATABASE_URL` matches the Postgres credentials
+- set SMTP variables: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
+- for QQ/Foxmail, recommend `SMTP_HOST=smtp.qq.com`, `SMTP_PORT=465`, `SMTP_SECURE=true`
 
 Start services:
 
@@ -28,6 +30,7 @@ Start services:
 docker compose up -d --build
 docker compose ps
 curl http://127.0.0.1:3000/v1/health
+docker compose exec app sh -lc 'env | grep -E "^SMTP_|^NODE_ENV"'
 ```
 
 ## 3. CI workflow
