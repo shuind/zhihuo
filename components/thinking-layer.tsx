@@ -105,6 +105,17 @@ type OrganizeCandidate = {
   score: number;
 };
 
+type OrganizeScope = "current" | "all";
+
+type OrganizeNodeEntry = {
+  nodeId: string;
+  questionText: string;
+  fromTrackId: string;
+  fromTrackTitle: string;
+  createdAt?: string;
+  fallbackOrder: number;
+};
+
 type TrackPosition = {
   scrollTop: number;
   focusNodeId: string | null;
@@ -208,7 +219,11 @@ export function ThinkingLayer(props: {
   const [isCreatingSpace, setIsCreatingSpace] = useState(false);
   const [isCreatingScratch, setIsCreatingScratch] = useState(false);
   const [pausedTrackIds, setPausedTrackIds] = useState<Record<string, boolean>>({});
-  const [organizeCandidates, setOrganizeCandidates] = useState<Array<OrganizeCandidate & { targetTrackId: string; selected: boolean }>>([]);
+  const [organizeScope, setOrganizeScope] = useState<OrganizeScope>("all");
+  const [organizeQuery, setOrganizeQuery] = useState("");
+  const [organizeSelectedNodeIds, setOrganizeSelectedNodeIds] = useState<string[]>([]);
+  const [organizeTargetTrackId, setOrganizeTargetTrackId] = useState<string>("__new__");
+  const [isApplyingOrganize, setIsApplyingOrganize] = useState(false);
   const [organizePanelOpen, setOrganizePanelOpen] = useState(false);
   const [focusMenuNodeId, setFocusMenuNodeId] = useState<string | null>(null);
   const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false);
@@ -304,6 +319,60 @@ export function ThinkingLayer(props: {
     () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
     [activeTrackId, pendingTrackId, tracks]
   );
+  const organizeAllNodes = useMemo<OrganizeNodeEntry[]>(() => {
+    const flattened: OrganizeNodeEntry[] = [];
+    let fallbackOrder = 0;
+    for (const track of tracks) {
+      const fromTrackTitle = trackCardTitle(track);
+      for (const node of track.nodes) {
+        flattened.push({
+          nodeId: node.id,
+          questionText: node.questionText,
+          fromTrackId: track.id,
+          fromTrackTitle,
+          createdAt: node.createdAt,
+          fallbackOrder
+        });
+        fallbackOrder += 1;
+      }
+    }
+    return flattened.sort((a, b) => {
+      const aTime = a.createdAt ? new Date(a.createdAt).getTime() : Number.NaN;
+      const bTime = b.createdAt ? new Date(b.createdAt).getTime() : Number.NaN;
+      const aValid = Number.isFinite(aTime);
+      const bValid = Number.isFinite(bTime);
+      if (aValid && bValid && aTime !== bTime) return bTime - aTime;
+      if (aValid && !bValid) return -1;
+      if (!aValid && bValid) return 1;
+      return b.fallbackOrder - a.fallbackOrder;
+    });
+  }, [tracks]);
+  const organizeCurrentCount = useMemo(
+    () => (activeTrackId ? organizeAllNodes.filter((node) => node.fromTrackId === activeTrackId).length : 0),
+    [activeTrackId, organizeAllNodes]
+  );
+  const organizeTargetTracks = useMemo(() => tracks.filter((track) => !track.isParking), [tracks]);
+  const organizeScopeNodes = useMemo(() => {
+    if (organizeScope === "current") {
+      if (!activeTrackId) return [] as OrganizeNodeEntry[];
+      return organizeAllNodes.filter((node) => node.fromTrackId === activeTrackId);
+    }
+    return organizeAllNodes;
+  }, [activeTrackId, organizeAllNodes, organizeScope]);
+  const normalizedOrganizeQuery = organizeQuery.trim().toLowerCase();
+  const organizeVisibleNodes = useMemo(() => {
+    if (!normalizedOrganizeQuery) return organizeScopeNodes;
+    return organizeScopeNodes.filter((node) => {
+      return (
+        node.questionText.toLowerCase().includes(normalizedOrganizeQuery) ||
+        node.fromTrackTitle.toLowerCase().includes(normalizedOrganizeQuery)
+      );
+    });
+  }, [normalizedOrganizeQuery, organizeScopeNodes]);
+  const organizeSelectedSet = useMemo(() => new Set(organizeSelectedNodeIds), [organizeSelectedNodeIds]);
+  const organizeNodeMap = useMemo(() => new Map(organizeAllNodes.map((node) => [node.nodeId, node])), [organizeAllNodes]);
+  const organizeAllVisibleSelected =
+    organizeVisibleNodes.length > 0 && organizeVisibleNodes.every((node) => organizeSelectedSet.has(node.nodeId));
   const normalizedSpaceFinderQuery = spaceFinderQuery.trim().toLowerCase();
   const filteredSearchableSpaces = useMemo(() => {
     if (!normalizedSpaceFinderQuery) return searchableSpaces;
@@ -324,7 +393,11 @@ export function ThinkingLayer(props: {
     setIsRenamingSpace(false);
     setPausedTrackIds({});
     setBackgroundDraft(props.spaceView?.backgroundText ?? "");
-    setOrganizeCandidates([]);
+    setOrganizeScope("all");
+    setOrganizeQuery("");
+    setOrganizeSelectedNodeIds([]);
+    setOrganizeTargetTrackId("__new__");
+    setIsApplyingOrganize(false);
     setOrganizePanelOpen(false);
     setFocusMenuNodeId(null);
     setDeleteSpaceOpen(false);
@@ -403,6 +476,21 @@ export function ThinkingLayer(props: {
     if (tracks.some((track) => track.id === localPendingTrackId)) return;
     setLocalPendingTrackId(null);
   }, [localPendingTrackId, tracks]);
+
+  useEffect(() => {
+    setOrganizeSelectedNodeIds((prev) => {
+      const next = prev.filter((id) => organizeNodeMap.has(id));
+      if (next.length === prev.length) return prev;
+      return next;
+    });
+  }, [organizeNodeMap]);
+
+  useEffect(() => {
+    if (organizeTargetTrackId === "__new__") return;
+    if (organizeTargetTracks.some((track) => track.id === organizeTargetTrackId)) return;
+    const fallbackTarget = organizeTargetTracks[0]?.id ?? "__new__";
+    setOrganizeTargetTrackId(fallbackTarget);
+  }, [organizeTargetTrackId, organizeTargetTracks]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -613,31 +701,32 @@ export function ThinkingLayer(props: {
   }, [activeSpace, activeTrack, centerAddedNodeWithRetry, justAddedNodeId]);
 
   const applyOrganize = useCallback(() => {
-    if (!activeSpace) return;
-    const recenterLatest = () => {
-      const latestNodeId = activeTrack?.nodes[activeTrack.nodes.length - 1]?.id ?? null;
-      if (!latestNodeId) return;
-      window.setTimeout(() => {
-        centerAddedNodeWithRetry(latestNodeId, activeSpace.id, activeTrack?.id ?? activeTrackId);
-      }, 80);
-    };
-    const moves = organizeCandidates.filter((item) => item.selected).map((item) => ({ nodeId: item.nodeId, targetTrackId: item.targetTrackId }));
-    if (!moves.length) {
-      setOrganizePanelOpen(false);
-      recenterLatest();
+    if (!activeSpace || isApplyingOrganize) return;
+    if (!organizeSelectedNodeIds.length) {
+      props.showNotice("先选择要整理的内容");
       return;
     }
+    const moves = organizeSelectedNodeIds
+      .map((nodeId) => organizeNodeMap.get(nodeId))
+      .filter((node): node is OrganizeNodeEntry => Boolean(node))
+      .filter((node) => node.fromTrackId !== organizeTargetTrackId)
+      .map((node) => ({ nodeId: node.nodeId, targetTrackId: organizeTargetTrackId }));
+    if (!moves.length) {
+      props.showNotice("所选内容已经在目标思路线");
+      return;
+    }
+    setIsApplyingOrganize(true);
     void (async () => {
       const result = await props.onOrganizeApply(activeSpace.id, moves);
+      setIsApplyingOrganize(false);
       if (!result.ok) {
         props.showNotice(result.message);
         return;
       }
-      setOrganizePanelOpen(false);
-      recenterLatest();
-      props.showNotice(`已安放 ${result.movedCount} 条念头`);
+      setOrganizeSelectedNodeIds([]);
+      props.showNotice(`已移动 ${result.movedCount} 条内容`);
     })();
-  }, [activeSpace, activeTrack, activeTrackId, centerAddedNodeWithRetry, organizeCandidates, props]);
+  }, [activeSpace, isApplyingOrganize, organizeNodeMap, organizeSelectedNodeIds, organizeTargetTrackId, props]);
 
   const createSpace = useCallback(() => {
     const rawInput = newSpaceInput.trim();
@@ -762,6 +851,19 @@ export function ThinkingLayer(props: {
       setTimeout(() => setBackgroundHint(""), 1200);
     })();
   }, [activeSpace, backgroundDraft, props]);
+
+  const openOrganizePanel = useCallback(() => {
+    if (!activeSpace || activeSpace.status !== "active") return;
+    setMoreOpen(false);
+    const defaultScope: OrganizeScope = activeTrackId ? "current" : "all";
+    const defaultTargetTrackId = organizeTargetTracks[0]?.id ?? "__new__";
+    setOrganizeScope(defaultScope);
+    setOrganizeQuery("");
+    setOrganizeSelectedNodeIds([]);
+    setOrganizeTargetTrackId(defaultTargetTrackId);
+    setIsApplyingOrganize(false);
+    setOrganizePanelOpen(true);
+  }, [activeSpace, activeTrackId, organizeTargetTracks]);
 
   const openWriteToTimeDialog = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
@@ -1086,6 +1188,7 @@ export function ThinkingLayer(props: {
                   >
                     <MenuItem label="写入时间" disabled={!activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
                     <MenuItem label="导出" disabled={!activeSpace} onClick={() => (setMoreOpen(false), openExport())} />
+                    <MenuItem label="整理一下" disabled={!activeSpace || activeSpace.status !== "active"} onClick={openOrganizePanel} />
                     <MenuItem
                       label="重命名空间"
                       disabled={!activeSpace}
@@ -1239,21 +1342,7 @@ export function ThinkingLayer(props: {
             )
           : null}
 
-        {!activeSpace ? (
-          <div className="grid flex-1 place-items-center p-8">
-            <div className="text-center">
-              <p className="text-sm text-slate-600">还没有思考空间</p>
-              <Button
-                type="button"
-                size="sm"
-                className="mt-4 rounded-full bg-slate-900 px-4 text-slate-50 hover:bg-slate-800"
-                onClick={() => setCreateSpaceOpen(true)}
-              >
-                创建空间
-              </Button>
-            </div>
-          </div>
-        ) : detailOpen ? (
+        {detailOpen && activeSpace ? (
           <div data-thinking-detail="true" className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
             <section className="min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
               <div
@@ -1861,67 +1950,140 @@ export function ThinkingLayer(props: {
 
       {organizePanelOpen && activeSpace ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[760px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <div className="flex items-center justify-between">
+          <div className="w-[860px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] sm:p-5">
+            <div className="flex items-center justify-between gap-2">
               <div>
-                <p className="text-sm text-slate-800">安放这些散开的念头</p>
-                <p className="mt-1 text-xs text-slate-500">看看它们更像放在哪条线里</p>
+                <p className="text-sm text-slate-800">整理一下</p>
+                <p className="mt-1 text-xs text-slate-500">选择内容并移动到目标思路线</p>
               </div>
               <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
                 关闭
               </button>
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-black/8 bg-[#f8f6f2] px-3 py-2">
+              <div className="flex items-center gap-1 text-xs">
+                {[
+                  { value: "current" as OrganizeScope, label: "当前线", count: organizeCurrentCount, disabled: !activeTrackId },
+                  { value: "all" as OrganizeScope, label: "全部", count: organizeAllNodes.length, disabled: false }
+                ].map((item) => (
+                  <button
+                    key={item.value}
+                    type="button"
+                    disabled={item.disabled}
+                    className={cn(
+                      "rounded-full border px-2.5 py-1 transition-colors",
+                      organizeScope === item.value ? "border-slate-900 bg-slate-900 text-white" : "border-black/12 bg-white text-slate-600 hover:text-slate-800",
+                      item.disabled ? "cursor-not-allowed opacity-45 hover:text-slate-600" : ""
+                    )}
+                    onClick={() => setOrganizeScope(item.value)}
+                  >
+                    {item.label} {item.count}
+                  </button>
+                ))}
+              </div>
+              <input
+                value={organizeQuery}
+                placeholder="搜索内容或来源思路线"
+                className="h-8 min-w-0 flex-1 rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+                onChange={(event) => setOrganizeQuery(event.target.value)}
+              />
+              <button
+                type="button"
+                className="rounded-full border border-black/12 bg-white px-3 py-1 text-xs text-slate-600 transition-colors hover:text-slate-800"
+                onClick={() =>
+                  setOrganizeSelectedNodeIds((prev) => {
+                    const visibleIds = organizeVisibleNodes.map((node) => node.nodeId);
+                    const visibleSet = new Set(visibleIds);
+                    if (organizeAllVisibleSelected) {
+                      return prev.filter((id) => !visibleSet.has(id));
+                    }
+                    const nextSet = new Set(prev);
+                    for (const id of visibleIds) nextSet.add(id);
+                    return [...nextSet];
+                  })
+                }
+              >
+                {organizeAllVisibleSelected ? "取消全选" : "全选当前结果"}
+              </button>
+            </div>
             <div className="mt-3 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
-              {organizeCandidates.length ? (
-                organizeCandidates.map((candidate) => (
-                  <div key={candidate.nodeId} className="rounded-xl border border-black/10 bg-[#f8f6f2] px-3 py-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <label className="flex items-center gap-2 text-xs text-slate-700">
-                        <input
-                          type="checkbox"
-                          checked={candidate.selected}
-                          onChange={(event) =>
-                            setOrganizeCandidates((prev) =>
-                              prev.map((item) => (item.nodeId === candidate.nodeId ? { ...item, selected: event.target.checked } : item))
-                            )
-                          }
-                        />
-                        {candidate.preview || `节点 ${candidate.nodeId.slice(0, 8)}`}
-                      </label>
-                      <span className="text-[11px] text-slate-500">{candidate.score.toFixed(2)}</span>
-                    </div>
-                    <div className="mt-2 flex items-center gap-2 text-xs text-slate-600">
-                      <span>更像属于：</span>
-                      <select
-                        value={candidate.targetTrackId}
-                        className="rounded-full border border-black/12 bg-white px-2 py-1 text-xs"
+              {organizeVisibleNodes.length ? (
+                organizeVisibleNodes.map((node) => (
+                  <label
+                    key={node.nodeId}
+                    className={cn(
+                      "block rounded-xl border px-3 py-2 transition-colors",
+                      organizeSelectedSet.has(node.nodeId) ? "border-slate-900/35 bg-slate-50" : "border-black/10 bg-[#fcfaf6] hover:border-black/15"
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <input
+                        type="checkbox"
+                        className="mt-0.5"
+                        checked={organizeSelectedSet.has(node.nodeId)}
                         onChange={(event) =>
-                          setOrganizeCandidates((prev) =>
-                            prev.map((item) => (item.nodeId === candidate.nodeId ? { ...item, targetTrackId: event.target.value } : item))
-                          )
+                          setOrganizeSelectedNodeIds((prev) => {
+                            if (event.target.checked) {
+                              if (prev.includes(node.nodeId)) return prev;
+                              return [...prev, node.nodeId];
+                            }
+                            return prev.filter((id) => id !== node.nodeId);
+                          })
                         }
-                      >
-                        {tracks.map((track) => (
-                          <option key={track.id} value={track.id}>
-                            {track.titleQuestionText.slice(0, 24)}
-                          </option>
-                        ))}
-                        <option value="__new__">从另一个方向展开</option>
-                      </select>
+                      />
+                      <div className="min-w-0 flex-1">
+                        <p className="line-clamp-2 text-[13px] leading-[1.55] text-slate-700">
+                          {node.questionText || `节点 ${node.nodeId.slice(0, 8)}`}
+                        </p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          来自：{node.fromTrackTitle || "未命名思路线"}
+                          {node.createdAt ? ` · ${formatRelativeNodeTime(node.createdAt)}` : ""}
+                        </p>
+                      </div>
                     </div>
-                  </div>
+                  </label>
                 ))
               ) : (
-                <p className="text-sm text-slate-500">暂时没有需要安放的内容</p>
+                <p className="rounded-xl border border-black/8 bg-[#fcfaf6] px-3 py-6 text-center text-sm text-slate-500">
+                  当前范围没有待整理内容
+                </p>
               )}
             </div>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
+            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+              <p className="text-xs text-slate-500">已选 {organizeSelectedNodeIds.length} 条</p>
+              <div className="flex flex-wrap items-center justify-end gap-2">
+                <span className="text-xs text-slate-600">移动到</span>
+                <select
+                  value={organizeTargetTrackId}
+                  className="h-8 max-w-[220px] rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+                  onChange={(event) => setOrganizeTargetTrackId(event.target.value)}
+                >
+                  {organizeTargetTracks.map((track) => (
+                    <option key={track.id} value={track.id}>
+                      {trackCardTitle(track).slice(0, 24)}
+                    </option>
+                  ))}
+                  <option value="__new__">创建新方向</option>
+                </select>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-black/12 text-slate-700"
+                  onClick={() => setOrganizePanelOpen(false)}
+                >
                 取消
-              </Button>
-              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={applyOrganize}>
-                安放这些念头
-              </Button>
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:opacity-50"
+                  disabled={!organizeSelectedNodeIds.length || isApplyingOrganize}
+                  onClick={applyOrganize}
+                >
+                  {isApplyingOrganize ? "移动中..." : "移动"}
+                </Button>
+              </div>
             </div>
           </div>
         </div>
