@@ -280,6 +280,22 @@ export function TimeArchive() {
 
   const noticeTimerRef = useRef<number | null>(null);
   const [stars] = useState(() => createStars(36));
+  const freezeNoteByDoubtId = useMemo(() => {
+    const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
+    const grouped = new Map<string, { note: string; timestamp: number }>();
+    for (const space of thinkingStore.spaces) {
+      const doubtId = space.sourceTimeDoubtId;
+      if (!doubtId) continue;
+      const note = (metaBySpaceId.get(space.id)?.userFreezeNote ?? "").trim();
+      if (!note) continue;
+      const timestamp = new Date(space.lastActivityAt ?? space.createdAt).getTime();
+      const previous = grouped.get(doubtId);
+      if (!previous || timestamp >= previous.timestamp) {
+        grouped.set(doubtId, { note, timestamp });
+      }
+    }
+    return Object.fromEntries(Array.from(grouped.entries(), ([doubtId, payload]) => [doubtId, payload.note]));
+  }, [thinkingStore.spaceMeta, thinkingStore.spaces]);
 
   const showNotice = useCallback((message: string, duration = 1800) => {
     if (noticeTimerRef.current) {
@@ -1343,6 +1359,7 @@ export function TimeArchive() {
                 store={lifeStore}
                 setStore={setLifeStore}
                 timezone={thinkingStore.timezone}
+                freezeNoteByDoubtId={freezeNoteByDoubtId}
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
