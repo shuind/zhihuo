@@ -2,6 +2,21 @@
 const password = "StrongPass123!";
 const email = `zhihuo-e2e-${Date.now()}@example.com`;
 
+const ciMode = process.env.CI === "true";
+const baseHost = new URL(baseUrl).hostname;
+const baseProtocol = new URL(baseUrl).protocol;
+const localHosts = new Set(["127.0.0.1", "localhost"]);
+
+if (!ciMode) {
+  console.error("[api-test] blocked: this script is CI-only. Set CI=true in CI job, do not run in production.");
+  process.exit(1);
+}
+
+if (baseProtocol !== "http:" || !localHosts.has(baseHost)) {
+  console.error(`[api-test] blocked: TEST_BASE_URL must be local http endpoint, got ${baseUrl}`);
+  process.exit(1);
+}
+
 const jar = new Map();
 
 function assert(condition, message) {

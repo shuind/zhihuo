@@ -42,7 +42,7 @@ Checks:
 - `pnpm lint`
 - `pnpm build`
 - `pnpm exec tsc --noEmit`
-- start app and run `pnpm run test:api-routes`
+- start app and run `pnpm run test:api-routes` (CI only; do not run on production server)
 
 ## 4. CD workflow
 

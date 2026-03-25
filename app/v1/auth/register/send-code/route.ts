@@ -19,12 +19,22 @@ function shouldBypassEmailSendInCi() {
   return process.env.CI === "true";
 }
 
+const RESERVED_TEST_DOMAINS = new Set(["example.com", "example.net", "example.org"]);
+
+function isReservedTestDomain(email: string) {
+  const domain = email.split("@")[1]?.toLowerCase() ?? "";
+  return RESERVED_TEST_DOMAINS.has(domain);
+}
+
 export const POST = withApiRoute(
   "auth.register.send_code",
   async (request: NextRequest) => {
     const body = await parseJsonBody<{ email?: string }>(request);
     const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
     if (!email || !email.includes("@")) return errorJson(400, "邮箱格式不正确");
+    if (!shouldBypassEmailSendInCi() && isReservedTestDomain(email)) {
+      return errorJson(400, "请使用可接收验证码的真实邮箱");
+    }
 
     let canSend = true;
     let sendCount = 1;
@@ -82,3 +92,4 @@ export const POST = withApiRoute(
   },
   { rateLimit: { bucket: "auth-register-send-code", max: 5, windowMs: 10 * 60 * 1000 } }
 );
+

@@ -10,6 +10,8 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    env:
+      CI: "true"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -54,6 +56,7 @@ jobs:
 
       - name: API route smoke
         env:
+          CI: "true"
           TEST_BASE_URL: http://127.0.0.1:3000
         run: pnpm run test:api-routes
 
