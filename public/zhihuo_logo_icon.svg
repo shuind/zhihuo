@@ -1,0 +1,30 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" width="96" height="96" viewBox="0 0 96 96">
+  <defs>
+    <style>
+      :root {
+        --ink:#1c1c1a;
+        --inkLt:#7a7870;
+        --card:#f5f3ed;
+      }
+    </style>
+    <g id="tree-mark" fill="none" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M0 136 C-1 108 -3 78 -2 48 C-1 26 0 10 0 0" stroke="var(--ink)" stroke-width="1.1"/>
+      <path d="M-1 70 C-14 60 -34 51 -54 43" stroke="var(--ink)" stroke-width="0.85"/>
+      <path d="M-1 46 C12 34 32 24 56 12" stroke="var(--ink)" stroke-width="0.85"/>
+      <path d="M-30 56 C-40 44 -50 30 -56 16" stroke="var(--ink)" stroke-width="0.6"/>
+      <path d="M-44 48 C-50 36 -50 22 -48 6" stroke="var(--inkLt)" stroke-width="0.5"/>
+      <path d="M32 28 C36 16 36 4 32 -6" stroke="var(--ink)" stroke-width="0.55"/>
+      <path d="M50 16 C56 6 60 -4 58 -12" stroke="var(--inkLt)" stroke-width="0.45"/>
+      <path d="M0 2 C-4 -6 -8 -12 -6 -20" stroke="var(--inkLt)" stroke-width="0.4"/>
+      <circle cx="-56" cy="12" r="2" fill="var(--inkLt)" stroke="none"/>
+      <circle cx="32" cy="-8" r="2" fill="var(--inkLt)" stroke="none"/>
+      <circle cx="-6" cy="-22" r="2" fill="var(--inkLt)" stroke="none"/>
+      <line x1="-12" y1="138" x2="12" y2="138" stroke="var(--inkLt)" stroke-width="0.7"/>
+    </g>
+  </defs>
+
+  <rect width="96" height="96" rx="22" fill="var(--card)"/>
+  <g transform="translate(48 18) scale(0.58)">
+    <use href="#tree-mark"/>
+  </g>
+</svg>

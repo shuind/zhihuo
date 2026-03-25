@@ -1487,7 +1487,7 @@ export function TimeArchive() {
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
-            <div className={cn("text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}>知惑 Zhihuo</div>
+            <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="flex items-center gap-2">
               <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
               <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
@@ -1779,7 +1779,7 @@ function AuthPanel(props: { onAuthed: () => void }) {
   return (
     <div className="grid h-screen place-items-center bg-slate-950 px-4">
       <div className="w-full max-w-md rounded-2xl border border-slate-300/15 bg-slate-900/65 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-        <p className="text-sm tracking-[0.22em] text-slate-300/85">知惑 Zhihuo</p>
+        <p className="inline-flex items-center gap-2 text-sm tracking-[0.22em] text-slate-300/85"><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></p>
         <p className="mt-2 text-xs tracking-[0.12em] text-slate-400/75">
           {mode === "login" ? "请先登录你的时间档案馆" : mode === "register" ? "用邮箱验证码完成注册" : "用邮箱验证码重置密码"}
         </p>
@@ -1885,6 +1885,7 @@ function AuthPanel(props: { onAuthed: () => void }) {
     </div>
   );
 }
+
 
 
 
