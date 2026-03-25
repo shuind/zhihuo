@@ -1029,12 +1029,14 @@ export function ThinkingLayer(props: {
     (activeTrack?.nodes.length ?? 0) > 0 &&
     activeSpace?.status === "active" &&
     !(pendingTrackId && activeTrackId === pendingTrackId);
+  const mobileSpacesCardHeightClass = !detailOpen ? "h-[72dvh] md:h-full" : "h-full";
 
   return (
     <div className={cn("h-full overflow-hidden", detailOpen ? "px-0 pb-0 pt-0" : "px-3 pb-4 pt-3 md:px-6")}>
       <div
         className={cn(
-          "mx-auto flex h-full w-full flex-col overflow-hidden bg-[#f7f4ef]/95",
+          "mx-auto flex w-full flex-col overflow-hidden bg-[#f7f4ef]/95",
+          mobileSpacesCardHeightClass,
           detailOpen
             ? "max-w-none border-0 shadow-none"
             : "max-w-6xl rounded-[24px] border border-black/10 shadow-[0_14px_36px_rgba(43,38,33,0.10)]"

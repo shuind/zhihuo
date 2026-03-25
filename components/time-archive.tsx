@@ -1457,6 +1457,7 @@ export function TimeArchive() {
   const isSettingsTab = tab === "settings";
   const showGlobalHeader = !thinkingChromeHidden;
   const mainFlushTop = thinkingChromeHidden || isLifeTab;
+  const showThinkingMobileBottomNav = isThinkingTab && !thinkingChromeHidden;
 
   return (
     <div
@@ -1488,9 +1489,11 @@ export function TimeArchive() {
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
             <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="flex items-center gap-2">
-              <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
-              <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
-              <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
+              <div className={cn("items-center gap-2", isThinkingTab ? "hidden md:flex" : "flex")}>
+                <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
+                <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
+                <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
+              </div>
               <button
                 type="button"
                 className={cn(
@@ -1608,9 +1611,20 @@ export function TimeArchive() {
         </AnimatePresence>
       </main>
 
+      {showThinkingMobileBottomNav ? (
+        <div className="absolute inset-x-0 bottom-0 z-30 px-4 pb-[calc(var(--safe-bottom)+10px)] md:hidden">
+          <nav className="mx-auto flex w-full max-w-md items-center justify-center gap-2 rounded-full border border-black/[0.09] bg-[#f5f2ee]/90 px-2.5 py-2 shadow-[0_-10px_24px_rgba(15,23,42,0.08)] backdrop-blur-[6px]">
+            <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime subtle={false} />
+            <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
+            <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime subtle={false} />
+          </nav>
+        </div>
+      ) : null}
+
       <p
         className={cn(
-          "pointer-events-none absolute bottom-4 left-1/2 z-40 -translate-x-1/2 rounded-full border border-slate-400/20 bg-black/45 px-4 py-1.5 text-xs text-slate-200/80 backdrop-blur transition-all duration-300",
+          "pointer-events-none absolute left-1/2 z-40 -translate-x-1/2 rounded-full border border-slate-400/20 bg-black/45 px-4 py-1.5 text-xs text-slate-200/80 backdrop-blur transition-all duration-300",
+          showThinkingMobileBottomNav ? "bottom-[calc(var(--safe-bottom)+82px)] md:bottom-4" : "bottom-4",
           notice ? "translate-y-0 opacity-100" : "translate-y-2 opacity-0"
         )}
       >

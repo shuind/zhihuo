@@ -3,6 +3,7 @@
 @tailwind utilities;
 
 :root {
+  --titlebar-height: env(titlebar-area-height, 0px);
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
@@ -57,6 +58,12 @@ body {
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
   padding-bottom: var(--safe-bottom);
+}
+
+@media (display-mode: window-controls-overlay) {
+  body {
+    padding-top: max(var(--safe-top), var(--titlebar-height));
+  }
 }
 
 .time-serif {
