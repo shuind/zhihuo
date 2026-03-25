@@ -1362,6 +1362,7 @@ export function TimeArchive() {
     async (options: { includeLife: boolean; includeThinking: boolean }) => {
       try {
         const params = new URLSearchParams({
+          format: "markdown",
           include_life: String(options.includeLife),
           include_thinking: String(options.includeThinking)
         });
