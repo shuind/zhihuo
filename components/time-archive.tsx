@@ -1269,9 +1269,14 @@ export function TimeArchive() {
   );
 
   const handleThinkingWriteToTime = useCallback(
-    async (spaceId: string) => {
+    async (spaceId: string, freezeNote?: string) => {
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, { method: "POST" });
+        const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
+        const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
+          method: "POST",
+          headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
+          body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote }) : undefined
+        });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         if (!response.ok) {
           if (response.status === 404) return { ok: false as const, message: "空间不存在" };

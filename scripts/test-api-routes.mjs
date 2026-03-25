@@ -48,6 +48,9 @@ async function request(method, path, body) {
 async function run() {
   console.log(`[api-test] base=${baseUrl}`);
 
+  const monitorUnauthorized = await request("GET", "/v1/system/monitor");
+  assert(monitorUnauthorized.status === 401, `monitor should require auth, got ${monitorUnauthorized.status}`);
+
   const sendCode = await request("POST", "/v1/auth/register/send-code", { email });
   assert(sendCode.status === 200, `send register code failed: ${sendCode.status}`);
   const code = sendCode.json?.debug_code;
@@ -59,6 +62,13 @@ async function run() {
   const me = await request("GET", "/v1/auth/me");
   assert(me.status === 200, `me failed: ${me.status}`);
   assert(typeof me.json?.user_id === "string", "me missing user_id");
+
+  const monitor = await request("GET", "/v1/system/monitor");
+  assert(monitor.status === 200, `monitor failed: ${monitor.status}`);
+  assert(typeof monitor.json?.users?.total === "number", "monitor users.total missing");
+  assert(typeof monitor.json?.active_users?.d7 === "number", "monitor active_users.d7 missing");
+  assert(typeof monitor.json?.content?.spaces_total === "number", "monitor content.spaces_total missing");
+  assert(Array.isArray(monitor.json?.trends_14d) && monitor.json.trends_14d.length === 14, "monitor trends_14d should contain 14 rows");
 
   const createDoubt = await request("POST", "/v1/doubts", { raw_text: "Should I start now?", layer: "life" });
   assert(createDoubt.status === 201, `create doubt failed: ${createDoubt.status}`);

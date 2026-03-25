@@ -165,7 +165,7 @@ export function ThinkingLayer(props: {
   onCreateTrack: (spaceId: string) => Promise<string | null>;
   onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
   onSaveBackground: (spaceId: string, backgroundText: string | null) => Promise<{ ok: true; version: number } | { ok: false; message: string }>;
-  onWriteSpaceToTime: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
+  onWriteSpaceToTime: (spaceId: string, freezeNote?: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onDeleteSpace: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onRenameSpace: (spaceId: string, rootQuestionText: string) => Promise<{ ok: true; rootQuestionText: string } | { ok: false; message: string }>;
   onExportSpace: (spaceId: string) => Promise<string | null>;
@@ -223,6 +223,10 @@ export function ThinkingLayer(props: {
   const [clipboardNodeId, setClipboardNodeId] = useState<string | null>(null);
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
   const [scratchDrawerOpen, setScratchDrawerOpen] = useState(false);
+  const [writeToTimeOpen, setWriteToTimeOpen] = useState(false);
+  const [writeToTimeDraft, setWriteToTimeDraft] = useState("");
+  const [writeToTimeHint, setWriteToTimeHint] = useState("");
+  const [isWritingToTime, setIsWritingToTime] = useState(false);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
   const questionInputRef = useRef<HTMLInputElement | null>(null);
@@ -283,6 +287,14 @@ export function ThinkingLayer(props: {
     return fallbackTrackId;
   }, [fallbackTrackId, localPendingTrackId, props.spaceView, tracks]);
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
+  const activeSpaceFreezeNote = useMemo(() => {
+    if (!activeSpace) return "";
+    if (props.spaceView?.spaceId === activeSpace.id) {
+      return (props.spaceView.freezeNote ?? "").trim();
+    }
+    const meta = props.store.spaceMeta.find((item) => item.spaceId === activeSpace.id);
+    return (meta?.userFreezeNote ?? "").trim();
+  }, [activeSpace, props.spaceView, props.store.spaceMeta]);
   const activeTrackNodeSignature = useMemo(
     () => (activeTrack ? activeTrack.nodes.map((node) => `${node.id}:${node.answerText ?? ""}`).join("|") : ""),
     [activeTrack]
@@ -325,6 +337,10 @@ export function ThinkingLayer(props: {
     setClipboardNodeId(null);
     setClipboardSourceTrackId(null);
     setScratchDrawerOpen(false);
+    setWriteToTimeOpen(false);
+    setWriteToTimeDraft("");
+    setWriteToTimeHint("");
+    setIsWritingToTime(false);
   }, [props.activeSpaceId, props.spaceView?.backgroundText]);
 
   useEffect(() => {
@@ -747,20 +763,38 @@ export function ThinkingLayer(props: {
     })();
   }, [activeSpace, backgroundDraft, props]);
 
-  const writeSpaceToTime = useCallback(() => {
+  const openWriteToTimeDialog = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
+    setMoreOpen(false);
+    setWriteToTimeDraft(activeSpaceFreezeNote.slice(0, 48));
+    setWriteToTimeHint("");
+    setWriteToTimeOpen(true);
+  }, [activeSpace, activeSpaceFreezeNote]);
+
+  const submitWriteToTime = useCallback(() => {
+    if (!activeSpace || activeSpace.status !== "active" || isWritingToTime) return;
+    const normalizedNote = writeToTimeDraft.trim();
+    if (normalizedNote.length > 48) {
+      setWriteToTimeHint("批注最多 48 字");
+      return;
+    }
+    setIsWritingToTime(true);
     void (async () => {
-      const result = await props.onWriteSpaceToTime(activeSpace.id);
+      const result = await props.onWriteSpaceToTime(activeSpace.id, normalizedNote || undefined);
+      setIsWritingToTime(false);
       if (!result.ok) {
-        props.showNotice(result.message);
+        setWriteToTimeHint(result.message);
         return;
       }
+      setWriteToTimeOpen(false);
+      setWriteToTimeDraft("");
+      setWriteToTimeHint("");
       setMoreOpen(false);
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
       props.showNotice("已写入时间");
     })();
-  }, [activeSpace, props]);
+  }, [activeSpace, isWritingToTime, props, writeToTimeDraft]);
 
   const openExport = useCallback(() => {
     if (!activeSpace) return;
@@ -1048,7 +1082,7 @@ export function ThinkingLayer(props: {
                     style={moreMenuStyle ?? undefined}
                     className="fixed z-[90] w-44 rounded-xl border border-black/10 bg-white/98 p-1.5 shadow-[0_14px_30px_rgba(16,20,24,0.16)] backdrop-blur-sm"
                   >
-                    <MenuItem label="写入时间" disabled={!activeSpace || activeSpace.status !== "active"} onClick={writeSpaceToTime} />
+                    <MenuItem label="写入时间" disabled={!activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
                     <MenuItem label="导出" disabled={!activeSpace} onClick={() => (setMoreOpen(false), openExport())} />
                     <MenuItem
                       label="重命名空间"
@@ -1601,6 +1635,61 @@ export function ThinkingLayer(props: {
           </div>
         )}
       </div>
+
+      {writeToTimeOpen && activeSpace ? (
+        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
+          <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <p className="text-sm text-slate-800">写入时间</p>
+            <p className="mt-1 text-xs text-slate-500">留一句批注，之后会在时间层右栏出现。（可选）</p>
+            <input
+              value={writeToTimeDraft}
+              maxLength={48}
+              className="mt-3 h-11 w-full rounded-xl border border-black/12 bg-white px-3 text-sm text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+              placeholder=""
+              onChange={(event) => {
+                setWriteToTimeDraft(event.target.value);
+                if (writeToTimeHint) setWriteToTimeHint("");
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  submitWriteToTime();
+                }
+              }}
+            />
+            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+              <span>留空将保留原批注</span>
+              <span>{writeToTimeDraft.trim().length}/48</span>
+            </div>
+            <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", writeToTimeHint ? "opacity-100" : "opacity-0")}>{writeToTimeHint}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="rounded-full border border-black/12 text-slate-700"
+                onClick={() => {
+                  if (isWritingToTime) return;
+                  setWriteToTimeOpen(false);
+                  setWriteToTimeDraft("");
+                  setWriteToTimeHint("");
+                }}
+              >
+                取消
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800"
+                onClick={submitWriteToTime}
+                disabled={isWritingToTime}
+              >
+                {isWritingToTime ? "写入中..." : "写入时间"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
 
       {createSpaceOpen ? (
         <div className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">

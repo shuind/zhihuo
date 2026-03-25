@@ -393,6 +393,150 @@ function appendAuditLog(
   });
 }
 
+function toTimestamp(value: string | null | undefined) {
+  if (typeof value !== "string" || !value) return null;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : null;
+}
+
+function startOfUtcDay(timestamp: number) {
+  const date = new Date(timestamp);
+  return Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate());
+}
+
+function toDateKey(timestamp: number) {
+  return new Date(timestamp).toISOString().slice(0, 10);
+}
+
+export type SystemMonitorMetrics = {
+  users: {
+    total: number;
+    new_today: number;
+    new_7d: number;
+    new_30d: number;
+  };
+  active_users: {
+    d1: number;
+    d7: number;
+    d30: number;
+  };
+  content: {
+    doubts_total: number;
+    spaces_total: number;
+    spaces_active: number;
+    spaces_hidden: number;
+    nodes_total: number;
+    scratch_total: number;
+  };
+  trends_14d: Array<{
+    date: string;
+    users_new: number;
+    doubts_new: number;
+    spaces_new: number;
+  }>;
+  generated_at: string;
+};
+
+export function getSystemMonitorMetrics(db: DbState): SystemMonitorMetrics {
+  const now = Date.now();
+  const dayMs = 24 * 60 * 60 * 1000;
+  const todayStart = startOfUtcDay(now);
+  const start7d = todayStart - (7 - 1) * dayMs;
+  const start30d = todayStart - (30 - 1) * dayMs;
+  const trendStart = todayStart - (14 - 1) * dayMs;
+
+  const activeUsers = db.users.filter((user) => !user.deleted_at);
+  const activeUserIds = new Set(activeUsers.map((user) => user.id));
+
+  const doubts = db.doubts.filter((item) => !item.deleted_at && activeUserIds.has(item.user_id));
+  const spaces = db.thinking_spaces.filter((item) => activeUserIds.has(item.user_id));
+  const spaceIds = new Set(spaces.map((space) => space.id));
+  const spaceUserById = new Map(spaces.map((space) => [space.id, space.user_id]));
+  const nodes = db.thinking_nodes.filter((node) => spaceIds.has(node.space_id));
+  const scratch = db.thinking_scratch.filter((item) => !item.deleted_at && activeUserIds.has(item.user_id));
+  const audits = db.audit_logs.filter((item) => activeUserIds.has(item.user_id));
+
+  const countSince = <T>(items: T[], dateSelector: (item: T) => string | null | undefined, startTimestamp: number) => {
+    let count = 0;
+    for (const item of items) {
+      const timestamp = toTimestamp(dateSelector(item));
+      if (timestamp === null) continue;
+      if (timestamp >= startTimestamp && timestamp <= now) count += 1;
+    }
+    return count;
+  };
+
+  const activeD1 = new Set<string>();
+  const activeD7 = new Set<string>();
+  const activeD30 = new Set<string>();
+  const markActive = (userId: string, at: string | null | undefined) => {
+    const timestamp = toTimestamp(at);
+    if (timestamp === null) return;
+    if (timestamp >= todayStart && timestamp <= now) activeD1.add(userId);
+    if (timestamp >= start7d && timestamp <= now) activeD7.add(userId);
+    if (timestamp >= start30d && timestamp <= now) activeD30.add(userId);
+  };
+
+  for (const item of doubts) markActive(item.user_id, item.created_at);
+  for (const item of spaces) markActive(item.user_id, item.created_at);
+  for (const item of nodes) {
+    const userId = spaceUserById.get(item.space_id);
+    if (!userId) continue;
+    markActive(userId, item.created_at);
+  }
+  for (const item of scratch) markActive(item.user_id, item.updated_at || item.created_at);
+  for (const item of audits) markActive(item.user_id, item.created_at);
+
+  const trends = new Map<
+    string,
+    { date: string; users_new: number; doubts_new: number; spaces_new: number }
+  >();
+  for (let index = 0; index < 14; index += 1) {
+    const timestamp = trendStart + index * dayMs;
+    const date = toDateKey(timestamp);
+    trends.set(date, { date, users_new: 0, doubts_new: 0, spaces_new: 0 });
+  }
+
+  const appendTrend = (at: string | null | undefined, field: "users_new" | "doubts_new" | "spaces_new") => {
+    const timestamp = toTimestamp(at);
+    if (timestamp === null || timestamp < trendStart || timestamp > now) return;
+    const key = toDateKey(timestamp);
+    const row = trends.get(key);
+    if (!row) return;
+    row[field] += 1;
+  };
+
+  for (const user of activeUsers) appendTrend(user.created_at, "users_new");
+  for (const doubt of doubts) appendTrend(doubt.created_at, "doubts_new");
+  for (const space of spaces) appendTrend(space.created_at, "spaces_new");
+
+  const spacesActive = spaces.filter((space) => isSpaceActive(space)).length;
+
+  return {
+    users: {
+      total: activeUsers.length,
+      new_today: countSince(activeUsers, (item) => item.created_at, todayStart),
+      new_7d: countSince(activeUsers, (item) => item.created_at, start7d),
+      new_30d: countSince(activeUsers, (item) => item.created_at, start30d)
+    },
+    active_users: {
+      d1: activeD1.size,
+      d7: activeD7.size,
+      d30: activeD30.size
+    },
+    content: {
+      doubts_total: doubts.length,
+      spaces_total: spaces.length,
+      spaces_active: spacesActive,
+      spaces_hidden: Math.max(0, spaces.length - spacesActive),
+      nodes_total: nodes.length,
+      scratch_total: scratch.length
+    },
+    trends_14d: [...trends.values()],
+    generated_at: nowIso()
+  };
+}
+
 export function listDoubts(db: DbState, userId: string, query: { range: string | null; includeArchived: boolean }) {
   const range = parseRange(query.range);
   return userDoubts(db, userId)
@@ -813,7 +957,7 @@ export function addQuestionToSpace(
   };
 }
 
-export function writeSpaceToTime(db: DbState, userId: string, spaceId: string) {
+export function writeSpaceToTime(db: DbState, userId: string, spaceId: string, freezeNote?: string | null) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
   if (space.status !== "active") return { kind: "readonly" as const };
@@ -841,7 +985,10 @@ export function writeSpaceToTime(db: DbState, userId: string, spaceId: string) {
   space.status = "hidden";
   space.frozen_at = writtenAt;
   const meta = ensureMeta(db, spaceId);
-  meta.user_freeze_note = null;
+  const normalizedFreezeNote = typeof freezeNote === "string" ? collapseWhitespace(freezeNote).slice(0, 48) : "";
+  if (normalizedFreezeNote) {
+    meta.user_freeze_note = normalizedFreezeNote;
+  }
   return { kind: "ok" as const, space, doubt };
 }
 

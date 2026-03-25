@@ -18,7 +18,7 @@ const timeSerif = Noto_Serif_SC({
 });
 
 export const metadata: Metadata = {
-  title: "\u77E5\u60D1 \u00B7 \u65F6\u95F4\u6863\u6848\u9986",
+  title: "\u77E5\u60D1\u00B7\u8BA9\u601D\u8003\u81EA\u7136\u751F\u957F",
   description: "\u628A\u7591\u95EE\u653E\u8FDB\u65F6\u95F4\uff0c\u4E5F\u653E\u8FDB\u601D\u8DEF\u3002"
 };
 

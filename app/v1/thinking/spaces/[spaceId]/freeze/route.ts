@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { updateDb } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { writeSpaceToTime } from "@/lib/server/store";
 
@@ -9,6 +9,8 @@ import { writeSpaceToTime } from "@/lib/server/store";
 export const POST = withApiRoute(
   "thinking.spaces.freeze",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
+    const body = await parseJsonBody<{ freeze_note?: string }>(request);
+    const freezeNote = typeof body?.freeze_note === "string" ? body.freeze_note : undefined;
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
@@ -16,7 +18,7 @@ export const POST = withApiRoute(
     let response: { space_id: string; status: "hidden"; written_at: string } | null = null;
 
     await updateDb((db) => {
-      const result = writeSpaceToTime(db, userId, params.spaceId);
+      const result = writeSpaceToTime(db, userId, params.spaceId, freezeNote);
       kind = result.kind;
       if (result.kind !== "ok") return;
       response = {

@@ -1,0 +1,175 @@
+"use client";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useRouter } from "next/navigation";
+
+type MonitorPayload = {
+  users: { total: number; new_today: number; new_7d: number; new_30d: number };
+  active_users: { d1: number; d7: number; d30: number };
+  content: {
+    doubts_total: number;
+    spaces_total: number;
+    spaces_active: number;
+    spaces_hidden: number;
+    nodes_total: number;
+    scratch_total: number;
+  };
+  trends_14d: Array<{ date: string; users_new: number; doubts_new: number; spaces_new: number }>;
+  generated_at: string;
+};
+
+function formatNumber(value: number) {
+  return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+export default function OpsMonitorPage() {
+  const router = useRouter();
+  const [data, setData] = useState<MonitorPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError("");
+    try {
+      const response = await fetch("/v1/system/monitor", { method: "GET", cache: "no-store" });
+      if (response.status === 401) {
+        router.replace("/");
+        return;
+      }
+      const payload = (await response.json()) as MonitorPayload | { error?: string };
+      if (!response.ok) {
+        setError(typeof payload === "object" && payload && "error" in payload ? String(payload.error ?? "加载失败") : "加载失败");
+        setLoading(false);
+        return;
+      }
+      setData(payload as MonitorPayload);
+      setLoading(false);
+    } catch {
+      setError("网络异常，请稍后重试");
+      setLoading(false);
+    }
+  }, [router]);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const maxTrend = useMemo(() => {
+    if (!data?.trends_14d.length) return 1;
+    return Math.max(1, ...data.trends_14d.flatMap((item) => [item.users_new, item.doubts_new, item.spaces_new]));
+  }, [data]);
+
+  return (
+    <main className="min-h-screen bg-slate-950 px-6 py-8 text-slate-100 md:px-10">
+      <div className="mx-auto max-w-6xl space-y-6">
+        <header className="flex flex-wrap items-center justify-between gap-4">
+          <div>
+            <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Ops Monitor</p>
+            <h1 className="mt-2 text-2xl font-medium tracking-[0.04em] text-slate-100">运营监控面板</h1>
+            <p className="mt-2 text-sm text-slate-400">全站聚合视角（隐藏入口）</p>
+          </div>
+          <button
+            type="button"
+            className="rounded-full border border-slate-700 px-4 py-2 text-sm text-slate-200 transition-colors hover:border-slate-500 hover:text-white"
+            onClick={() => void load()}
+          >
+            刷新
+          </button>
+        </header>
+
+        {loading ? (
+          <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-6 text-sm text-slate-300">加载中...</div>
+        ) : error ? (
+          <div className="rounded-2xl border border-red-900/60 bg-red-950/40 p-6 text-sm text-red-200">{error}</div>
+        ) : data ? (
+          <>
+            <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+              <MetricCard label="总用户" value={formatNumber(data.users.total)} />
+              <MetricCard label="今日新增用户" value={formatNumber(data.users.new_today)} />
+              <MetricCard label="7天活跃用户" value={formatNumber(data.active_users.d7)} />
+              <MetricCard label="30天活跃用户" value={formatNumber(data.active_users.d30)} />
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+              <h2 className="text-sm tracking-[0.06em] text-slate-300">内容规模</h2>
+              <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
+                <MetricPill label="疑问总量" value={data.content.doubts_total} />
+                <MetricPill label="思考空间" value={data.content.spaces_total} />
+                <MetricPill label="活跃空间" value={data.content.spaces_active} />
+                <MetricPill label="已写回空间" value={data.content.spaces_hidden} />
+                <MetricPill label="节点总量" value={data.content.nodes_total} />
+                <MetricPill label="随记总量" value={data.content.scratch_total} />
+              </div>
+            </section>
+
+            <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+              <h2 className="text-sm tracking-[0.06em] text-slate-300">最近 14 天趋势</h2>
+              <div className="mt-4 overflow-x-auto">
+                <table className="min-w-full text-left text-sm">
+                  <thead className="text-slate-400">
+                    <tr>
+                      <th className="py-2 pr-4 font-normal">日期</th>
+                      <th className="py-2 pr-4 font-normal">新增用户</th>
+                      <th className="py-2 pr-4 font-normal">新增疑问</th>
+                      <th className="py-2 font-normal">新增空间</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.trends_14d.map((item) => (
+                      <tr key={item.date} className="border-t border-slate-800/80 text-slate-200">
+                        <td className="py-2 pr-4 text-slate-300">{item.date}</td>
+                        <td className="py-2 pr-4">
+                          <TrendValue value={item.users_new} max={maxTrend} />
+                        </td>
+                        <td className="py-2 pr-4">
+                          <TrendValue value={item.doubts_new} max={maxTrend} />
+                        </td>
+                        <td className="py-2">
+                          <TrendValue value={item.spaces_new} max={maxTrend} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <p className="text-xs text-slate-500">数据生成时间：{new Date(data.generated_at).toLocaleString("zh-CN")}</p>
+          </>
+        ) : null}
+      </div>
+    </main>
+  );
+}
+
+function MetricCard(props: { label: string; value: string }) {
+  return (
+    <article className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
+      <p className="text-xs tracking-[0.08em] text-slate-400">{props.label}</p>
+      <p className="mt-2 text-2xl text-slate-100">{props.value}</p>
+    </article>
+  );
+}
+
+function MetricPill(props: { label: string; value: number }) {
+  return (
+    <div className="rounded-xl border border-slate-800 bg-slate-900/70 px-3 py-3">
+      <p className="text-xs text-slate-400">{props.label}</p>
+      <p className="mt-1 text-base text-slate-100">{formatNumber(props.value)}</p>
+    </div>
+  );
+}
+
+function TrendValue(props: { value: number; max: number }) {
+  const width = `${Math.max(6, Math.round((props.value / props.max) * 100))}%`;
+  return (
+    <div className="flex items-center gap-2">
+      <span className="w-8 text-slate-300">{props.value}</span>
+      <div className="h-1.5 w-20 rounded-full bg-slate-800">
+        <div className="h-full rounded-full bg-slate-500" style={{ width }} />
+      </div>
+    </div>
+  );
+}
+
