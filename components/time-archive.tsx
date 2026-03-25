@@ -1322,18 +1322,6 @@ export function TimeArchive() {
                 <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
                 <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
               </div>
-              <button
-                type="button"
-                className={cn(
-                  "rounded-full border px-3 py-1 text-xs tracking-[0.12em] transition-colors",
-                  tab === "thinking"
-                    ? "border-slate-500/20 bg-slate-50/20 text-slate-700 hover:bg-slate-50/45"
-                    : "border-slate-300/20 bg-slate-900/20 text-slate-300/80 hover:bg-slate-900/50"
-                )}
-                onClick={logout}
-              >
-                退出
-              </button>
             </nav>
           </div>
         )}
@@ -1429,6 +1417,7 @@ export function TimeArchive() {
                 setTimezone={(timezone) => setThinkingStore((prev) => ({ ...prev, timezone: sanitizeTimeZone(timezone) }))}
                 onSystemExport={handleSystemExport}
                 onClearAll={clearAllData}
+                onLogout={logout}
                 showNotice={showNotice}
               />
             </motion.section>

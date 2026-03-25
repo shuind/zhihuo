@@ -21,6 +21,7 @@ export function SettingsLayer(props: {
   setTimezone: (timezone: string) => void;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
   onClearAll: () => void;
+  onLogout: () => void;
   showNotice: (message: string) => void;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
@@ -163,6 +164,24 @@ export function SettingsLayer(props: {
                 </Button>
               </>
             )}
+          </CardFooter>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>账号 / 会话</CardTitle>
+            <CardDescription>退出当前登录账号。</CardDescription>
+          </CardHeader>
+          <CardFooter>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={props.onLogout}
+            >
+              退出登录
+            </Button>
           </CardFooter>
         </Card>
       </div>
