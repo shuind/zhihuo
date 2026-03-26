@@ -47,6 +47,7 @@ export function LifeLayer(props: {
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [ritualVisible, setRitualVisible] = useState(false);
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
+  const [mobileSearchMode, setMobileSearchMode] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [fieldFocused, setFieldFocused] = useState(false);
 
@@ -71,6 +72,7 @@ export function LifeLayer(props: {
 
   const selectedDoubt = useMemo(() => allDoubts.find((item) => item.id === selectedDoubtId) ?? null, [allDoubts, selectedDoubtId]);
   const isSplitView = Boolean(selectedDoubt);
+  const showSearchInput = !isMobile ? isSplitView : Boolean(selectedDoubt && mobileSearchMode);
   const normalizedSearch = useMemo(() => collapseWhitespace(searchQuery).toLocaleLowerCase(), [searchQuery]);
 
   const filteredDoubts = useMemo(() => {
@@ -104,24 +106,26 @@ export function LifeLayer(props: {
     setSelectedDoubtId(null);
     setSearchQuery("");
     setMobileDetailOpen(false);
+    setMobileSearchMode(false);
   }, [allDoubts, selectedDoubtId]);
 
   useEffect(() => {
     if (!isMobile) {
       setMobileDetailOpen(false);
+      setMobileSearchMode(false);
       return;
     }
-    if (selectedDoubtId) setMobileDetailOpen(true);
-  }, [isMobile, selectedDoubtId]);
+    if (selectedDoubtId && !mobileSearchMode) setMobileDetailOpen(true);
+  }, [isMobile, selectedDoubtId, mobileSearchMode]);
 
   useEffect(() => {
     if (!selectedDoubtId) {
-      composerRef.current?.focus();
+      if (!isMobile) composerRef.current?.focus();
       return;
     }
     rowRefs.current[selectedDoubtId]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-    searchRef.current?.focus();
-  }, [selectedDoubtId]);
+    if (!isMobile || mobileSearchMode) searchRef.current?.focus();
+  }, [selectedDoubtId, isMobile, mobileSearchMode]);
 
   useEffect(() => {
     const timer = ritualTimerRef;
@@ -152,15 +156,34 @@ export function LifeLayer(props: {
   const handleSelect = useCallback(
     (doubtId: string) => {
       setSelectedDoubtId(doubtId);
-      if (isMobile) setMobileDetailOpen(true);
+      if (isMobile) {
+        setMobileSearchMode(false);
+        setMobileDetailOpen(true);
+      }
     },
     [isMobile]
   );
 
+  const openMobileSearch = useCallback(() => {
+    if (!isMobile || !selectedDoubtId) return;
+    setMobileDetailOpen(false);
+    setMobileSearchMode(true);
+  }, [isMobile, selectedDoubtId]);
+
+  const backToMobileDetail = useCallback(() => {
+    if (!isMobile || !selectedDoubtId) return;
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    setMobileSearchMode(false);
+    setMobileDetailOpen(true);
+  }, [isMobile, selectedDoubtId]);
+
   const closeDetail = useCallback(() => {
+    if (typeof document !== "undefined" && document.activeElement instanceof HTMLElement) document.activeElement.blur();
     setSelectedDoubtId(null);
     setSearchQuery("");
     setMobileDetailOpen(false);
+    setMobileSearchMode(false);
+    setFieldFocused(false);
   }, []);
 
   const matchedCount = normalizedSearch
@@ -180,7 +203,8 @@ export function LifeLayer(props: {
           animate={{ width: !isMobile && selectedDoubt ? "60%" : "100%" }}
           transition={{ duration: 0.64, ease: EASE_GENTLE }}
         >
-          <header className="sticky top-0 z-10" data-life-hero="true">
+          <header className="sticky top-0 z-10 overflow-hidden" data-life-hero="true">
+            <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[17.5rem] life-hero-glow" />
             <div className="mx-auto w-full max-w-2xl px-8 lg:px-12">
               <div className="flex items-end justify-between pb-8 pt-16">
                 <div className="space-y-2">
@@ -201,9 +225,9 @@ export function LifeLayer(props: {
                 </div>
               </div>
 
-              <div className="pb-10" data-life-input-mode={isSplitView ? "search" : "compose"}>
+              <div className="pb-10" data-life-input-mode={showSearchInput ? "search" : "compose"}>
                 <div className="time-input-shell relative max-w-[46rem] transition-all duration-700">
-                  {!isSplitView ? (
+                  {!showSearchInput ? (
                     <div className="relative">
                       <Textarea
                         ref={composerRef}
@@ -248,8 +272,13 @@ export function LifeLayer(props: {
                           onFocus={() => setFieldFocused(true)}
                           onBlur={() => setFieldFocused(false)}
                         />
-                        <Button type="button" variant="ghost" className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={closeDetail}>
-                          {"\u9000\u51FA\u7EC6\u8BFB"}
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          className="time-subtle-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]"
+                          onClick={isMobile ? backToMobileDetail : closeDetail}
+                        >
+                          {isMobile ? "\u8FD4\u56DE\u7EC6\u8BFB" : "\u9000\u51FA\u7EC6\u8BFB"}
                         </Button>
                       </div>
                       <div className="mt-3 flex items-center justify-between gap-4 text-[12px] tracking-[0.06em] text-[var(--time-text-soft)]">
@@ -312,6 +341,7 @@ export function LifeLayer(props: {
             timezone={props.timezone}
             freezeNote={props.freezeNoteByDoubtId[selectedDoubt.id] ?? ""}
             noteText={notesMap.get(selectedDoubt.id) ?? ""}
+            onOpenSearch={openMobileSearch}
             onClose={closeDetail}
             onDelete={() => setDeleteId(selectedDoubt.id)}
             onImport={() => props.onImportToThinking(selectedDoubt)}
@@ -500,6 +530,7 @@ function MobileDetailDrawer(props: {
   timezone: string;
   freezeNote: string;
   noteText: string;
+  onOpenSearch: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
@@ -535,6 +566,7 @@ function DetailBody(props: {
   timezone: string;
   freezeNote: string;
   noteText: string;
+  onOpenSearch?: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
@@ -557,9 +589,16 @@ function DetailBody(props: {
         <div>
           <span className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">{"\u7EC6\u8282"}</span>
         </div>
-        <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-700 hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
-          {"\u5173\u95ED"}
-        </button>
+        <div className="flex items-center gap-3">
+          {props.compact && props.onOpenSearch ? (
+            <button type="button" className="text-[11px] tracking-[0.1em] text-[var(--time-text-soft)] transition-colors duration-500 hover:text-[var(--time-text)]" onClick={props.onOpenSearch}>
+              {"\u68C0\u7D22"}
+            </button>
+          ) : null}
+          <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-700 hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
+            {"\u5173\u95ED"}
+          </button>
+        </div>
       </div>
 
       <AnimatePresence mode="wait" initial={false}>

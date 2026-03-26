@@ -1209,14 +1209,6 @@ export function ThinkingLayer(props: {
                       }}
                     />
                     <MenuItem
-                      label={props.focusMode ? "退出专注" : "进入专注"}
-                      disabled={!activeSpace}
-                      onClick={() => {
-                        setMoreOpen(false);
-                        props.onFocusModeChange(!props.focusMode);
-                      }}
-                    />
-                    <MenuItem
                       label="删除空间"
                       disabled={!activeSpace}
                       onClick={() => {

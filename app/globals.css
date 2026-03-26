@@ -203,6 +203,13 @@ body {
   animation: life-drift 30s ease-in-out infinite reverse;
 }
 
+[data-life-layout="true"] .life-hero-glow {
+  background:
+    radial-gradient(56% 44% at 50% 0%, rgba(164, 154, 134, 0.06), rgba(164, 154, 134, 0.02) 42%, rgba(164, 154, 134, 0) 82%),
+    linear-gradient(180deg, rgba(164, 154, 134, 0.015), rgba(164, 154, 134, 0));
+  opacity: 0.6;
+}
+
 [data-life-layout="true"] .grain {
   opacity: 0.014;
   background-size: 22px 22px, 28px 28px, 34px 34px;
