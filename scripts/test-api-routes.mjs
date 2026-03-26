@@ -81,9 +81,9 @@ async function run() {
   const monitor = await request("GET", "/v1/system/monitor");
   assert(monitor.status === 200, `monitor failed: ${monitor.status}`);
   assert(typeof monitor.json?.users?.total === "number", "monitor users.total missing");
-  assert(typeof monitor.json?.active_users?.d7 === "number", "monitor active_users.d7 missing");
-  assert(typeof monitor.json?.content?.spaces_total === "number", "monitor content.spaces_total missing");
-  assert(Array.isArray(monitor.json?.trends_14d) && monitor.json.trends_14d.length === 14, "monitor trends_14d should contain 14 rows");
+  assert(typeof monitor.json?.active_users?.d3 === "number", "monitor active_users.d3 missing");
+  assert(typeof monitor.json?.content?.time_entries_total === "number", "monitor content.time_entries_total missing");
+  assert(Array.isArray(monitor.json?.flow_3d) && monitor.json.flow_3d.length === 3, "monitor flow_3d should contain 3 rows");
 
   const createDoubt = await request("POST", "/v1/doubts", { raw_text: "Should I start now?", layer: "life" });
   assert(createDoubt.status === 201, `create doubt failed: ${createDoubt.status}`);

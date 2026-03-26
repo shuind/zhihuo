@@ -96,6 +96,8 @@ export type ThinkingStore = {
   inbox: Record<string, ThinkingInboxItem[]>;
   assistEnabled: boolean;
   timezone: string;
+  fixedTopSpacesEnabled: boolean;
+  fixedTopSpaceIds: string[];
 };
 
 export type StarDot = {
@@ -145,7 +147,9 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   scratch: [],
   inbox: {},
   assistEnabled: true,
-  timezone: DEFAULT_TIMEZONE
+  timezone: DEFAULT_TIMEZONE,
+  fixedTopSpacesEnabled: false,
+  fixedTopSpaceIds: []
 };
 
 export function createId() {
@@ -481,6 +485,15 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
       fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
     }))
     .filter((item) => item.rawText);
+  const validSpaceIdSet = new Set(spaces.map((space) => space.id));
+  const fixedTopSpaceIds = Array.from(
+    new Set(
+      (Array.isArray(store.fixedTopSpaceIds) ? store.fixedTopSpaceIds : []).filter(
+        (id): id is string => typeof id === "string" && validSpaceIdSet.has(id)
+      )
+    )
+  ).slice(0, 3);
+
   return {
     spaces,
     nodes,
@@ -488,7 +501,9 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     scratch,
     inbox,
     assistEnabled: store.assistEnabled !== false,
-    timezone: sanitizeTimeZone(store.timezone)
+    timezone: sanitizeTimeZone(store.timezone),
+    fixedTopSpacesEnabled: store.fixedTopSpacesEnabled === true,
+    fixedTopSpaceIds
   };
 }
 

@@ -19,6 +19,11 @@ const TIMEZONE_OPTIONS = [
 export function SettingsLayer(props: {
   timezone: string;
   setTimezone: (timezone: string) => void;
+  activeThinkingSpaces: Array<{ id: string; title: string }>;
+  fixedTopSpacesEnabled: boolean;
+  fixedTopSpaceIds: string[];
+  setFixedTopSpacesEnabled: (enabled: boolean) => void;
+  setFixedTopSpaceIds: (ids: string[]) => void;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
   onClearAll: () => void;
   onLogout: () => void;
@@ -34,6 +39,8 @@ export function SettingsLayer(props: {
     if (TIMEZONE_OPTIONS.some((item) => item.value === props.timezone)) return TIMEZONE_OPTIONS;
     return [{ value: props.timezone, label: `${props.timezone} (当前)` }, ...TIMEZONE_OPTIONS];
   }, [props.timezone]);
+
+  const pinnedSet = useMemo(() => new Set(props.fixedTopSpaceIds), [props.fixedTopSpaceIds]);
 
   const loadExport = () => {
     if (!includeLife && !includeThinking) {
@@ -73,8 +80,62 @@ export function SettingsLayer(props: {
                   </option>
                 ))}
               </select>
-              <span className="text-xs text-slate-500">仅影响展示，不会修改已存储的数据时间。</span>
             </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>思路顶部空间</CardTitle>
+            <CardDescription>固定显示三个空间，不会被最新修改的空间刷掉。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <label className="inline-flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={props.fixedTopSpacesEnabled}
+                onChange={(event) => props.setFixedTopSpacesEnabled(event.target.checked)}
+                className="h-4 w-4 accent-slate-800"
+              />
+              固定显示三个空间
+            </label>
+            <div className="space-y-2 rounded-lg border border-slate-300 bg-white p-3">
+              <p className="text-xs text-slate-500">仅可选择活跃空间（最多 3 个，按选中顺序显示）</p>
+              <div className="flex flex-wrap gap-2">
+                {props.activeThinkingSpaces.length ? (
+                  props.activeThinkingSpaces.map((space) => {
+                    const selected = pinnedSet.has(space.id);
+                    const order = props.fixedTopSpaceIds.indexOf(space.id);
+                    return (
+                      <button
+                        key={space.id}
+                        type="button"
+                        className={
+                          selected
+                            ? "rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs text-white"
+                            : "rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-600"
+                        }
+                        onClick={() => {
+                          if (!selected && props.fixedTopSpaceIds.length >= 3) {
+                            props.showNotice("最多固定 3 个空间");
+                            return;
+                          }
+                          const nextIds = selected
+                            ? props.fixedTopSpaceIds.filter((id) => id !== space.id)
+                            : [...props.fixedTopSpaceIds, space.id];
+                          props.setFixedTopSpaceIds(nextIds);
+                        }}
+                      >
+                        {selected ? `${order + 1}. ` : ""}
+                        {space.title}
+                      </button>
+                    );
+                  })
+                ) : (
+                  <p className="text-xs text-slate-500">暂无活跃空间</p>
+                )}
+              </div>
+            </div>
           </CardContent>
         </Card>
 

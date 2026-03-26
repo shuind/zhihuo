@@ -262,6 +262,10 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
   };
 }
 
+function sortSpacesByLatestActivity(a: ThinkingSpace, b: ThinkingSpace) {
+  return new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime();
+}
+
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
@@ -296,6 +300,15 @@ export function TimeArchive() {
     }
     return Object.fromEntries(Array.from(grouped.entries(), ([doubtId, payload]) => [doubtId, payload.note]));
   }, [thinkingStore.spaceMeta, thinkingStore.spaces]);
+
+  const activeThinkingSpaceOptions = useMemo(
+    () =>
+      [...thinkingStore.spaces]
+        .filter((space) => space.status === "active")
+        .sort(sortSpacesByLatestActivity)
+        .map((space) => ({ id: space.id, title: space.rootQuestionText })),
+    [thinkingStore.spaces]
+  );
 
   const showNotice = useCallback((message: string, duration = 1800) => {
     if (noticeTimerRef.current) {
@@ -438,6 +451,23 @@ export function TimeArchive() {
         }
         const payload = (await response.json()) as ApiThinkingSpaceView;
         setThinkingView(mapApiThinkingView(payload));
+        const latestSpace = mapApiThinkingSpace(payload.root);
+        setThinkingStore((prev) => {
+          const index = prev.spaces.findIndex((space) => space.id === latestSpace.id);
+          const nextSpaces = [...prev.spaces];
+          if (index >= 0) {
+            nextSpaces[index] = {
+              ...nextSpaces[index],
+              ...latestSpace
+            };
+          } else {
+            nextSpaces.unshift(latestSpace);
+          }
+          return {
+            ...prev,
+            spaces: nextSpaces
+          };
+        });
         return true;
       } catch {
         if (!silent) showNotice("网络异常，请稍后再试");
@@ -655,6 +685,22 @@ export function TimeArchive() {
       return pickDefaultSpaceId(thinkingStore.spaces);
     });
   }, [hydrated, thinkingStore.spaces]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const activeIdSet = new Set(thinkingStore.spaces.filter((space) => space.status === "active").map((space) => space.id));
+    const nextIds = thinkingStore.fixedTopSpaceIds.filter((id, index, array) => activeIdSet.has(id) && array.indexOf(id) === index).slice(0, 3);
+    if (
+      nextIds.length === thinkingStore.fixedTopSpaceIds.length &&
+      nextIds.every((id, index) => id === thinkingStore.fixedTopSpaceIds[index])
+    ) {
+      return;
+    }
+    setThinkingStore((prev) => ({
+      ...prev,
+      fixedTopSpaceIds: prev.fixedTopSpaceIds.filter((id, index, array) => activeIdSet.has(id) && array.indexOf(id) === index).slice(0, 3)
+    }));
+  }, [hydrated, thinkingStore.fixedTopSpaceIds, thinkingStore.spaces]);
 
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser) return;
@@ -1432,6 +1478,30 @@ export function TimeArchive() {
               <SettingsLayer
                 timezone={thinkingStore.timezone}
                 setTimezone={(timezone) => setThinkingStore((prev) => ({ ...prev, timezone: sanitizeTimeZone(timezone) }))}
+                activeThinkingSpaces={activeThinkingSpaceOptions}
+                fixedTopSpacesEnabled={thinkingStore.fixedTopSpacesEnabled}
+                fixedTopSpaceIds={thinkingStore.fixedTopSpaceIds}
+                setFixedTopSpacesEnabled={(enabled) =>
+                  setThinkingStore((prev) => {
+                    const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);
+                    const existingIds = prev.fixedTopSpaceIds.filter(
+                      (id, index, array) => array.indexOf(id) === index && activeSpaces.some((space) => space.id === id)
+                    );
+                    const nextIds = enabled && existingIds.length === 0 ? activeSpaces.slice(0, 3).map((space) => space.id) : existingIds;
+                    return {
+                      ...prev,
+                      fixedTopSpacesEnabled: enabled,
+                      fixedTopSpaceIds: nextIds.slice(0, 3)
+                    };
+                  })
+                }
+                setFixedTopSpaceIds={(ids) =>
+                  setThinkingStore((prev) => {
+                    const activeIdSet = new Set(prev.spaces.filter((space) => space.status === "active").map((space) => space.id));
+                    const nextIds = Array.from(new Set(ids.filter((id) => activeIdSet.has(id)))).slice(0, 3);
+                    return { ...prev, fixedTopSpaceIds: nextIds };
+                  })
+                }
                 onSystemExport={handleSystemExport}
                 onClearAll={clearAllData}
                 onLogout={logout}

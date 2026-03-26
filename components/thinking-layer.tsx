@@ -287,8 +287,18 @@ export function ThinkingLayer(props: {
     [props.store.spaces]
   );
   const activeSpaces = useMemo(() => spaces.filter((space) => space.status === "active"), [spaces]);
-  const tabs = useMemo(() => activeSpaces.slice(0, 3), [activeSpaces]);
-  const overflowSpaces = useMemo(() => activeSpaces.slice(3), [activeSpaces]);
+  const tabs = useMemo(() => {
+    if (!props.store.fixedTopSpacesEnabled) return activeSpaces.slice(0, 3);
+    const activeById = new Map(activeSpaces.map((space) => [space.id, space]));
+    const pinned = props.store.fixedTopSpaceIds.map((id) => activeById.get(id)).filter((space): space is (typeof activeSpaces)[number] => Boolean(space));
+    const pinnedIdSet = new Set(pinned.map((space) => space.id));
+    const fillers = activeSpaces.filter((space) => !pinnedIdSet.has(space.id)).slice(0, Math.max(0, 3 - pinned.length));
+    return [...pinned, ...fillers].slice(0, 3);
+  }, [activeSpaces, props.store.fixedTopSpaceIds, props.store.fixedTopSpacesEnabled]);
+  const overflowSpaces = useMemo(() => {
+    const tabIdSet = new Set(tabs.map((space) => space.id));
+    return activeSpaces.filter((space) => !tabIdSet.has(space.id));
+  }, [activeSpaces, tabs]);
   const searchableSpaces = useMemo(() => activeSpaces.filter((space) => space.rootQuestionText.trim().length > 0), [activeSpaces]);
   const activeSpace = useMemo(
     () => spaces.find((space) => space.id === props.activeSpaceId) ?? null,

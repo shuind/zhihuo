@@ -4,17 +4,16 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 
 type MonitorPayload = {
-  users: { total: number; new_today: number; new_7d: number; new_30d: number };
-  active_users: { d1: number; d7: number; d30: number };
+  users: { total: number; new_today: number };
+  active_users: { d1: number; d3: number };
   content: {
-    doubts_total: number;
+    time_entries_total: number;
     spaces_total: number;
-    spaces_active: number;
-    spaces_hidden: number;
-    nodes_total: number;
-    scratch_total: number;
+    spaces_settled: number;
+    thought_items_total: number;
+    scratch_open_total: number;
   };
-  trends_14d: Array<{ date: string; users_new: number; doubts_new: number; spaces_new: number }>;
+  flow_3d: Array<{ date: string; users_new: number; time_entries_new: number; spaces_new: number; writes_to_time: number }>;
   generated_at: string;
 };
 
@@ -56,8 +55,11 @@ export default function OpsMonitorPage() {
   }, [load]);
 
   const maxTrend = useMemo(() => {
-    if (!data?.trends_14d.length) return 1;
-    return Math.max(1, ...data.trends_14d.flatMap((item) => [item.users_new, item.doubts_new, item.spaces_new]));
+    if (!data?.flow_3d.length) return 1;
+    return Math.max(
+      1,
+      ...data.flow_3d.flatMap((item) => [item.users_new, item.time_entries_new, item.spaces_new, item.writes_to_time])
+    );
   }, [data]);
 
   return (
@@ -87,46 +89,49 @@ export default function OpsMonitorPage() {
             <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
               <MetricCard label="总用户" value={formatNumber(data.users.total)} />
               <MetricCard label="今日新增用户" value={formatNumber(data.users.new_today)} />
-              <MetricCard label="7天活跃用户" value={formatNumber(data.active_users.d7)} />
-              <MetricCard label="30天活跃用户" value={formatNumber(data.active_users.d30)} />
+              <MetricCard label="今日活跃用户" value={formatNumber(data.active_users.d1)} />
+              <MetricCard label="近3日活跃用户" value={formatNumber(data.active_users.d3)} />
             </section>
 
             <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
               <h2 className="text-sm tracking-[0.06em] text-slate-300">内容规模</h2>
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
-                <MetricPill label="疑问总量" value={data.content.doubts_total} />
-                <MetricPill label="思考空间" value={data.content.spaces_total} />
-                <MetricPill label="活跃空间" value={data.content.spaces_active} />
-                <MetricPill label="已写回空间" value={data.content.spaces_hidden} />
-                <MetricPill label="节点总量" value={data.content.nodes_total} />
-                <MetricPill label="随记总量" value={data.content.scratch_total} />
+                <MetricPill label="时间条目总量" value={data.content.time_entries_total} />
+                <MetricPill label="思路空间总量" value={data.content.spaces_total} />
+                <MetricPill label="已沉淀空间" value={data.content.spaces_settled} />
+                <MetricPill label="思路条目总量" value={data.content.thought_items_total} />
+                <MetricPill label="待处理随记" value={data.content.scratch_open_total} />
               </div>
             </section>
 
             <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-              <h2 className="text-sm tracking-[0.06em] text-slate-300">最近 14 天趋势</h2>
+              <h2 className="text-sm tracking-[0.06em] text-slate-300">最近3日流动</h2>
               <div className="mt-4 overflow-x-auto">
                 <table className="min-w-full text-left text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className="py-2 pr-4 font-normal">日期</th>
                       <th className="py-2 pr-4 font-normal">新增用户</th>
-                      <th className="py-2 pr-4 font-normal">新增疑问</th>
-                      <th className="py-2 font-normal">新增空间</th>
+                      <th className="py-2 pr-4 font-normal">新增时间条目</th>
+                      <th className="py-2 pr-4 font-normal">新增思路空间</th>
+                      <th className="py-2 font-normal">写入时间次数</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.trends_14d.map((item) => (
+                    {data.flow_3d.map((item) => (
                       <tr key={item.date} className="border-t border-slate-800/80 text-slate-200">
                         <td className="py-2 pr-4 text-slate-300">{item.date}</td>
                         <td className="py-2 pr-4">
                           <TrendValue value={item.users_new} max={maxTrend} />
                         </td>
                         <td className="py-2 pr-4">
-                          <TrendValue value={item.doubts_new} max={maxTrend} />
+                          <TrendValue value={item.time_entries_new} max={maxTrend} />
+                        </td>
+                        <td className="py-2 pr-4">
+                          <TrendValue value={item.spaces_new} max={maxTrend} />
                         </td>
                         <td className="py-2">
-                          <TrendValue value={item.spaces_new} max={maxTrend} />
+                          <TrendValue value={item.writes_to_time} max={maxTrend} />
                         </td>
                       </tr>
                     ))}
