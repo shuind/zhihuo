@@ -412,6 +412,47 @@ async function replaceTable(client: PoolClient, table: string, columns: string[]
   await client.query(`INSERT INTO ${table} (${columns.join(", ")}) VALUES ${placeholders.join(", ")}`, params);
 }
 
+async function upsertTable(
+  client: PoolClient,
+  table: string,
+  columns: string[],
+  rows: unknown[][],
+  conflictColumns: string[]
+) {
+  if (!rows.length) return;
+
+  const placeholders: string[] = [];
+  const params: unknown[] = [];
+  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
+    const row = rows[rowIndex];
+    const rowPlaceholders: string[] = [];
+    for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
+      params.push(row[columnIndex] ?? null);
+      rowPlaceholders.push(`$${params.length}`);
+    }
+    placeholders.push(`(${rowPlaceholders.join(", ")})`);
+  }
+
+  const updateColumns = columns.filter((column) => !conflictColumns.includes(column));
+  const updateClause =
+    updateColumns.length > 0
+      ? `DO UPDATE SET ${updateColumns.map((column) => `${column} = EXCLUDED.${column}`).join(", ")}`
+      : "DO NOTHING";
+
+  await client.query(
+    `INSERT INTO ${table} (${columns.join(", ")}) VALUES ${placeholders.join(", ")} ON CONFLICT (${conflictColumns.join(", ")}) ${updateClause}`,
+    params
+  );
+}
+
+async function deleteRowsNotInSet(client: PoolClient, table: string, idColumn: string, ids: string[]) {
+  if (!ids.length) {
+    await client.query(`DELETE FROM ${table}`);
+    return;
+  }
+  await client.query(`DELETE FROM ${table} WHERE NOT (${idColumn} = ANY($1::text[]))`, [ids]);
+}
+
 async function persistDbToPg(client: PoolClient, db: DbState) {
   await replaceTable(
     client,
@@ -713,13 +754,24 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
 }
 
 async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: ScopedTable[]) {
-  for (const table of scope) {
-    if (table === "doubts") {
-      await replaceTable(
-        client,
-        "doubts",
-        ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
-        db.doubts.map((row) => [
+  type ScopedSyncPlan = {
+    table: string;
+    idColumn: string;
+    columns: string[];
+    conflictColumns: string[];
+    rows: unknown[][];
+  };
+
+  const planByScope = new Map<ScopedTable, ScopedSyncPlan>();
+
+  for (const item of scope) {
+    if (item === "doubts") {
+      planByScope.set(item, {
+        table: "doubts",
+        idColumn: "id",
+        columns: ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+        conflictColumns: ["id"],
+        rows: db.doubts.map((row) => [
           row.id,
           row.user_id,
           row.raw_text,
@@ -729,24 +781,26 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.archived_at,
           row.deleted_at
         ])
-      );
+      });
       continue;
     }
-    if (table === "doubt_notes") {
-      await replaceTable(
-        client,
-        "doubt_notes",
-        ["id", "doubt_id", "note_text", "created_at"],
-        db.doubt_notes.map((row) => [row.id, row.doubt_id, row.note_text, row.created_at])
-      );
+    if (item === "doubt_notes") {
+      planByScope.set(item, {
+        table: "doubt_notes",
+        idColumn: "id",
+        columns: ["id", "doubt_id", "note_text", "created_at"],
+        conflictColumns: ["id"],
+        rows: db.doubt_notes.map((row) => [row.id, row.doubt_id, row.note_text, row.created_at])
+      });
       continue;
     }
-    if (table === "thinking_spaces") {
-      await replaceTable(
-        client,
-        "thinking_spaces",
-        ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
-        db.thinking_spaces.map((row) => [
+    if (item === "thinking_spaces") {
+      planByScope.set(item, {
+        table: "thinking_spaces",
+        idColumn: "id",
+        columns: ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
+        conflictColumns: ["id"],
+        rows: db.thinking_spaces.map((row) => [
           row.id,
           row.user_id,
           row.root_question_text,
@@ -755,14 +809,14 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.frozen_at,
           row.source_time_doubt_id
         ])
-      );
+      });
       continue;
     }
-    if (table === "thinking_space_meta") {
-      await replaceTable(
-        client,
-        "thinking_space_meta",
-        [
+    if (item === "thinking_space_meta") {
+      planByScope.set(item, {
+        table: "thinking_space_meta",
+        idColumn: "space_id",
+        columns: [
           "space_id",
           "user_freeze_note",
           "export_version",
@@ -777,7 +831,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           "milestone_node_ids",
           "track_direction_hints"
         ],
-        db.thinking_space_meta.map((row) => [
+        conflictColumns: ["space_id"],
+        rows: db.thinking_space_meta.map((row) => [
           row.space_id,
           row.user_freeze_note,
           row.export_version,
@@ -792,15 +847,16 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.milestone_node_ids ?? [],
           row.track_direction_hints ?? {}
         ])
-      );
+      });
       continue;
     }
-    if (table === "thinking_nodes") {
-      await replaceTable(
-        client,
-        "thinking_nodes",
-        ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
-        db.thinking_nodes.map((row) => [
+    if (item === "thinking_nodes") {
+      planByScope.set(item, {
+        table: "thinking_nodes",
+        idColumn: "id",
+        columns: ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
+        conflictColumns: ["id"],
+        rows: db.thinking_nodes.map((row) => [
           row.id,
           row.space_id,
           row.parent_node_id,
@@ -812,24 +868,26 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.state,
           row.dimension
         ])
-      );
+      });
       continue;
     }
-    if (table === "thinking_inbox") {
-      await replaceTable(
-        client,
-        "thinking_inbox",
-        ["id", "space_id", "raw_text", "created_at"],
-        db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
-      );
+    if (item === "thinking_inbox") {
+      planByScope.set(item, {
+        table: "thinking_inbox",
+        idColumn: "id",
+        columns: ["id", "space_id", "raw_text", "created_at"],
+        conflictColumns: ["id"],
+        rows: db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
+      });
       continue;
     }
-    if (table === "thinking_scratch") {
-      await replaceTable(
-        client,
-        "thinking_scratch",
-        ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
-        db.thinking_scratch.map((row) => [
+    if (item === "thinking_scratch") {
+      planByScope.set(item, {
+        table: "thinking_scratch",
+        idColumn: "id",
+        columns: ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
+        conflictColumns: ["id"],
+        rows: db.thinking_scratch.map((row) => [
           row.id,
           row.user_id,
           row.raw_text,
@@ -840,15 +898,16 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.derived_space_id,
           row.fed_time_doubt_id
         ])
-      );
+      });
       continue;
     }
-    if (table === "thinking_node_links") {
-      await replaceTable(
-        client,
-        "thinking_node_links",
-        ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
-        db.thinking_node_links.map((row) => [
+    if (item === "thinking_node_links") {
+      planByScope.set(item, {
+        table: "thinking_node_links",
+        idColumn: "id",
+        columns: ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
+        conflictColumns: ["id"],
+        rows: db.thinking_node_links.map((row) => [
           row.id,
           row.space_id,
           row.source_node_id,
@@ -857,17 +916,53 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.score,
           row.created_at
         ])
-      );
+      });
       continue;
     }
-    if (table === "audit_logs") {
-      await replaceTable(
-        client,
-        "audit_logs",
-        ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
-        db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
-      );
+    if (item === "audit_logs") {
+      planByScope.set(item, {
+        table: "audit_logs",
+        idColumn: "id",
+        columns: ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
+        conflictColumns: ["id"],
+        rows: db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
+      });
     }
+  }
+
+  const upsertOrder: ScopedTable[] = [
+    "doubts",
+    "thinking_spaces",
+    "thinking_scratch",
+    "audit_logs",
+    "doubt_notes",
+    "thinking_space_meta",
+    "thinking_nodes",
+    "thinking_inbox",
+    "thinking_node_links"
+  ];
+  for (const table of upsertOrder) {
+    const plan = planByScope.get(table);
+    if (!plan) continue;
+    await upsertTable(client, plan.table, plan.columns, plan.rows, plan.conflictColumns);
+  }
+
+  const deleteOrder: ScopedTable[] = [
+    "thinking_node_links",
+    "thinking_inbox",
+    "thinking_nodes",
+    "thinking_space_meta",
+    "thinking_spaces",
+    "doubt_notes",
+    "doubts",
+    "thinking_scratch",
+    "audit_logs"
+  ];
+  for (const table of deleteOrder) {
+    const plan = planByScope.get(table);
+    if (!plan) continue;
+    const ids = [...new Set(plan.rows.map((row) => String(row[0])))];
+    await deleteRowsNotInSet(client, plan.table, plan.idColumn, ids);
   }
 }
 
@@ -1075,14 +1170,33 @@ export async function updateDbScoped(
   if (!shouldUsePostgres()) {
     return updateDb(mutator);
   }
+  const pool = getPool();
+  if (!pool) return { ...EMPTY_DB };
   const normalizedScope = normalizeScope(scope);
   if (!normalizedScope.length) return { ...EMPTY_DB };
 
-  // Hotfix:
-  // Partial-table persistence + FK cascade (thinking_spaces -> thinking_nodes)
-  // can wipe child rows when scope omits dependent tables.
-  // Route all scoped writes through the full transactional writer first.
-  return updateDb(mutator);
+  await ensurePgReady();
+  return withPgRetry("updateDbScoped", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      // Global lock keeps scoped writes and full writes in one serial lane.
+      await client.query("SELECT pg_advisory_xact_lock($1)", [DB_LOCK_KEY]);
+      for (const table of normalizedScope) {
+        await client.query("SELECT pg_advisory_xact_lock($1)", [tableLockKey(table)]);
+      }
+      const db = await readScopedDbFromPg(client, normalizedScope);
+      await mutator(db);
+      await persistScopedDbToPg(client, db, normalizedScope);
+      await client.query("COMMIT");
+      return db;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
 }
 
 export async function updateDb(mutator: (db: DbState) => void | Promise<void>): Promise<DbState> {
