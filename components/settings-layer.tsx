@@ -167,8 +167,9 @@ export function SettingsLayer(props: {
             </div>
             <Textarea
               readOnly
+              data-zh-input="multiline"
               value={loadingExport ? "导出生成中..." : exportText}
-              className="min-h-[220px] resize-y border-slate-300 bg-white font-mono text-xs text-slate-700"
+              className="min-h-[220px] resize-y border-slate-300 bg-white font-mono text-xs leading-[1.65] text-slate-700 [overflow-wrap:anywhere]"
             />
           </CardContent>
           <CardFooter className="gap-2">

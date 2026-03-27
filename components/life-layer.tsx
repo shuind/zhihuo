@@ -235,8 +235,11 @@ export function LifeLayer(props: {
                         maxLength={280}
                         placeholder={"\u6B64\u523B\uFF0C\u5728\u60F3\u4EC0\u4E48..."}
                         data-life-composer="true"
+                        data-zh-input="multiline"
+                        autoResize
+                        maxAutoHeight={220}
                         className={cn(
-                          "min-h-[2.6rem] w-full resize-none border-0 bg-transparent px-0 py-0 text-[0.95rem] font-light leading-[1.95] tracking-[0.03em] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-500 focus-visible:ring-0",
+                          "min-h-[2.6rem] max-h-[220px] w-full border-0 bg-transparent px-0 py-0 text-[0.95rem] font-light leading-[1.95] tracking-[0.03em] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-500 focus-visible:ring-0",
                           fieldFocused
                             ? "placeholder:text-[rgba(150,145,138,0.52)] hover:placeholder:text-[rgba(150,145,138,0.52)]"
                             : "placeholder:text-[rgba(124,129,132,0.4)] hover:placeholder:text-[rgba(124,129,132,0.4)]"
@@ -245,7 +248,9 @@ export function LifeLayer(props: {
                         onFocus={() => setFieldFocused(true)}
                         onBlur={() => setFieldFocused(false)}
                         onKeyDown={(event) => {
-                          if ((event.ctrlKey || event.metaKey) && event.key === "Enter") void saveDoubt();
+                          if (event.key !== "Enter" || event.shiftKey) return;
+                          event.preventDefault();
+                          void saveDoubt();
                         }}
                       />
                       <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">

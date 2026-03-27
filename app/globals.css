@@ -313,6 +313,31 @@ body {
   background: radial-gradient(circle at 50% 46%, rgba(196, 202, 205, 0.008), transparent 74%);
 }
 
+[data-zh-input="multiline"] {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(150, 160, 170, 0.24) transparent;
+}
+
+[data-zh-input="multiline"]::-webkit-scrollbar {
+  width: 6px;
+}
+
+[data-zh-input="multiline"]::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+[data-zh-input="multiline"]::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: rgba(150, 160, 170, 0.2);
+}
+
+[data-zh-input="multiline"]::-webkit-scrollbar-thumb:hover {
+  background: rgba(150, 160, 170, 0.3);
+}
+
 .time-list-mask {
   scroll-behavior: smooth;
   overscroll-behavior: contain;

@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type 
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import {
@@ -244,8 +245,8 @@ export function ThinkingLayer(props: {
   const [isWritingToTime, setIsWritingToTime] = useState(false);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
-  const questionInputRef = useRef<HTMLInputElement | null>(null);
-  const scratchInputRef = useRef<HTMLInputElement | null>(null);
+  const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const scratchInputRef = useRef<HTMLTextAreaElement | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
@@ -1465,16 +1466,20 @@ export function ThinkingLayer(props: {
                                   </div>
                                   <div className="mt-4 max-w-[88%]">
                                     {isEditing ? (
-                                      <input
+                                      <Textarea
                                         autoFocus
                                         value={editingQuestionDraft}
                                         maxLength={220}
-                                        className="w-full bg-transparent text-left text-[15px] leading-[1.82] text-slate-900 outline-none [overflow-wrap:anywhere]"
+                                        autoResize
+                                        maxAutoHeight={180}
+                                        data-zh-input="multiline"
+                                        rows={1}
+                                        className="min-h-[1.8rem] w-full border-0 bg-transparent px-0 py-0 text-left text-[15px] leading-[1.82] text-slate-900 outline-none shadow-none ring-0 [overflow-wrap:anywhere] focus-visible:ring-0"
                                         onClick={(event) => event.stopPropagation()}
                                         onChange={(event) => setEditingQuestionDraft(event.target.value)}
                                         onBlur={() => void saveNodeQuestion(node, editingQuestionDraft)}
                                         onKeyDown={(event) => {
-                                          if (event.key === "Enter") {
+                                          if (event.key === "Enter" && !event.shiftKey) {
                                             event.preventDefault();
                                             void saveNodeQuestion(node, editingQuestionDraft);
                                           }
@@ -1514,18 +1519,22 @@ export function ThinkingLayer(props: {
                                 <div
                                   className={cn(
                                     "overflow-hidden transition-[max-height,opacity,margin] duration-200 ease-out",
-                                    isExpanded ? "mt-4 max-h-20 opacity-100" : "max-h-0 opacity-0"
+                                    isExpanded ? "mt-4 max-h-44 opacity-100" : "max-h-0 opacity-0"
                                   )}
                                 >
                                   <div
                                     className="rounded-[18px] border border-black/[0.04] bg-[rgba(255,255,255,0.14)] px-4 py-2.5"
                                     onClick={(event) => event.stopPropagation()}
                                   >
-                                    <input
+                                    <Textarea
                                       data-node-answer-input="true"
                                       value={draftValue}
+                                      autoResize
+                                      maxAutoHeight={120}
+                                      data-zh-input="multiline"
+                                      rows={1}
                                       disabled={activeSpace.status !== "active" || savingAnswerNodeId === node.id}
-                                      className="h-8 w-full bg-transparent text-[14px] text-slate-700 outline-none placeholder:text-slate-400/65 disabled:text-slate-400"
+                                      className="min-h-[1.9rem] w-full border-0 bg-transparent px-0 py-0 text-[14px] leading-[1.7] text-slate-700 outline-none shadow-none ring-0 placeholder:text-slate-400/65 disabled:text-slate-400 focus-visible:ring-0"
                                       onChange={(event) =>
                                         setAnswerDraftByNodeId((prev) => ({
                                           ...prev,
@@ -1534,7 +1543,7 @@ export function ThinkingLayer(props: {
                                       }
                                       onBlur={() => void persistNodeAnswer(node, draftValue)}
                                       onKeyDown={(event) => {
-                                        if (event.key === "Enter") {
+                                        if (event.key === "Enter" && !event.shiftKey) {
                                           event.preventDefault();
                                           void persistNodeAnswer(node, draftValue);
                                         }
@@ -1606,7 +1615,7 @@ export function ThinkingLayer(props: {
             >
               <div className="ml-auto mr-0 max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
                 <div className="w-full max-w-[760px] rounded-[20px] border border-black/[0.05] bg-[rgba(255,255,255,0.36)] px-4 py-2.5">
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-end gap-3">
                     {canPasteClipboardNode ? (
                       <button
                         type="button"
@@ -1616,16 +1625,20 @@ export function ThinkingLayer(props: {
                         粘贴
                       </button>
                     ) : null}
-                    <input
+                    <Textarea
                       ref={questionInputRef}
                       value={questionInput}
                       maxLength={220}
+                      autoResize
+                      maxAutoHeight={180}
+                      data-zh-input="multiline"
+                      rows={1}
                       disabled={activeSpace.status !== "active"}
                       placeholder={activeSpace.status === "active" ? "继续这条思路…" : "这个空间已写入时间"}
-                      className="h-10 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400/80 disabled:text-slate-500"
+                      className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/80 disabled:text-slate-500 focus-visible:ring-0"
                       onChange={(event) => setQuestionInput(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key !== "Enter") return;
+                        if (event.key !== "Enter" || event.shiftKey) return;
                         event.preventDefault();
                         if (!composerCanSubmit) {
                           setInputHint("先写下一点现在冒出来的东西");
@@ -1685,16 +1698,20 @@ export function ThinkingLayer(props: {
                     <span className="text-[11px] text-slate-400">{props.scratchItems.length} 条</span>
                   </div>
                 </div>
-                <div className="mt-4 flex items-center gap-3 rounded-[22px] border border-black/[0.05] bg-white/40 px-4 py-3">
-                  <input
+                <div className="mt-4 flex items-end gap-3 rounded-[22px] border border-black/[0.05] bg-white/40 px-4 py-3">
+                  <Textarea
                     ref={scratchInputRef}
                     value={scratchInput}
                     maxLength={220}
-                    className="h-10 flex-1 bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400/85"
+                    autoResize
+                    maxAutoHeight={160}
+                    data-zh-input="multiline"
+                    rows={1}
+                    className="min-h-[2.45rem] max-h-[160px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/85 focus-visible:ring-0"
                     placeholder="随手记下一句…"
                     onChange={(event) => setScratchInput(event.target.value)}
                     onKeyDown={(event) => {
-                      if (event.key !== "Enter") return;
+                      if (event.key !== "Enter" || event.shiftKey) return;
                       event.preventDefault();
                       void createScratch();
                     }}
@@ -1734,17 +1751,21 @@ export function ThinkingLayer(props: {
           <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
             <p className="text-sm text-slate-800">写入时间</p>
             <p className="mt-1 text-xs text-slate-500">留一句批注，之后会在时间层右栏出现。（可选）</p>
-            <input
+            <Textarea
               value={writeToTimeDraft}
               maxLength={48}
-              className="mt-3 h-11 w-full rounded-xl border border-black/12 bg-white px-3 text-sm text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+              autoResize
+              maxAutoHeight={120}
+              data-zh-input="multiline"
+              rows={1}
+              className="mt-3 min-h-[2.75rem] max-h-[120px] w-full rounded-xl border border-black/12 bg-white px-3 py-2 text-sm leading-[1.65] text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
               placeholder=""
               onChange={(event) => {
                 setWriteToTimeDraft(event.target.value);
                 if (writeToTimeHint) setWriteToTimeHint("");
               }}
               onKeyDown={(event) => {
-                if (event.key === "Enter") {
+                if (event.key === "Enter" && !event.shiftKey) {
                   event.preventDefault();
                   submitWriteToTime();
                 }
@@ -1797,12 +1818,21 @@ export function ThinkingLayer(props: {
               </button>
             </div>
             <div className="mt-3 grid gap-2">
-              <input
+              <Textarea
                 value={newSpaceInput}
                 maxLength={160}
-                className="h-10 rounded-full border border-black/12 bg-white px-4 text-sm text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+                autoResize
+                maxAutoHeight={120}
+                data-zh-input="multiline"
+                rows={1}
+                className="min-h-[2.55rem] max-h-[120px] rounded-2xl border border-black/12 bg-white px-4 py-2 text-sm leading-[1.65] text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
                 onChange={(event) => setNewSpaceInput(event.target.value)}
-                onKeyDown={(event) => event.key === "Enter" && (event.preventDefault(), createSpace())}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && !event.shiftKey) {
+                    event.preventDefault();
+                    createSpace();
+                  }
+                }}
               />
               <Button
                 type="button"
@@ -2095,9 +2125,10 @@ export function ThinkingLayer(props: {
           <div className="w-[620px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
             <p className="text-sm text-slate-800">背景说明（100-300字）</p>
             <textarea
+              data-zh-input="multiline"
               value={backgroundDraft}
               maxLength={320}
-              className="mt-3 h-40 w-full resize-none rounded-xl border border-black/12 bg-white px-3 py-2 text-sm leading-[1.6] text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
+              className="mt-3 h-40 w-full resize-none rounded-xl border border-black/12 bg-white px-3 py-2 text-sm leading-[1.6] text-slate-800 outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-black/20"
               onChange={(event) => setBackgroundDraft(event.target.value)}
             />
             <p className="mt-1 text-xs text-slate-500">仅影响之后的推荐，不回溯旧节点</p>
@@ -2167,9 +2198,10 @@ export function ThinkingLayer(props: {
               </div>
             </div>
             <textarea
+              data-zh-input="multiline"
               value={exportLoading ? "导出生成中..." : exportMarkdown}
               readOnly
-              className="h-[52vh] w-full resize-none rounded-xl border border-black/12 bg-[#f7f4ef] px-3 py-3 text-xs leading-[1.65] text-slate-700 outline-none"
+              className="h-[52vh] w-full resize-none rounded-xl border border-black/12 bg-[#f7f4ef] px-3 py-3 text-xs leading-[1.65] text-slate-700 outline-none [overflow-wrap:anywhere]"
             />
           </div>
         </div>

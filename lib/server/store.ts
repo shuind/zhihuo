@@ -1212,11 +1212,16 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     trackRows.find(
       (track) => track.trackId !== parkingTrackId && track.trackId !== pendingTrackId && track.nodes.length > 0
     )?.trackId ?? null;
-  if (preferredReadableTrackId) {
-    const currentTrack = currentTrackId ? trackRows.find((track) => track.trackId === currentTrackId) : null;
-    const currentIsPendingEmpty = Boolean(pendingTrackId && currentTrackId === pendingTrackId && (currentTrack?.nodes.length ?? 0) === 0);
-    if (currentIsPendingEmpty) {
-      currentTrackId = preferredReadableTrackId;
+  const currentTrack = currentTrackId ? trackRows.find((track) => track.trackId === currentTrackId) : null;
+  const currentIsPendingEmpty = Boolean(pendingTrackId && currentTrackId === pendingTrackId && (currentTrack?.nodes.length ?? 0) === 0);
+  const currentIsNonParkingEmpty = Boolean(currentTrackId && currentTrackId !== parkingTrackId && (currentTrack?.nodes.length ?? 0) === 0);
+  if (currentIsPendingEmpty || currentIsNonParkingEmpty) {
+    const fallbackTrackId =
+      preferredReadableTrackId ??
+      trackRows.find((track) => track.trackId !== pendingTrackId && track.nodes.length > 0)?.trackId ??
+      null;
+    if (fallbackTrackId) {
+      currentTrackId = fallbackTrackId;
       if (meta.last_track_id !== currentTrackId) meta.last_track_id = currentTrackId;
     }
   }
