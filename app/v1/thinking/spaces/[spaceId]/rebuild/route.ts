@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { rebuildSpace } from "@/lib/server/store";
@@ -11,7 +11,7 @@ export const POST = withApiRoute(
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
     let result: ReturnType<typeof rebuildSpace> = null;
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
       result = rebuildSpace(db, userId, params.spaceId);
     });
     if (!result) return errorJson(404, "空间不存在");

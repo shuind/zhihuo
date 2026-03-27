@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { linkThinkingNode } from "@/lib/server/store";
@@ -15,7 +15,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let result: { kind: string; link?: { id: string } } = { kind: "not_found" };
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_nodes", "thinking_node_links"], (db) => {
       result = linkThinkingNode(db, userId, params.nodeId, body.target_node_id ?? "");
     });
 

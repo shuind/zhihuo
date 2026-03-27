@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { deleteThinkingScratch } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let scratch = null;
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_scratch"], (db) => {
       scratch = deleteThinkingScratch(db, userId, params.id);
     });
 

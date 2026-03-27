@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb, updateDb } from "@/lib/server/db";
+import { readDb, updateDb, updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createDoubt, listDoubts } from "@/lib/server/store";
@@ -30,7 +30,7 @@ export const POST = withApiRoute(
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
   let createdId: string | null = null;
-  await updateDb((db) => {
+  await updateDbScoped(["doubts"], (db) => {
     const created = createDoubt(db, userId, body.raw_text ?? "");
     createdId = created?.id ?? null;
   });

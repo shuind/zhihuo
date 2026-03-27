@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { setActiveTrack } from "@/lib/server/store";
@@ -14,7 +14,7 @@ export const POST = withApiRoute(
 
     let kind: "ok" | "not_found" | "track_not_found" = "not_found";
     let trackId: string | null = null;
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
       const result = setActiveTrack(db, userId, params.spaceId, typeof body?.track_id === "string" ? body.track_id : null);
       kind = result.kind;
       if (result.kind === "ok") trackId = result.track_id;

@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateSpaceBackground } from "@/lib/server/store";
@@ -13,7 +13,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let result: any = null;
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta"], (db) => {
       result = updateSpaceBackground(
         db,
         userId,

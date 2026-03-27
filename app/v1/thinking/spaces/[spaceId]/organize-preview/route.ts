@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { readDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { organizeSpacePreview } from "@/lib/server/store";
@@ -17,16 +17,16 @@ export const POST = withApiRoute(
     let found = false;
     let readonly = false;
     let candidates: Array<{ nodeId: string; preview: string; fromTrackId: string; suggestedTrackId: string; score: number }> = [];
-    await updateDb((db) => {
-      const result = organizeSpacePreview(db, userId, params.spaceId, fromOrderIndex);
-      if (!result) return;
+    const db = await readDb();
+    const result = organizeSpacePreview(db, userId, params.spaceId, fromOrderIndex);
+    if (result) {
       found = true;
       if (result.kind === "readonly") {
         readonly = true;
-        return;
+      } else {
+        candidates = result.candidates;
       }
-      candidates = result.candidates;
-    });
+    }
 
     if (!found) return errorJson(404, "空间不存在");
     if (readonly) return errorJson(409, "空间不是进行中状态");

@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { markNodeMisplaced } from "@/lib/server/store";
@@ -13,7 +13,7 @@ export const POST = withApiRoute(
     let found = false;
     let readonly = false;
     let node: unknown = null;
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
       const result = markNodeMisplaced(db, userId, params.nodeId);
       if (!result) return;
       found = true;

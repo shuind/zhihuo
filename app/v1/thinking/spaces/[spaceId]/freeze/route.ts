@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { writeSpaceToTime } from "@/lib/server/store";
@@ -17,7 +17,7 @@ export const POST = withApiRoute(
     let kind: "not_found" | "readonly" | "invalid" | "ok" = "not_found";
     let response: { space_id: string; status: "hidden"; written_at: string } | null = null;
 
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
       const result = writeSpaceToTime(db, userId, params.spaceId, freezeNote);
       kind = result.kind;
       if (result.kind !== "ok") return;

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { deleteThinkingSpace } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let kind: "ok" | "not_found" = "not_found";
-    await updateDb((db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_nodes", "thinking_space_meta", "thinking_inbox", "thinking_node_links", "audit_logs"], (db) => {
       const result = deleteThinkingSpace(db, userId, params.spaceId);
       kind = result.kind;
     });

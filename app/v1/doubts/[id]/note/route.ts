@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { upsertDoubtNote } from "@/lib/server/store";
@@ -16,7 +16,7 @@ export const POST = withApiRoute(
   let found = false;
   let deleted = false;
   let noteId: string | null = null;
-  await updateDb((db) => {
+  await updateDbScoped(["doubts", "doubt_notes"], (db) => {
     const result = upsertDoubtNote(db, userId, params.id, body.note_text ?? "");
     if (!result) return;
     found = true;

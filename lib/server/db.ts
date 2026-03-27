@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 )
 `;
 const DB_LOCK_KEY = 745101;
+const HOT_TABLE_LOCK_SEED = 991337;
 
 const EMPTY_DB: DbState = {
   doubts: [],
@@ -520,6 +521,312 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
   );
 }
 
+type ScopedTable =
+  | "doubts"
+  | "doubt_notes"
+  | "thinking_spaces"
+  | "thinking_space_meta"
+  | "thinking_nodes"
+  | "thinking_inbox"
+  | "thinking_scratch"
+  | "thinking_node_links"
+  | "audit_logs";
+
+function createEmptyDbState(): DbState {
+  return {
+    doubts: [],
+    doubt_notes: [],
+    thinking_spaces: [],
+    thinking_nodes: [],
+    thinking_inbox: [],
+    thinking_scratch: [],
+    thinking_space_meta: [],
+    thinking_node_links: [],
+    email_verification_codes: [],
+    users: [],
+    audit_logs: []
+  };
+}
+
+function normalizeScope(scope: ScopedTable[]) {
+  return Array.from(new Set(scope)).sort();
+}
+
+function tableLockKey(table: ScopedTable) {
+  let hash = HOT_TABLE_LOCK_SEED;
+  for (let i = 0; i < table.length; i += 1) {
+    hash = (hash * 33 + table.charCodeAt(i)) | 0;
+  }
+  return Math.abs(hash);
+}
+
+async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Promise<DbState> {
+  const state = createEmptyDbState();
+  for (const table of scope) {
+    if (table === "doubts") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"
+      );
+      state.doubts = rows as DbState["doubts"];
+      continue;
+    }
+    if (table === "doubt_notes") {
+      const { rows } = await client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes");
+      state.doubt_notes = rows as DbState["doubt_notes"];
+      continue;
+    }
+    if (table === "thinking_spaces") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
+      );
+      state.thinking_spaces = rows as DbState["thinking_spaces"];
+      continue;
+    }
+    if (table === "thinking_space_meta") {
+      const { rows } = await client.query(
+        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+      );
+      state.thinking_space_meta = rows.map((row) => ({
+        ...row,
+        export_version: Number(row.export_version),
+        background_text: typeof row.background_text === "string" ? row.background_text : null,
+        background_version: Number(row.background_version ?? 0),
+        suggestion_decay: Number(row.suggestion_decay ?? 0),
+        last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
+        last_organized_order: Number(row.last_organized_order ?? -1),
+        parking_track_id: typeof row.parking_track_id === "string" ? row.parking_track_id : null,
+        pending_track_id: typeof row.pending_track_id === "string" ? row.pending_track_id : null,
+        empty_track_ids: Array.isArray(row.empty_track_ids) ? row.empty_track_ids.filter((id: unknown) => typeof id === "string") : [],
+        milestone_node_ids: Array.isArray(row.milestone_node_ids)
+          ? row.milestone_node_ids.filter((id: unknown) => typeof id === "string")
+          : [],
+        track_direction_hints:
+          row.track_direction_hints && typeof row.track_direction_hints === "object" && !Array.isArray(row.track_direction_hints)
+            ? Object.fromEntries(
+                Object.entries(row.track_direction_hints).filter(
+                  ([trackId, hint]) =>
+                    typeof trackId === "string" &&
+                    (hint === null ||
+                      hint === "hypothesis" ||
+                      hint === "memory" ||
+                      hint === "counterpoint" ||
+                      hint === "worry" ||
+                      hint === "constraint" ||
+                      hint === "aside")
+                )
+              )
+            : {}
+      })) as DbState["thinking_space_meta"];
+      continue;
+    }
+    if (table === "thinking_nodes") {
+      const { rows } = await client.query(
+        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+      );
+      state.thinking_nodes = rows.map((row) => ({
+        ...row,
+        order_index: Number(row.order_index),
+        is_suggested: Boolean(row.is_suggested),
+        note_text: typeof row.note_text === "string" ? row.note_text : null
+      })) as DbState["thinking_nodes"];
+      continue;
+    }
+    if (table === "thinking_inbox") {
+      const { rows } = await client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox");
+      state.thinking_inbox = rows as DbState["thinking_inbox"];
+      continue;
+    }
+    if (table === "thinking_scratch") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"
+      );
+      state.thinking_scratch = rows.map((row) => ({
+        ...row,
+        archived_at: typeof row.archived_at === "string" ? row.archived_at : null,
+        deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null,
+        derived_space_id: typeof row.derived_space_id === "string" ? row.derived_space_id : null,
+        fed_time_doubt_id: typeof row.fed_time_doubt_id === "string" ? row.fed_time_doubt_id : null
+      })) as DbState["thinking_scratch"];
+      continue;
+    }
+    if (table === "thinking_node_links") {
+      const { rows } = await client.query(
+        "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
+      );
+      state.thinking_node_links = rows.map((row) => ({
+        ...row,
+        link_type: "related" as const,
+        score: Number(row.score ?? 0)
+      })) as DbState["thinking_node_links"];
+      continue;
+    }
+    if (table === "audit_logs") {
+      const { rows } = await client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs");
+      state.audit_logs = rows as DbState["audit_logs"];
+    }
+  }
+  return normalizeDb(state);
+}
+
+async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: ScopedTable[]) {
+  for (const table of scope) {
+    if (table === "doubts") {
+      await replaceTable(
+        client,
+        "doubts",
+        ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+        db.doubts.map((row) => [
+          row.id,
+          row.user_id,
+          row.raw_text,
+          row.first_node_preview ?? null,
+          row.last_node_preview ?? null,
+          row.created_at,
+          row.archived_at,
+          row.deleted_at
+        ])
+      );
+      continue;
+    }
+    if (table === "doubt_notes") {
+      await replaceTable(
+        client,
+        "doubt_notes",
+        ["id", "doubt_id", "note_text", "created_at"],
+        db.doubt_notes.map((row) => [row.id, row.doubt_id, row.note_text, row.created_at])
+      );
+      continue;
+    }
+    if (table === "thinking_spaces") {
+      await replaceTable(
+        client,
+        "thinking_spaces",
+        ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
+        db.thinking_spaces.map((row) => [
+          row.id,
+          row.user_id,
+          row.root_question_text,
+          row.status,
+          row.created_at,
+          row.frozen_at,
+          row.source_time_doubt_id
+        ])
+      );
+      continue;
+    }
+    if (table === "thinking_space_meta") {
+      await replaceTable(
+        client,
+        "thinking_space_meta",
+        [
+          "space_id",
+          "user_freeze_note",
+          "export_version",
+          "background_text",
+          "background_version",
+          "suggestion_decay",
+          "last_track_id",
+          "last_organized_order",
+          "parking_track_id",
+          "pending_track_id",
+          "empty_track_ids",
+          "milestone_node_ids",
+          "track_direction_hints"
+        ],
+        db.thinking_space_meta.map((row) => [
+          row.space_id,
+          row.user_freeze_note,
+          row.export_version,
+          row.background_text ?? null,
+          row.background_version ?? 0,
+          row.suggestion_decay ?? 0,
+          row.last_track_id ?? null,
+          row.last_organized_order ?? -1,
+          row.parking_track_id ?? null,
+          row.pending_track_id ?? null,
+          row.empty_track_ids ?? [],
+          row.milestone_node_ids ?? [],
+          row.track_direction_hints ?? {}
+        ])
+      );
+      continue;
+    }
+    if (table === "thinking_nodes") {
+      await replaceTable(
+        client,
+        "thinking_nodes",
+        ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
+        db.thinking_nodes.map((row) => [
+          row.id,
+          row.space_id,
+          row.parent_node_id,
+          row.raw_question_text,
+          row.note_text ?? null,
+          row.created_at,
+          row.order_index,
+          row.is_suggested,
+          row.state,
+          row.dimension
+        ])
+      );
+      continue;
+    }
+    if (table === "thinking_inbox") {
+      await replaceTable(
+        client,
+        "thinking_inbox",
+        ["id", "space_id", "raw_text", "created_at"],
+        db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
+      );
+      continue;
+    }
+    if (table === "thinking_scratch") {
+      await replaceTable(
+        client,
+        "thinking_scratch",
+        ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
+        db.thinking_scratch.map((row) => [
+          row.id,
+          row.user_id,
+          row.raw_text,
+          row.created_at,
+          row.updated_at,
+          row.archived_at,
+          row.deleted_at,
+          row.derived_space_id,
+          row.fed_time_doubt_id
+        ])
+      );
+      continue;
+    }
+    if (table === "thinking_node_links") {
+      await replaceTable(
+        client,
+        "thinking_node_links",
+        ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
+        db.thinking_node_links.map((row) => [
+          row.id,
+          row.space_id,
+          row.source_node_id,
+          row.target_node_id,
+          row.link_type,
+          row.score,
+          row.created_at
+        ])
+      );
+      continue;
+    }
+    if (table === "audit_logs") {
+      await replaceTable(
+        client,
+        "audit_logs",
+        ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
+        db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
+      );
+    }
+  }
+}
+
 export async function readDb(): Promise<DbState> {
   if (shouldUsePostgres()) {
     const pool = getPool();
@@ -549,6 +856,65 @@ export async function readDb(): Promise<DbState> {
   } catch {
     return { ...EMPTY_DB };
   }
+}
+
+export async function runPgTransaction<T>(
+  name: string,
+  operation: (client: PoolClient) => Promise<T>
+): Promise<T | null> {
+  if (!shouldUsePostgres()) return null;
+  const pool = getPool();
+  if (!pool) return null;
+  await ensurePgReady();
+  return withPgRetry(name, async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      const result = await operation(client);
+      await client.query("COMMIT");
+      return result;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
+}
+
+export async function updateDbScoped(
+  scope: ScopedTable[],
+  mutator: (db: DbState) => void | Promise<void>
+): Promise<DbState> {
+  if (!shouldUsePostgres()) {
+    return updateDb(mutator);
+  }
+  const pool = getPool();
+  if (!pool) return { ...EMPTY_DB };
+
+  const normalizedScope = normalizeScope(scope);
+  if (!normalizedScope.length) return { ...EMPTY_DB };
+
+  await ensurePgReady();
+  return withPgRetry("updateDbScoped", async () => {
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+      for (const table of normalizedScope) {
+        await client.query("SELECT pg_advisory_xact_lock($1)", [tableLockKey(table)]);
+      }
+      const db = await readScopedDbFromPg(client, normalizedScope);
+      await mutator(db);
+      await persistScopedDbToPg(client, db, normalizedScope);
+      await client.query("COMMIT");
+      return db;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  });
 }
 
 export async function updateDb(mutator: (db: DbState) => void | Promise<void>): Promise<DbState> {
