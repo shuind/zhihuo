@@ -1075,32 +1075,14 @@ export async function updateDbScoped(
   if (!shouldUsePostgres()) {
     return updateDb(mutator);
   }
-  const pool = getPool();
-  if (!pool) return { ...EMPTY_DB };
-
   const normalizedScope = normalizeScope(scope);
   if (!normalizedScope.length) return { ...EMPTY_DB };
 
-  await ensurePgReady();
-  return withPgRetry("updateDbScoped", async () => {
-    const client = await pool.connect();
-    try {
-      await client.query("BEGIN");
-      for (const table of normalizedScope) {
-        await client.query("SELECT pg_advisory_xact_lock($1)", [tableLockKey(table)]);
-      }
-      const db = await readScopedDbFromPg(client, normalizedScope);
-      await mutator(db);
-      await persistScopedDbToPg(client, db, normalizedScope);
-      await client.query("COMMIT");
-      return db;
-    } catch (error) {
-      await client.query("ROLLBACK");
-      throw error;
-    } finally {
-      client.release();
-    }
-  });
+  // Hotfix:
+  // Partial-table persistence + FK cascade (thinking_spaces -> thinking_nodes)
+  // can wipe child rows when scope omits dependent tables.
+  // Route all scoped writes through the full transactional writer first.
+  return updateDb(mutator);
 }
 
 export async function updateDb(mutator: (db: DbState) => void | Promise<void>): Promise<DbState> {
