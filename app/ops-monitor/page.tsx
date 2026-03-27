@@ -34,6 +34,19 @@ export default function OpsMonitorPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  useEffect(() => {
+    const html = document.documentElement;
+    const body = document.body;
+    const prevHtmlOverflow = html.style.overflow;
+    const prevBodyOverflow = body.style.overflow;
+    html.style.overflow = "auto";
+    body.style.overflow = "auto";
+    return () => {
+      html.style.overflow = prevHtmlOverflow;
+      body.style.overflow = prevBodyOverflow;
+    };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError("");
@@ -75,7 +88,7 @@ export default function OpsMonitorPage() {
   }, [data]);
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-8 text-slate-100 md:px-10">
+    <main className="min-h-screen bg-slate-950 px-6 py-8 pb-24 text-slate-100 md:px-10">
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div>

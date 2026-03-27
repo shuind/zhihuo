@@ -1208,6 +1208,19 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   if (!meta.last_track_id && currentTrackId === parkingTrackId && trackRows.some((track) => track.trackId !== parkingTrackId)) {
     currentTrackId = trackRows.find((track) => track.trackId !== parkingTrackId)?.trackId ?? parkingTrackId;
   }
+  const preferredReadableTrackId =
+    trackRows.find(
+      (track) => track.trackId !== parkingTrackId && track.trackId !== pendingTrackId && track.nodes.length > 0
+    )?.trackId ?? null;
+  if (preferredReadableTrackId) {
+    const currentTrack = currentTrackId ? trackRows.find((track) => track.trackId === currentTrackId) : null;
+    const currentIsPendingEmpty = Boolean(pendingTrackId && currentTrackId === pendingTrackId && (currentTrack?.nodes.length ?? 0) === 0);
+    const currentIsEmpty = (currentTrack?.nodes.length ?? 0) === 0;
+    if (currentIsPendingEmpty || currentIsEmpty) {
+      currentTrackId = preferredReadableTrackId;
+      if (meta.last_track_id !== currentTrackId) meta.last_track_id = currentTrackId;
+    }
+  }
 
   const suggestionQuota = Math.max(0, 3 - (meta.suggestion_decay ?? 0));
   const suggestedQuestions = buildSuggestedQuestions(space.root_question_text, meta.background_text ?? null, suggestionQuota);

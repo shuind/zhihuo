@@ -4,7 +4,7 @@ import path from "node:path";
 import { Pool, type PoolClient } from "pg";
 
 import { logError, logInfo, logWarn } from "@/lib/server/observability";
-import type { DbState } from "@/lib/server/types";
+import type { DbState, DimensionKey } from "@/lib/server/types";
 
 const DATA_DIR = path.join(process.cwd(), "data");
 const DB_FILE = path.join(DATA_DIR, "zhihuo-db.json");
@@ -28,6 +28,11 @@ const DEFAULT_MONITOR_RESPONSE_BYTES = Math.max(
   1,
   Number.parseInt(process.env.MONITOR_DEFAULT_RESPONSE_BYTES ?? "12288", 10) || 12288
 );
+const THINKING_DIMENSIONS: ReadonlySet<DimensionKey> = new Set(["definition", "resource", "risk", "value", "path", "evidence"]);
+
+function normalizeDimension(input: unknown): DimensionKey {
+  return THINKING_DIMENSIONS.has(input as DimensionKey) ? (input as DimensionKey) : "definition";
+}
 
 const EMPTY_DB: DbState = {
   doubts: [],
@@ -75,7 +80,12 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
     thinking_nodes: Array.isArray(input?.thinking_nodes)
       ? input.thinking_nodes.map((row) => ({
           ...row,
-          note_text: typeof row.note_text === "string" ? row.note_text : null
+          note_text: typeof row.note_text === "string" ? row.note_text : null,
+          answer_text: typeof row.answer_text === "string" ? row.answer_text : null,
+          order_index: Number.isFinite(row.order_index) ? Number(row.order_index) : 0,
+          is_suggested: row.is_suggested === true,
+          state: row.state === "hidden" ? "hidden" : "normal",
+          dimension: normalizeDimension(row.dimension)
         }))
       : [],
     thinking_inbox: Array.isArray(input?.thinking_inbox) ? input.thinking_inbox : [],
