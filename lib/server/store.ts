@@ -1215,8 +1215,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   if (preferredReadableTrackId) {
     const currentTrack = currentTrackId ? trackRows.find((track) => track.trackId === currentTrackId) : null;
     const currentIsPendingEmpty = Boolean(pendingTrackId && currentTrackId === pendingTrackId && (currentTrack?.nodes.length ?? 0) === 0);
-    const currentIsEmpty = (currentTrack?.nodes.length ?? 0) === 0;
-    if (currentIsPendingEmpty || currentIsEmpty) {
+    if (currentIsPendingEmpty) {
       currentTrackId = preferredReadableTrackId;
       if (meta.last_track_id !== currentTrackId) meta.last_track_id = currentTrackId;
     }
