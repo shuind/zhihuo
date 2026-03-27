@@ -14,11 +14,18 @@ type MonitorPayload = {
     scratch_open_total: number;
   };
   flow_3d: Array<{ date: string; users_new: number; time_entries_new: number; spaces_new: number; writes_to_time: number }>;
+  traffic_now: { qps_1m: number; bandwidth_mbps_est_1m: number };
+  traffic_peak_3d: Array<{ date: string; peak_qps: number; p95_minute_qps: number; peak_bandwidth_mbps_est: number }>;
   generated_at: string;
 };
 
 function formatNumber(value: number) {
   return new Intl.NumberFormat("zh-CN").format(value);
+}
+
+function formatDecimal(value: number, digits = 3) {
+  if (!Number.isFinite(value)) return "0";
+  return value.toFixed(digits);
 }
 
 export default function OpsMonitorPage() {
@@ -45,7 +52,7 @@ export default function OpsMonitorPage() {
       setData(payload as MonitorPayload);
       setLoading(false);
     } catch {
-      setError("网络异常，请稍后重试");
+      setError("请求失败，请稍后重试");
       setLoading(false);
     }
   }, [router]);
@@ -54,11 +61,16 @@ export default function OpsMonitorPage() {
     void load();
   }, [load]);
 
-  const maxTrend = useMemo(() => {
-    if (!data?.flow_3d.length) return 1;
-    return Math.max(
-      1,
-      ...data.flow_3d.flatMap((item) => [item.users_new, item.time_entries_new, item.spaces_new, item.writes_to_time])
+  const peakSummary = useMemo(() => {
+    if (!data?.traffic_peak_3d?.length) {
+      return { peakQps: 0, peakBandwidth: 0 };
+    }
+    return data.traffic_peak_3d.reduce(
+      (acc, row) => ({
+        peakQps: Math.max(acc.peakQps, row.peak_qps),
+        peakBandwidth: Math.max(acc.peakBandwidth, row.peak_bandwidth_mbps_est)
+      }),
+      { peakQps: 0, peakBandwidth: 0 }
     );
   }, [data]);
 
@@ -86,11 +98,13 @@ export default function OpsMonitorPage() {
           <div className="rounded-2xl border border-red-900/60 bg-red-950/40 p-6 text-sm text-red-200">{error}</div>
         ) : data ? (
           <>
-            <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-4">
+            <section className="grid grid-cols-1 gap-3 md:grid-cols-2 lg:grid-cols-3">
               <MetricCard label="总用户" value={formatNumber(data.users.total)} />
               <MetricCard label="今日新增用户" value={formatNumber(data.users.new_today)} />
               <MetricCard label="今日活跃用户" value={formatNumber(data.active_users.d1)} />
               <MetricCard label="近3日活跃用户" value={formatNumber(data.active_users.d3)} />
+              <MetricCard label="近3日最高QPS" value={formatDecimal(peakSummary.peakQps)} />
+              <MetricCard label="近3日最高带宽估算(Mbps)" value={formatDecimal(peakSummary.peakBandwidth)} />
             </section>
 
             <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
@@ -105,34 +119,27 @@ export default function OpsMonitorPage() {
             </section>
 
             <section className="rounded-2xl border border-slate-800 bg-slate-900/70 p-5">
-              <h2 className="text-sm tracking-[0.06em] text-slate-300">最近3日流动</h2>
+              <h2 className="text-sm tracking-[0.06em] text-slate-300">最近3日峰值流量</h2>
+              <div className="mt-3 text-xs text-slate-500">
+                当前1分钟：QPS {formatDecimal(data.traffic_now.qps_1m)} / 带宽估算 {formatDecimal(data.traffic_now.bandwidth_mbps_est_1m)} Mbps
+              </div>
               <div className="mt-4 overflow-x-auto">
                 <table className="min-w-full text-left text-sm">
                   <thead className="text-slate-400">
                     <tr>
                       <th className="py-2 pr-4 font-normal">日期</th>
-                      <th className="py-2 pr-4 font-normal">新增用户</th>
-                      <th className="py-2 pr-4 font-normal">新增时间条目</th>
-                      <th className="py-2 pr-4 font-normal">新增思路空间</th>
-                      <th className="py-2 font-normal">写入时间次数</th>
+                      <th className="py-2 pr-4 font-normal">峰值QPS</th>
+                      <th className="py-2 pr-4 font-normal">P95分钟QPS</th>
+                      <th className="py-2 font-normal">峰值带宽估算(Mbps)</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {data.flow_3d.map((item) => (
-                      <tr key={item.date} className="border-t border-slate-800/80 text-slate-200">
-                        <td className="py-2 pr-4 text-slate-300">{item.date}</td>
-                        <td className="py-2 pr-4">
-                          <TrendValue value={item.users_new} max={maxTrend} />
-                        </td>
-                        <td className="py-2 pr-4">
-                          <TrendValue value={item.time_entries_new} max={maxTrend} />
-                        </td>
-                        <td className="py-2 pr-4">
-                          <TrendValue value={item.spaces_new} max={maxTrend} />
-                        </td>
-                        <td className="py-2">
-                          <TrendValue value={item.writes_to_time} max={maxTrend} />
-                        </td>
+                    {data.traffic_peak_3d.map((row) => (
+                      <tr key={row.date} className="border-t border-slate-800/80 text-slate-200">
+                        <td className="py-2 pr-4 text-slate-300">{row.date}</td>
+                        <td className="py-2 pr-4">{formatDecimal(row.peak_qps)}</td>
+                        <td className="py-2 pr-4">{formatDecimal(row.p95_minute_qps)}</td>
+                        <td className="py-2">{formatDecimal(row.peak_bandwidth_mbps_est)}</td>
                       </tr>
                     ))}
                   </tbody>
@@ -140,7 +147,7 @@ export default function OpsMonitorPage() {
               </div>
             </section>
 
-            <p className="text-xs text-slate-500">数据生成时间：{new Date(data.generated_at).toLocaleString("zh-CN")}</p>
+            <p className="text-xs text-slate-500">数据更新时间：{new Date(data.generated_at).toLocaleString("zh-CN")}</p>
           </>
         ) : null}
       </div>
@@ -165,16 +172,3 @@ function MetricPill(props: { label: string; value: number }) {
     </div>
   );
 }
-
-function TrendValue(props: { value: number; max: number }) {
-  const width = `${Math.max(6, Math.round((props.value / props.max) * 100))}%`;
-  return (
-    <div className="flex items-center gap-2">
-      <span className="w-8 text-slate-300">{props.value}</span>
-      <div className="h-1.5 w-20 rounded-full bg-slate-800">
-        <div className="h-full rounded-full bg-slate-500" style={{ width }} />
-      </div>
-    </div>
-  );
-}
-

@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb } from "@/lib/server/db";
+import { readDb, readMonitorTrafficMetrics } from "@/lib/server/db";
 import { getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { getSystemMonitorMetrics } from "@/lib/server/store";
@@ -13,7 +13,11 @@ export const GET = withApiRoute(
 
     const db = await readDb();
     const metrics = getSystemMonitorMetrics(db);
-    return okJson(metrics);
+    const traffic = await readMonitorTrafficMetrics();
+    return okJson({
+      ...metrics,
+      ...traffic
+    });
   },
   { rateLimit: { bucket: "system-monitor", max: 60, windowMs: 60 * 1000 } }
 );

@@ -23,6 +23,10 @@ type WrappedContext = { params?: Record<string, string | string[]> };
 type RouteHandler<Context extends WrappedContext> = (request: NextRequest, context: Context, meta: RequestMeta) => Promise<Response>;
 
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const DEFAULT_RESPONSE_BYTES = Math.max(
+  1,
+  Number.parseInt(process.env.MONITOR_DEFAULT_RESPONSE_BYTES ?? "12288", 10) || 12288
+);
 
 function pruneRateLimitStore(now: number) {
   if (rateLimitStore.size < 500) return;
@@ -38,6 +42,33 @@ function getClientIp(request: NextRequest) {
     request.headers.get("cf-connecting-ip") ??
     "unknown";
   return candidate || "unknown";
+}
+
+function shouldRecordTraffic(path: string) {
+  return path.startsWith("/v1/") && path !== "/v1/health";
+}
+
+function responseBytes(response: Response) {
+  const header = response.headers.get("content-length");
+  if (header) {
+    const parsed = Number(header);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_RESPONSE_BYTES;
+}
+
+async function recordTraffic(path: string, status: number, bytes: number) {
+  if (!shouldRecordTraffic(path)) return;
+  try {
+    const { recordApiMinuteStat } = await import("@/lib/server/db");
+    await recordApiMinuteStat({ route: path, status, responseBytes: bytes });
+  } catch (error) {
+    logWarn("monitor.traffic.record_failed", {
+      path,
+      status,
+      error: error instanceof Error ? error.message : String(error)
+    });
+  }
 }
 
 export function getRequestId(request: NextRequest) {
@@ -108,6 +139,7 @@ export function withApiRoute<Context extends WrappedContext>(
         const response = NextResponse.json({ error: "too many requests", request_id: meta.requestId }, { status: 429 });
         response.headers.set("x-request-id", meta.requestId);
         response.headers.set("retry-after", String(retryAfterSeconds));
+        void recordTraffic(meta.path, response.status, responseBytes(response));
         return response;
       }
     }
@@ -125,6 +157,7 @@ export function withApiRoute<Context extends WrappedContext>(
         status: response.status,
         durationMs
       });
+      void recordTraffic(meta.path, response.status, responseBytes(response));
       return response;
     } catch (error) {
       const durationMs = Date.now() - startedAt;
@@ -142,6 +175,7 @@ export function withApiRoute<Context extends WrappedContext>(
         { status: 500 }
       );
       response.headers.set("x-request-id", meta.requestId);
+      void recordTraffic(meta.path, response.status, responseBytes(response));
       return response;
     }
   };

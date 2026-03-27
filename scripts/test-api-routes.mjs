@@ -84,6 +84,11 @@ async function run() {
   assert(typeof monitor.json?.active_users?.d3 === "number", "monitor active_users.d3 missing");
   assert(typeof monitor.json?.content?.time_entries_total === "number", "monitor content.time_entries_total missing");
   assert(Array.isArray(monitor.json?.flow_3d) && monitor.json.flow_3d.length === 3, "monitor flow_3d should contain 3 rows");
+  assert(typeof monitor.json?.traffic_now?.qps_1m === "number", "monitor traffic_now.qps_1m missing");
+  assert(
+    Array.isArray(monitor.json?.traffic_peak_3d) && monitor.json.traffic_peak_3d.length === 3,
+    "monitor traffic_peak_3d should contain 3 rows"
+  );
 
   const createDoubt = await request("POST", "/v1/doubts", { raw_text: "Should I start now?", layer: "life" });
   assert(createDoubt.status === 201, `create doubt failed: ${createDoubt.status}`);
