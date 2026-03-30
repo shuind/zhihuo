@@ -25,10 +25,10 @@ export const POST = withApiRoute(
     });
 
     const result = resultRef.value;
-    if (!result) return errorJson(500, "failed to update background");
-    if (result.kind === "not_found") return errorJson(404, "space not found");
-    if (result.kind === "readonly") return errorJson(409, "space is not active");
-    if (result.kind === "invalid_length") return errorJson(400, "background must be 100-300 chars");
+    if (!result) return errorJson(500, "背景更新失败");
+    if (result.kind === "not_found") return errorJson(404, "空间不存在");
+    if (result.kind === "readonly") return errorJson(409, "空间不是进行中状态");
+    if (result.kind === "invalid_length") return errorJson(400, "背景说明需在 100-300 字之间");
 
     return okJson({
       ok: true,
