@@ -10,6 +10,17 @@ import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
+  clearOfflineState,
+  enqueueOfflineMutation,
+  isOfflineNetworkError,
+  listOfflineMutations,
+  loadOfflineSnapshot,
+  removeOfflineMutation,
+  saveOfflineSnapshot,
+  updateOfflineMutation,
+  type QueuedMutation
+} from "@/components/offline-store";
+import {
   type LayerTab,
   type LifeDoubt,
   type LifeNote,
@@ -24,6 +35,7 @@ import {
   MAX_ACTIVE_SPACES,
   OPENING_MS,
   THINKING_STORAGE_KEY,
+  createId,
   createStars,
   loadLifeStore,
   loadThinkingStore,
@@ -139,6 +151,8 @@ type ThinkingJumpTarget = {
 };
 
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
+const OFFLINE_RETRY_BASE_MS = 1200;
+const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
 
 function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
   return {
@@ -283,6 +297,8 @@ export function TimeArchive() {
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
+  const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
+  const offlineSyncingRef = useRef(false);
   const [stars] = useState(() => createStars(36));
   const freezeNoteByDoubtId = useMemo(() => {
     const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
@@ -450,7 +466,9 @@ export function TimeArchive() {
           return false;
         }
         const payload = (await response.json()) as ApiThinkingSpaceView;
-        setThinkingView(mapApiThinkingView(payload));
+        const mappedView = mapApiThinkingView(payload);
+        setThinkingView(mappedView);
+        thinkingViewCacheRef.current[mappedView.spaceId] = mappedView;
         const latestSpace = mapApiThinkingSpace(payload.root);
         setThinkingStore((prev) => {
           const index = prev.spaces.findIndex((space) => space.id === latestSpace.id);
@@ -463,9 +481,33 @@ export function TimeArchive() {
           } else {
             nextSpaces.unshift(latestSpace);
           }
+          const viewNodeIds = new Set<string>();
+          const nextNodes = prev.nodes.filter((node) => {
+            if (node.spaceId !== mappedView.spaceId) return true;
+            return false;
+          });
+          for (const track of mappedView.tracks) {
+            for (let indexWithinTrack = 0; indexWithinTrack < track.nodes.length; indexWithinTrack += 1) {
+              const node = track.nodes[indexWithinTrack];
+              if (viewNodeIds.has(node.id)) continue;
+              viewNodeIds.add(node.id);
+              nextNodes.push({
+                id: node.id,
+                spaceId: mappedView.spaceId,
+                parentNodeId: `track:${track.id}`,
+                rawQuestionText: node.questionText,
+                createdAt: node.createdAt ?? new Date().toISOString(),
+                orderIndex: indexWithinTrack,
+                isSuggested: node.isSuggested,
+                state: "normal",
+                dimension: "definition"
+              });
+            }
+          }
           return {
             ...prev,
-            spaces: nextSpaces
+            spaces: nextSpaces,
+            nodes: nextNodes
           };
         });
         return true;
@@ -477,50 +519,217 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
+  const syncQueuedMutations = useCallback(async () => {
+    if (offlineSyncingRef.current) return;
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    offlineSyncingRef.current = true;
+    try {
+      const pending = await listOfflineMutations();
+      if (!pending.length) return;
+      let touched = false;
+      for (const item of pending) {
+        const payload: Record<string, unknown> = {
+          ...(item.body ?? {}),
+          client_mutation_id: item.clientMutationId,
+          client_updated_at: item.clientUpdatedAt
+        };
+        try {
+          const response = await fetch(item.route, {
+            method: item.method,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) break;
+          if (response.ok || (response.status >= 400 && response.status < 500)) {
+            await removeOfflineMutation(item.id);
+            touched = true;
+            continue;
+          }
+          const retryCount = item.retryCount + 1;
+          const delay = Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * 2 ** retryCount);
+          await updateOfflineMutation(item.id, {
+            retryCount,
+            nextRetryAt: Date.now() + delay,
+            lastError: `status_${response.status}`
+          });
+        } catch (error) {
+          const retryCount = item.retryCount + 1;
+          const delay = Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * 2 ** retryCount);
+          await updateOfflineMutation(item.id, {
+            retryCount,
+            nextRetryAt: Date.now() + delay,
+            lastError: error instanceof Error ? error.message : String(error)
+          });
+        }
+      }
+      if (!touched) return;
+      await syncLifeFromApi(true);
+      const spaces = await syncThinkingSpacesFromApi(true);
+      await syncThinkingScratchFromApi(true);
+      const nextActive =
+        (activeSpaceId && spaces.some((space) => space.id === activeSpaceId) ? activeSpaceId : null) ?? pickDefaultSpaceId(spaces);
+      setActiveSpaceId(nextActive);
+      if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+      else setThinkingView(null);
+    } finally {
+      offlineSyncingRef.current = false;
+    }
+  }, [
+    activeSpaceId,
+    handleUnauthorized,
+    loadThinkingViewFromApi,
+    syncLifeFromApi,
+    syncThinkingScratchFromApi,
+    syncThinkingSpacesFromApi
+  ]);
+
+  const queueMutation = useCallback(
+    async (route: string, body: Record<string, unknown> | null = null) => {
+      const now = new Date().toISOString();
+      const queued: QueuedMutation = {
+        id: createId(),
+        route,
+        method: "POST",
+        body,
+        clientMutationId: createId(),
+        clientUpdatedAt: now,
+        createdAt: now,
+        retryCount: 0,
+        nextRetryAt: Date.now(),
+        lastError: null
+      };
+      await enqueueOfflineMutation(queued);
+      return queued;
+    },
+    []
+  );
+
   const createLifeDoubt = useCallback(
     async (rawText: string) => {
+      const now = new Date().toISOString();
+      const localDoubtId = createId();
+      const payload = {
+        raw_text: rawText,
+        layer: "life" as const,
+        client_entity_id: localDoubtId,
+        client_updated_at: now
+      };
       try {
         const response = await fetch("/v1/doubts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: rawText, layer: "life" })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) {
+          if (response.status >= 500) {
+            await queueMutation("/v1/doubts", payload);
+            setLifeStore((prev) => ({
+              ...prev,
+              doubts: [
+                {
+                  id: localDoubtId,
+                  rawText,
+                  firstNodePreview: null,
+                  lastNodePreview: null,
+                  createdAt: now,
+                  archivedAt: null,
+                  deletedAt: null
+                },
+                ...prev.doubts.filter((item) => item.id !== localDoubtId)
+              ]
+            }));
+            showNotice("离线已保存，联网后会自动同步");
+            return true;
+          }
           showNotice("放入失败，请稍后再试");
           return false;
         }
         void syncLifeFromApi(true);
         return true;
-      } catch {
+      } catch (error) {
+        if (isOfflineNetworkError(error)) {
+          await queueMutation("/v1/doubts", payload);
+          setLifeStore((prev) => ({
+            ...prev,
+            doubts: [
+              {
+                id: localDoubtId,
+                rawText,
+                firstNodePreview: null,
+                lastNodePreview: null,
+                createdAt: now,
+                archivedAt: null,
+                deletedAt: null
+              },
+              ...prev.doubts.filter((item) => item.id !== localDoubtId)
+            ]
+          }));
+          showNotice("离线已保存，联网后会自动同步");
+          return true;
+        }
         showNotice("网络异常，请稍后再试");
         return false;
       }
     },
-    [handleUnauthorized, showNotice, syncLifeFromApi]
+    [handleUnauthorized, queueMutation, showNotice, syncLifeFromApi]
   );
 
   const saveLifeDoubtNote = useCallback(
     async (doubtId: string, noteText: string) => {
+      const now = new Date().toISOString();
+      const payload = { note_text: noteText, client_updated_at: now };
       try {
         const response = await fetch(`/v1/doubts/${doubtId}/note`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ note_text: noteText })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) {
+          if (response.status >= 500) {
+            await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
+            setLifeStore((prev) => {
+              const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
+              const cleaned = noteText.trim();
+              const nextNotes = cleaned
+                ? [
+                    ...prev.notes.filter((item) => item.doubtId !== doubtId),
+                    { id: noteId, doubtId, noteText: cleaned, createdAt: now }
+                  ]
+                : prev.notes.filter((item) => item.doubtId !== doubtId);
+              return { ...prev, notes: nextNotes };
+            });
+            showNotice("离线已保存，联网后会自动同步");
+            return true;
+          }
           showNotice("注记保存失败");
           return false;
         }
         void syncLifeFromApi(true);
         return true;
-      } catch {
+      } catch (error) {
+        if (isOfflineNetworkError(error)) {
+          await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
+          setLifeStore((prev) => {
+            const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
+            const cleaned = noteText.trim();
+            const nextNotes = cleaned
+              ? [
+                  ...prev.notes.filter((item) => item.doubtId !== doubtId),
+                  { id: noteId, doubtId, noteText: cleaned, createdAt: now }
+                ]
+              : prev.notes.filter((item) => item.doubtId !== doubtId);
+            return { ...prev, notes: nextNotes };
+          });
+          showNotice("离线已保存，联网后会自动同步");
+          return true;
+        }
         showNotice("网络异常，请稍后再试");
         return false;
       }
     },
-    [handleUnauthorized, showNotice, syncLifeFromApi]
+    [handleUnauthorized, queueMutation, showNotice, syncLifeFromApi]
   );
 
   const pruneDerivedThinkingByDoubt = useCallback((doubtId: string) => {
@@ -578,11 +787,21 @@ export function TimeArchive() {
         }
       | { ok: false; message: string; suggestedQuestions?: string[] }
     > => {
+      const now = new Date().toISOString();
+      const localSpaceId = createId();
+      const localParkingTrackId = createId();
+      const basePayload = {
+        root_question_text: rootQuestionText,
+        source_time_doubt_id: sourceTimeDoubtId,
+        client_space_id: localSpaceId,
+        client_parking_track_id: localParkingTrackId,
+        client_updated_at: now
+      };
       try {
         const response = await fetch("/v1/thinking/spaces", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ root_question_text: rootQuestionText, source_time_doubt_id: sourceTimeDoubtId })
+          body: JSON.stringify(basePayload)
         });
         if (handleUnauthorized(response)) return { ok: false, message: "登录已失效，请重新登录" };
         if (response.status === 409) return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
@@ -616,11 +835,78 @@ export function TimeArchive() {
           suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
           questionSuggestion: typeof payload.question_suggestion === "string" ? payload.question_suggestion : null
         };
-      } catch {
-        return { ok: false, message: "网络异常，请稍后再试" };
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) {
+          return { ok: false, message: "网络异常，请稍后再试" };
+        }
+      }
+      await queueMutation("/v1/thinking/spaces", basePayload);
+      const localSpace: ThinkingSpace = {
+        id: localSpaceId,
+        userId: sessionUser?.userId ?? "offline_user",
+        rootQuestionText,
+        status: "active",
+        createdAt: now,
+        lastActivityAt: now,
+        frozenAt: null,
+        sourceTimeDoubtId: sourceTimeDoubtId ?? null
+      };
+      const localMeta: ThinkingSpaceMeta = {
+        spaceId: localSpaceId,
+        userFreezeNote: null,
+        exportVersion: 1,
+        backgroundText: null,
+        backgroundVersion: 0,
+        suggestionDecay: 0,
+        lastTrackId: null,
+        lastOrganizedOrder: -1,
+        parkingTrackId: localParkingTrackId,
+        pendingTrackId: null,
+        emptyTrackIds: [],
+        milestoneNodeIds: [],
+        trackDirectionHints: {}
+      };
+      const localView: ThinkingSpaceView = {
+        spaceId: localSpaceId,
+        currentTrackId: localParkingTrackId,
+        parkingTrackId: localParkingTrackId,
+        pendingTrackId: null,
+        milestoneNodeIds: [],
+        tracks: [
+          {
+            id: localParkingTrackId,
+            titleQuestionText: "先放这里",
+            directionHint: null,
+            isParking: true,
+            isEmpty: false,
+            nodeCount: 0,
+            nodes: []
+          }
+        ],
+        suggestedQuestions: [],
+        freezeNote: null,
+        backgroundText: null,
+        backgroundVersion: 0
+      };
+      thinkingViewCacheRef.current[localSpaceId] = localView;
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: [localSpace, ...prev.spaces.filter((item) => item.id !== localSpaceId)],
+        spaceMeta: [localMeta, ...prev.spaceMeta.filter((item) => item.spaceId !== localSpaceId)]
+      }));
+      setActiveSpaceId(localSpaceId);
+      setThinkingView(localView);
+      showNotice("离线已创建，联网后会自动同步");
+      return {
+        ok: true,
+        spaceId: localSpaceId,
+        converted: false,
+        createdAsStatement: false,
+        suggestedQuestions: [],
+        questionSuggestion: null
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
   );
 
   useEffect(() => {
@@ -628,12 +914,33 @@ export function TimeArchive() {
   }, [syncAuth]);
 
   useEffect(() => {
-    const loadedLife = loadLifeStore();
-    const loadedThinking = loadThinkingStore();
-    setLifeStore(loadedLife);
-    setThinkingStore(loadedThinking);
-    setActiveSpaceId(pickDefaultSpaceId(loadedThinking.spaces));
-    setHydrated(true);
+    let cancelled = false;
+    void (async () => {
+      const snapshot = await loadOfflineSnapshot();
+      if (cancelled) return;
+      if (snapshot) {
+        setLifeStore(snapshot.lifeStore);
+        setThinkingStore(snapshot.thinkingStore);
+        setActiveSpaceId(snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces));
+        thinkingViewCacheRef.current = snapshot.thinkingViews ?? {};
+        const initialView =
+          (snapshot.activeSpaceId ? snapshot.thinkingViews?.[snapshot.activeSpaceId] ?? null : null) ??
+          Object.values(snapshot.thinkingViews ?? {})[0] ??
+          null;
+        setThinkingView(initialView);
+        setHydrated(true);
+        return;
+      }
+      const loadedLife = loadLifeStore();
+      const loadedThinking = loadThinkingStore();
+      setLifeStore(loadedLife);
+      setThinkingStore(loadedThinking);
+      setActiveSpaceId(pickDefaultSpaceId(loadedThinking.spaces));
+      setHydrated(true);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, []);
 
   useEffect(() => {
@@ -659,6 +966,26 @@ export function TimeArchive() {
 
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser) return;
+    void syncQueuedMutations();
+  }, [authReady, hydrated, sessionUser, syncQueuedMutations]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser) return;
+    const onOnline = () => {
+      void syncQueuedMutations();
+    };
+    window.addEventListener("online", onOnline);
+    const timer = window.setInterval(() => {
+      void syncQueuedMutations();
+    }, 15000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(timer);
+    };
+  }, [authReady, hydrated, sessionUser, syncQueuedMutations]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser) return;
     void (async () => {
       const spaces = await syncThinkingSpacesFromApi(true);
       const initial = pickDefaultSpaceId(spaces);
@@ -677,6 +1004,20 @@ export function TimeArchive() {
     if (!hydrated) return;
     persistThinkingStore(thinkingStore);
   }, [hydrated, thinkingStore]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    if (thinkingView) {
+      thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
+    }
+    void saveOfflineSnapshot({
+      lifeStore,
+      thinkingStore,
+      activeSpaceId,
+      thinkingViews: thinkingViewCacheRef.current,
+      savedAt: new Date().toISOString()
+    });
+  }, [activeSpaceId, hydrated, lifeStore, thinkingStore, thinkingView]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -708,6 +1049,9 @@ export function TimeArchive() {
       setThinkingView(null);
       return;
     }
+    const cached = thinkingViewCacheRef.current[activeSpaceId] ?? null;
+    if (cached) setThinkingView(cached);
+    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     void loadThinkingViewFromApi(activeSpaceId, true);
   }, [activeSpaceId, authReady, hydrated, loadThinkingViewFromApi, sessionUser]);
 
@@ -801,21 +1145,47 @@ export function TimeArchive() {
 
   const handleCreateThinkingScratch = useCallback(
     async (rawText: string) => {
+      const now = new Date().toISOString();
+      const localScratchId = createId();
+      const payload = {
+        raw_text: rawText,
+        client_entity_id: localScratchId,
+        client_updated_at: now
+      };
       try {
         const response = await fetch("/v1/thinking/scratch", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_text: rawText })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         await syncThinkingScratchFromApi(true);
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) return false;
       }
+      await queueMutation("/v1/thinking/scratch", payload);
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: [
+          {
+            id: localScratchId,
+            rawText,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            deletedAt: null,
+            derivedSpaceId: null,
+            fedTimeDoubtId: null
+          },
+          ...prev.scratch.filter((item) => item.id !== localScratchId)
+        ]
+      }));
+      showNotice("离线已记下，联网后会自动同步");
+      return true;
     },
-    [handleUnauthorized, syncThinkingScratchFromApi]
+    [handleUnauthorized, queueMutation, showNotice, syncThinkingScratchFromApi]
   );
 
   const handleFeedThinkingScratchToTime = useCallback(
@@ -878,6 +1248,8 @@ export function TimeArchive() {
       spaceId: string,
       payload: { rawInput: string; trackId: string | null; fromSuggestion?: boolean }
     ) => {
+      const now = new Date().toISOString();
+      const localNodeId = createId();
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/questions`, {
           method: "POST",
@@ -885,7 +1257,10 @@ export function TimeArchive() {
           body: JSON.stringify({
             raw_text: payload.rawInput,
             track_id: payload.trackId,
-            from_suggestion: payload.fromSuggestion === true
+            from_suggestion: payload.fromSuggestion === true,
+            client_node_id: localNodeId,
+            client_created_at: now,
+            client_updated_at: now
           })
         });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
@@ -923,11 +1298,126 @@ export function TimeArchive() {
                 }
               : null
         };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) {
+          return { ok: false as const, message: "网络异常，请稍后再试" };
+        }
       }
+      let resolvedTrackId = payload.trackId;
+      if (!resolvedTrackId || resolvedTrackId.startsWith("track:")) {
+        const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+        const currentTrackId = currentView?.currentTrackId ?? null;
+        if (currentTrackId && currentTrackId !== currentView?.parkingTrackId) {
+          resolvedTrackId = currentTrackId;
+        } else {
+          resolvedTrackId = createId();
+        }
+      }
+      const normalizedTrackId = resolvedTrackId === "__new__" ? createId() : resolvedTrackId;
+      if (!normalizedTrackId) {
+        return { ok: false as const, message: "离线添加失败" };
+      }
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/questions`, {
+        raw_text: payload.rawInput,
+        track_id: normalizedTrackId,
+        from_suggestion: payload.fromSuggestion === true,
+        client_node_id: localNodeId,
+        client_created_at: now,
+        client_updated_at: now
+      });
+
+      const patchNode = {
+        id: localNodeId,
+        questionText: payload.rawInput.trim(),
+        noteText: null,
+        answerText: null,
+        isSuggested: payload.fromSuggestion === true,
+        isMilestone: false,
+        hasRelatedLink: false,
+        createdAt: now,
+        echoTrackId: null,
+        echoNodeId: null
+      };
+
+      const current = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      if (current) {
+        const trackExists = current.tracks.some((item) => item.id === normalizedTrackId);
+        const nextTracks = trackExists
+          ? current.tracks.map((track) => {
+              if (track.id !== normalizedTrackId) return track;
+              const nextNodes = [...track.nodes, patchNode];
+              return {
+                ...track,
+                titleQuestionText:
+                  !track.isParking && (track.titleQuestionText === "新方向" || !track.titleQuestionText.trim())
+                    ? patchNode.questionText
+                    : track.titleQuestionText,
+                nodeCount: nextNodes.length,
+                nodes: nextNodes
+              };
+            })
+          : (() => {
+              const withoutTarget = current.tracks.filter((track) => track.id !== normalizedTrackId);
+              const parkingTrack = withoutTarget.find((track) => track.id === current.parkingTrackId) ?? null;
+              const nonParkingTracks = withoutTarget.filter((track) => track.id !== current.parkingTrackId);
+              const createdTrack = {
+                id: normalizedTrackId,
+                titleQuestionText: patchNode.questionText,
+                directionHint: null,
+                isParking: false,
+                isEmpty: false,
+                nodeCount: 1,
+                nodes: [patchNode]
+              };
+              return parkingTrack ? [...nonParkingTracks, createdTrack, parkingTrack] : [...nonParkingTracks, createdTrack];
+            })();
+        const nextView: ThinkingSpaceView = {
+          ...current,
+          currentTrackId: normalizedTrackId,
+          tracks: nextTracks
+        };
+        thinkingViewCacheRef.current[spaceId] = nextView;
+        if (thinkingView?.spaceId === spaceId) setThinkingView(nextView);
+      }
+
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: prev.spaces.map((space) =>
+          space.id === spaceId
+            ? {
+                ...space,
+                lastActivityAt: now
+              }
+            : space
+        ),
+        nodes: [
+          ...prev.nodes,
+          {
+            id: localNodeId,
+            spaceId,
+            parentNodeId: `track:${normalizedTrackId}`,
+            rawQuestionText: patchNode.questionText,
+            createdAt: now,
+            orderIndex: prev.nodes.filter((node) => node.spaceId === spaceId).length,
+            isSuggested: patchNode.isSuggested,
+            state: "normal",
+            dimension: "definition"
+          }
+        ]
+      }));
+      showNotice("离线已记录，联网后会自动同步");
+      return {
+        ok: true as const,
+        converted: false,
+        noteText: null,
+        trackId: normalizedTrackId,
+        nodeId: localNodeId,
+        suggestedQuestions: [],
+        relatedCandidate: null
+      };
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
   );
 
   const handleThinkingOrganizePreview = useCallback(
@@ -1032,21 +1522,44 @@ export function TimeArchive() {
 
   const handleThinkingUpdateNode = useCallback(
     async (nodeId: string, rawQuestionText: string) => {
+      const now = new Date().toISOString();
+      const payload = { raw_question_text: rawQuestionText, client_updated_at: now };
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/update`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ raw_question_text: rawQuestionText })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) return false;
       }
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/update`, payload);
+      const nextQuestion = rawQuestionText.trim();
+      if (!nextQuestion) return false;
+      if (activeSpaceId) {
+        const current = thinkingViewCacheRef.current[activeSpaceId] ?? (thinkingView?.spaceId === activeSpaceId ? thinkingView : null);
+        if (current) {
+          const nextTracks = current.tracks.map((track) => ({
+            ...track,
+            nodes: track.nodes.map((node) => (node.id === nodeId ? { ...node, questionText: nextQuestion } : node))
+          }));
+          const nextView: ThinkingSpaceView = { ...current, tracks: nextTracks };
+          thinkingViewCacheRef.current[activeSpaceId] = nextView;
+          if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
+        }
+      }
+      setThinkingStore((prev) => ({
+        ...prev,
+        nodes: prev.nodes.map((node) => (node.id === nodeId ? { ...node, rawQuestionText: nextQuestion } : node))
+      }));
+      showNotice("离线已保存，联网后会自动同步");
+      return true;
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
   );
 
   const handleThinkingCopyNode = useCallback(
@@ -1071,21 +1584,38 @@ export function TimeArchive() {
 
   const handleThinkingSaveNodeAnswer = useCallback(
     async (nodeId: string, answerText: string | null) => {
+      const now = new Date().toISOString();
+      const payload = { answer_text: answerText, client_updated_at: now };
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/answer`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ answer_text: answerText })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
         return true;
-      } catch {
-        return false;
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) return false;
       }
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/answer`, payload);
+      if (activeSpaceId) {
+        const current = thinkingViewCacheRef.current[activeSpaceId] ?? (thinkingView?.spaceId === activeSpaceId ? thinkingView : null);
+        if (current) {
+          const nextTracks = current.tracks.map((track) => ({
+            ...track,
+            nodes: track.nodes.map((node) => (node.id === nodeId ? { ...node, answerText } : node))
+          }));
+          const nextView: ThinkingSpaceView = { ...current, tracks: nextTracks };
+          thinkingViewCacheRef.current[activeSpaceId] = nextView;
+          if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
+        }
+      }
+      showNotice("离线已保存，联网后会自动同步");
+      return true;
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
   );
 
   const handleThinkingMisplacedNode = useCallback(
@@ -1194,12 +1724,13 @@ export function TimeArchive() {
 
   const handleThinkingWriteToTime = useCallback(
     async (spaceId: string, freezeNote?: string) => {
+      const now = new Date().toISOString();
+      const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
       try {
-        const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
           method: "POST",
           headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
-          body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote }) : undefined
+          body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote, client_updated_at: now }) : JSON.stringify({ client_updated_at: now })
         });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         if (!response.ok) {
@@ -1213,11 +1744,102 @@ export function TimeArchive() {
         if (nextActive) await loadThinkingViewFromApi(nextActive, true);
         else setThinkingView(null);
         return { ok: true as const };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) {
+          return { ok: false as const, message: "网络异常，请稍后再试" };
+        }
       }
+      const currentSpace = thinkingStore.spaces.find((item) => item.id === spaceId);
+      if (!currentSpace) return { ok: false as const, message: "空间不存在" };
+      const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      const sortedNodes =
+        currentView?.tracks
+          .flatMap((track) => track.nodes.map((node) => ({ ...node, trackId: track.id })))
+          .sort((a, b) => new Date(a.createdAt ?? "").getTime() - new Date(b.createdAt ?? "").getTime()) ?? [];
+      const firstPreview = sortedNodes[0]?.questionText?.trim() || null;
+      const lastPreview = sortedNodes[sortedNodes.length - 1]?.questionText?.trim() || firstPreview;
+      const doubtId = currentSpace.sourceTimeDoubtId ?? createId();
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, normalizedNote ? { freeze_note: normalizedNote } : null);
+
+      setLifeStore((prev) => {
+        const nextDoubt: LifeDoubt = {
+          id: doubtId,
+          rawText: currentSpace.rootQuestionText,
+          firstNodePreview: firstPreview,
+          lastNodePreview: lastPreview,
+          createdAt: now,
+          archivedAt: null,
+          deletedAt: null
+        };
+        const nextDoubts = [nextDoubt, ...prev.doubts.filter((item) => item.id !== doubtId)];
+        return { ...prev, doubts: nextDoubts };
+      });
+
+      setThinkingStore((prev) => {
+        const nextSpaces = prev.spaces.map((space) =>
+          space.id === spaceId
+            ? {
+                ...space,
+                status: "hidden" as const,
+                frozenAt: now,
+                sourceTimeDoubtId: doubtId,
+                lastActivityAt: now
+              }
+            : space
+        );
+        const existingMeta = prev.spaceMeta.find((meta) => meta.spaceId === spaceId);
+        const nextMeta = existingMeta
+          ? prev.spaceMeta.map((meta) =>
+              meta.spaceId === spaceId
+                ? {
+                    ...meta,
+                    userFreezeNote: normalizedNote || meta.userFreezeNote
+                  }
+                : meta
+            )
+          : [
+              ...prev.spaceMeta,
+              {
+                spaceId,
+                userFreezeNote: normalizedNote || null,
+                exportVersion: 1,
+                backgroundText: null,
+                backgroundVersion: 0,
+                suggestionDecay: 0,
+                lastTrackId: null,
+                lastOrganizedOrder: -1,
+                parkingTrackId: createId(),
+                pendingTrackId: null,
+                emptyTrackIds: [],
+                milestoneNodeIds: [],
+                trackDirectionHints: {}
+              }
+            ];
+        return {
+          ...prev,
+          spaces: nextSpaces,
+          spaceMeta: nextMeta
+        };
+      });
+      const nextSpacesForPick = thinkingStore.spaces
+        .map((space) =>
+          space.id === spaceId
+            ? {
+                ...space,
+                status: "hidden" as const
+              }
+            : space
+        )
+        .filter((space) => space.status === "active");
+      const nextActive = nextSpacesForPick[0]?.id ?? null;
+      setActiveSpaceId(nextActive);
+      if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
+      else setThinkingView(null);
+      showNotice("离线已写入，联网后会自动同步");
+      return { ok: true as const };
     },
-    [handleUnauthorized, loadThinkingViewFromApi, syncLifeFromApi, syncThinkingSpacesFromApi]
+    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces, thinkingView]
   );
 
   const handleThinkingDeleteSpace = useCallback(
@@ -1256,16 +1878,18 @@ export function TimeArchive() {
 
   const handleThinkingRenameSpace = useCallback(
     async (spaceId: string, rootQuestionText: string) => {
+      const now = new Date().toISOString();
+      const payload = { root_question_text: rootQuestionText, client_updated_at: now };
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/rename`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ root_question_text: rootQuestionText })
+          body: JSON.stringify(payload)
         });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        const payload = (await response.json().catch(() => ({}))) as { error?: string; root_question_text?: string };
+        const responseBody = (await response.json().catch(() => ({}))) as { error?: string; root_question_text?: string };
         if (!response.ok) {
-          return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "重命名失败" };
+          return { ok: false as const, message: typeof responseBody.error === "string" ? responseBody.error : "重命名失败" };
         }
         const spaces = await syncThinkingSpacesFromApi(true);
         if (activeSpaceId && spaces.some((space) => space.id === activeSpaceId)) {
@@ -1273,13 +1897,23 @@ export function TimeArchive() {
         }
         return {
           ok: true as const,
-          rootQuestionText: typeof payload.root_question_text === "string" ? payload.root_question_text : rootQuestionText
+          rootQuestionText: typeof responseBody.root_question_text === "string" ? responseBody.root_question_text : rootQuestionText
         };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) {
+          return { ok: false as const, message: "网络异常，请稍后再试" };
+        }
       }
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/rename`, payload);
+      const nextText = rootQuestionText.trim();
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: prev.spaces.map((space) => (space.id === spaceId ? { ...space, rootQuestionText: nextText, lastActivityAt: now } : space))
+      }));
+      showNotice("离线已保存，联网后会自动同步");
+      return { ok: true as const, rootQuestionText: nextText };
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncThinkingSpacesFromApi]
   );
 
   const handleSystemExport = useCallback(
@@ -1324,6 +1958,7 @@ export function TimeArchive() {
       window.localStorage.removeItem(LIFE_STORAGE_KEY);
       window.localStorage.removeItem(THINKING_STORAGE_KEY);
     }
+    void clearOfflineState();
     void syncLifeFromApi(true);
     void syncThinkingSpacesFromApi(true);
     showNotice("本地缓存已清理");

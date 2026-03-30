@@ -547,17 +547,35 @@ export function listDoubts(db: DbState, userId: string, query: { range: string |
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
-export function createDoubt(db: DbState, userId: string, rawText: string) {
+export function createDoubt(
+  db: DbState,
+  userId: string,
+  rawText: string,
+  options?: { clientEntityId?: string | null; clientUpdatedAt?: string | null }
+) {
   const normalized = collapseWhitespace(rawText);
   if (!normalized) return null;
-  return createDoubtAt(db, userId, normalized, nowIso());
+  return createDoubtAt(db, userId, normalized, options?.clientUpdatedAt ?? nowIso(), {
+    clientEntityId: options?.clientEntityId ?? null
+  });
 }
 
-export function createDoubtAt(db: DbState, userId: string, rawText: string, createdAt: string) {
+export function createDoubtAt(
+  db: DbState,
+  userId: string,
+  rawText: string,
+  createdAt: string,
+  options?: { clientEntityId?: string | null }
+) {
   const normalized = collapseWhitespace(rawText);
   if (!normalized) return null;
+  const preferredId = typeof options?.clientEntityId === "string" && options.clientEntityId.trim() ? options.clientEntityId : null;
+  if (preferredId) {
+    const existed = db.doubts.find((item) => item.id === preferredId && item.user_id === userId && !item.deleted_at);
+    if (existed) return existed;
+  }
   const item: DoubtRecord = {
-    id: createId(),
+    id: preferredId ?? createId(),
     user_id: userId,
     raw_text: normalized,
     first_node_preview: null,
@@ -633,7 +651,12 @@ export function createThinkingSpace(
   db: DbState,
   userId: string,
   rootQuestionText: string,
-  sourceTimeDoubtId: string | null
+  sourceTimeDoubtId: string | null,
+  options?: {
+    clientSpaceId?: string | null;
+    clientParkingTrackId?: string | null;
+    clientUpdatedAt?: string | null;
+  }
 ) {
   const cleaned = collapseWhitespace(rootQuestionText);
   if (!cleaned) return null;
@@ -648,9 +671,27 @@ export function createThinkingSpace(
 
   const activeCount = userSpaces(db, userId).filter((space) => isSpaceActive(space)).length;
   if (activeCount >= MAX_ACTIVE_SPACES) return { over_limit: true as const };
-  const now = nowIso();
+  const now = options?.clientUpdatedAt ?? nowIso();
+  const preferredSpaceId =
+    typeof options?.clientSpaceId === "string" && options.clientSpaceId.trim() ? options.clientSpaceId : null;
+  const preferredParkingTrackId =
+    typeof options?.clientParkingTrackId === "string" && options.clientParkingTrackId.trim() ? options.clientParkingTrackId : null;
+  if (preferredSpaceId) {
+    const existed = db.thinking_spaces.find((space) => space.id === preferredSpaceId && space.user_id === userId);
+    if (existed) {
+      ensureMeta(db, existed.id);
+      return {
+        over_limit: false as const,
+        space: existed,
+        converted,
+        created_as_statement: createdAsStatement,
+        suggested_questions: suggestedQuestions,
+        question_suggestion: questionSuggestion
+      };
+    }
+  }
   const space: ThinkingSpaceRecord = {
-    id: createId(),
+    id: preferredSpaceId ?? createId(),
     user_id: userId,
     root_question_text: finalRootText,
     status: "active",
@@ -668,7 +709,7 @@ export function createThinkingSpace(
     suggestion_decay: 0,
     last_track_id: null,
     last_organized_order: -1,
-    parking_track_id: createId(),
+    parking_track_id: preferredParkingTrackId ?? createId(),
     pending_track_id: null,
     empty_track_ids: [],
     milestone_node_ids: [],
@@ -816,12 +857,22 @@ export function listThinkingScratch(db: DbState, userId: string) {
     .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
 }
 
-export function createThinkingScratch(db: DbState, userId: string, rawText: string) {
+export function createThinkingScratch(
+  db: DbState,
+  userId: string,
+  rawText: string,
+  options?: { clientEntityId?: string | null; clientUpdatedAt?: string | null }
+) {
   const normalized = collapseWhitespace(rawText);
   if (!normalized) return null;
-  const now = nowIso();
+  const now = options?.clientUpdatedAt ?? nowIso();
+  const preferredId = typeof options?.clientEntityId === "string" && options.clientEntityId.trim() ? options.clientEntityId : null;
+  if (preferredId) {
+    const existed = db.thinking_scratch.find((item) => item.id === preferredId && item.user_id === userId && !item.deleted_at);
+    if (existed) return existed;
+  }
   const scratch: ThinkingScratchRecord = {
-    id: createId(),
+    id: preferredId ?? createId(),
     user_id: userId,
     raw_text: normalized,
     created_at: now,
@@ -887,7 +938,12 @@ export function addQuestionToSpace(
   userId: string,
   spaceId: string,
   rawText: string,
-  options?: { track_id?: string | null; from_suggestion?: boolean }
+  options?: {
+    track_id?: string | null;
+    from_suggestion?: boolean;
+    client_node_id?: string | null;
+    client_created_at?: string | null;
+  }
 ) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
@@ -908,6 +964,23 @@ export function addQuestionToSpace(
   const suggestedQuestions = normalized.suggested_questions.slice(0, quota);
 
   const nodes = getSpaceNodes(db, spaceId);
+  const preferredNodeId =
+    typeof options?.client_node_id === "string" && options.client_node_id.trim() ? options.client_node_id : null;
+  if (preferredNodeId) {
+    const existed = nodes.find((item) => item.id === preferredNodeId);
+    if (existed) {
+      return {
+        kind: "ok" as const,
+        node: existed,
+        normalized_question_text: existed.raw_question_text,
+        converted: false,
+        note_text: existed.note_text ?? null,
+        track_id: trackIdFromNode(existed),
+        suggested_questions: suggestedQuestions,
+        related_candidate: findRelatedCandidate(nodes, existed)
+      };
+    }
+  }
   const trackMap = getTrackMap(nodes);
   const requestedTrackId = normalizeTrackId(options?.track_id ?? null);
   const pendingTrackId = getPendingTrackId(meta);
@@ -916,6 +989,9 @@ export function addQuestionToSpace(
     trackId = requestedTrackId;
     removeEmptyTrackId(meta, requestedTrackId);
   } else if (requestedTrackId && requestedTrackId !== "__new__" && trackMap.has(requestedTrackId)) {
+    trackId = requestedTrackId;
+    removeEmptyTrackId(meta, requestedTrackId);
+  } else if (requestedTrackId && requestedTrackId !== "__new__" && requestedTrackId !== parkingTrackId) {
     trackId = requestedTrackId;
     removeEmptyTrackId(meta, requestedTrackId);
   } else if (requestedTrackId === "__new__") {
@@ -929,13 +1005,13 @@ export function addQuestionToSpace(
   if (trackId === parkingTrackId) trackId = createId();
 
   const node: ThinkingNodeRecord = {
-    id: createId(),
+    id: preferredNodeId ?? createId(),
     space_id: spaceId,
     parent_node_id: toTrackParentId(trackId),
     raw_question_text: normalized.text,
     note_text: normalized.raw_note,
     answer_text: null,
-    created_at: nowIso(),
+    created_at: options?.client_created_at ?? nowIso(),
     order_index: maxOrderIndex(nodes) + 1,
     is_suggested: Boolean(options?.from_suggestion),
     state: "normal",
