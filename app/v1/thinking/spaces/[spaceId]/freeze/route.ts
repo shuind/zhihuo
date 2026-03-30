@@ -1,37 +1,47 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { writeSpaceToTime } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
 
-// Legacy alias. Frontend should call /write-to-time instead.
 export const POST = withApiRoute(
   "thinking.spaces.freeze",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ freeze_note?: string }>(request);
+    const body = await parseJsonBody<{ freeze_note?: string; client_mutation_id?: string; client_updated_at?: string }>(request);
     const freezeNote = typeof body?.freeze_note === "string" ? body.freeze_note : undefined;
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
     let kind: "not_found" | "readonly" | "invalid" | "ok" = "not_found";
-    let response: { space_id: string; status: "hidden"; written_at: string } | null = null;
+    const responseRef: { value: { space_id: string; status: "hidden"; written_at: string } | null } = { value: null };
 
     await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
       const result = writeSpaceToTime(db, userId, params.spaceId, freezeNote);
       kind = result.kind;
       if (result.kind !== "ok") return;
-      response = {
+      responseRef.value = {
         space_id: result.space.id,
         status: "hidden",
         written_at: result.doubt.created_at
       };
     });
 
-    if (kind === "not_found" || !response) return errorJson(404, "空间不存在");
-    if (kind === "readonly") return errorJson(409, "该空间已写入时间");
-    if (kind === "invalid") return errorJson(400, "写入时间失败");
-    return okJson(response);
+    const response = responseRef.value;
+    if (kind === "not_found" || !response) return errorJson(404, "space not found");
+    if (kind === "readonly") return errorJson(409, "space has already been settled");
+    if (kind === "invalid") return errorJson(400, "failed to settle to time");
+
+    return okJson({
+      space_id: response.space_id,
+      status: response.status,
+      written_at: response.written_at,
+      updated_at: response.written_at ?? clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
+    });
   },
   { rateLimit: { bucket: "thinking-space-freeze", max: 30, windowMs: 60 * 1000 } }
 );

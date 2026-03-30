@@ -1,10 +1,11 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateTrackDirectionHint } from "@/lib/server/store";
 import type { TrackDirectionHint } from "@/lib/server/types";
+import { nowIso } from "@/lib/server/utils";
 
 function normalizeDirectionHint(input: string | null | undefined): TrackDirectionHint | null | false {
   if (input == null) return null;
@@ -24,8 +25,15 @@ function normalizeDirectionHint(input: string | null | undefined): TrackDirectio
 export const POST = withApiRoute(
   "thinking.spaces.track_direction",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ track_id?: string; direction_hint?: string | null }>(request);
-    if (!body || typeof body.track_id !== "string") return errorJson(400, "缺少 track_id");
+    const body = await parseJsonBody<{
+      track_id?: string;
+      direction_hint?: string | null;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
+    if (!body || typeof body.track_id !== "string") return errorJson(400, "track_id is required");
+
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
     const trackIdInput = body.track_id;
 
     const userId = getUserId(request);
@@ -35,7 +43,7 @@ export const POST = withApiRoute(
     let trackId: string | null = null;
     let directionHint: string | null = null;
     const normalizedHint = normalizeDirectionHint(body.direction_hint);
-    if (normalizedHint === false) return errorJson(400, "方向提示无效");
+    if (normalizedHint === false) return errorJson(400, "invalid direction_hint");
 
     await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
       const result = updateTrackDirectionHint(db, userId, params.spaceId, trackIdInput, normalizedHint);
@@ -46,14 +54,16 @@ export const POST = withApiRoute(
       }
     });
 
-    if (!kind || kind === "not_found") return errorJson(404, "空间不存在");
-    if (kind === "track_not_found") return errorJson(404, "方向不存在");
-    if (kind === "invalid_hint") return errorJson(400, "方向提示无效");
+    if (!kind || kind === "not_found") return errorJson(404, "space not found");
+    if (kind === "track_not_found") return errorJson(404, "track not found");
+    if (kind === "invalid_hint") return errorJson(400, "invalid direction_hint");
 
     return okJson({
       ok: true,
       track_id: trackId,
-      direction_hint: directionHint
+      direction_hint: directionHint,
+      updated_at: clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
     });
   },
   { rateLimit: { bucket: "thinking-track-direction", max: 80, windowMs: 60 * 1000 } }

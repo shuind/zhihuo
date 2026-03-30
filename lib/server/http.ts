@@ -33,3 +33,20 @@ export async function parseJsonBody<T>(request: NextRequest): Promise<T | null> 
     return null;
   }
 }
+
+export type ClientMutationMeta = {
+  clientMutationId: string | null;
+  clientUpdatedAt: string | null;
+};
+
+export function extractClientMutationMeta(body: unknown): ClientMutationMeta {
+  if (!body || typeof body !== "object") {
+    return { clientMutationId: null, clientUpdatedAt: null };
+  }
+  const record = body as Record<string, unknown>;
+  const clientMutationId =
+    typeof record.client_mutation_id === "string" && record.client_mutation_id.trim() ? record.client_mutation_id : null;
+  const clientUpdatedAt =
+    typeof record.client_updated_at === "string" && record.client_updated_at.trim() ? record.client_updated_at : null;
+  return { clientMutationId, clientUpdatedAt };
+}

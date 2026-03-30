@@ -1,14 +1,21 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateSpaceRootQuestion } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
 
 export const POST = withApiRoute(
   "thinking.spaces.rename",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ root_question_text?: string }>(request);
+    const body = await parseJsonBody<{
+      root_question_text?: string;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
@@ -26,10 +33,16 @@ export const POST = withApiRoute(
       }
     });
 
-    if (kind === "not_found") return errorJson(404, "空间不存在");
-    if (kind === "invalid_empty") return errorJson(400, "空间名不能为空");
-    if (kind === "invalid_length") return errorJson(400, "空间名不能超过 220 字");
-    return okJson({ ok: true, root_question_text: rootQuestionText, changed });
+    if (kind === "not_found") return errorJson(404, "space not found");
+    if (kind === "invalid_empty") return errorJson(400, "space title cannot be empty");
+    if (kind === "invalid_length") return errorJson(400, "space title exceeds 220 chars");
+    return okJson({
+      ok: true,
+      root_question_text: rootQuestionText,
+      changed,
+      updated_at: clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
+    });
   },
   { rateLimit: { bucket: "thinking-space-rename", max: 30, windowMs: 60 * 1000 } }
 );

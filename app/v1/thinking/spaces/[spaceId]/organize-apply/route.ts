@@ -1,9 +1,10 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { organizeSpaceApply } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
 
 type ApplyMove = {
   node_id?: string;
@@ -13,7 +14,14 @@ type ApplyMove = {
 export const POST = withApiRoute(
   "thinking.spaces.organize_apply",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ from_order_index?: number; moves?: ApplyMove[] }>(request);
+    const body = await parseJsonBody<{
+      from_order_index?: number;
+      moves?: ApplyMove[];
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
+
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
     const rawMoves = Array.isArray(body?.moves) ? body.moves : [];
     const moves = rawMoves
       .map((item) => ({
@@ -42,11 +50,13 @@ export const POST = withApiRoute(
       movedNodeIds = result.moved_node_ids;
     });
 
-    if (!found) return errorJson(404, "空间不存在");
-    if (readonly) return errorJson(409, "空间不是进行中状态");
+    if (!found) return errorJson(404, "space not found");
+    if (readonly) return errorJson(409, "space is not active");
     return okJson({
       moved_count: movedCount,
-      moved_node_ids: movedNodeIds
+      moved_node_ids: movedNodeIds,
+      updated_at: clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
     });
   },
   { rateLimit: { bucket: "thinking-space-organize-apply", max: 90, windowMs: 60 * 1000 } }

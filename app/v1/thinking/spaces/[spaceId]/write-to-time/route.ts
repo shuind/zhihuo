@@ -1,15 +1,18 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { writeSpaceToTime } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
 
 export const POST = withApiRoute(
   "thinking.spaces.write_to_time",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ freeze_note?: string }>(request);
+    const body = await parseJsonBody<{ freeze_note?: string; client_mutation_id?: string; client_updated_at?: string }>(request);
     const freezeNote = typeof body?.freeze_note === "string" ? body.freeze_note : undefined;
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
@@ -27,15 +30,18 @@ export const POST = withApiRoute(
       writtenAt = written.doubt.created_at;
     });
 
-    if (resultKind === "readonly") return errorJson(409, "该空间已写入时间");
-    if (resultKind === "invalid") return errorJson(400, "写入时间失败");
-    if (resultKind === "not_found" || !spaceId || !doubtId || !writtenAt) return errorJson(404, "空间不存在");
+    if (resultKind === "readonly") return errorJson(409, "space has already been settled");
+    if (resultKind === "invalid") return errorJson(400, "failed to settle to time");
+    if (resultKind === "not_found" || !spaceId || !doubtId || !writtenAt) return errorJson(404, "space not found");
+
     return okJson({
       ok: true,
       space_id: spaceId,
       doubt_id: doubtId,
       written_at: writtenAt,
-      status: "hidden"
+      status: "hidden",
+      updated_at: writtenAt ?? clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
     });
   },
   { rateLimit: { bucket: "thinking-space-write-to-time", max: 30, windowMs: 60 * 1000 } }

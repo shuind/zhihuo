@@ -1,16 +1,23 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { runPgTransaction, updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateNodeQuestion } from "@/lib/server/store";
-import { classifyDimension, normalizeQuestionInput } from "@/lib/server/utils";
+import { classifyDimension, normalizeQuestionInput, nowIso } from "@/lib/server/utils";
 
 export const POST = withApiRoute(
   "thinking.nodes.update",
   async (request: NextRequest, { params }: { params: { nodeId: string } }) => {
-    const body = await parseJsonBody<{ raw_question_text?: string }>(request);
-    if (typeof body?.raw_question_text !== "string") return errorJson(400, "缺少 raw_question_text");
+    const body = await parseJsonBody<{
+      raw_question_text?: string;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
+
+    if (typeof body?.raw_question_text !== "string") return errorJson(400, "raw_question_text is required");
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+    const responseUpdatedAt = clientUpdatedAt ?? nowIso();
     const rawQuestionText = body.raw_question_text;
 
     const userId = getUserId(request);
@@ -45,10 +52,16 @@ export const POST = withApiRoute(
     });
 
     if (pgResult) {
-      if (pgResult.kind === "not_found") return errorJson(404, "节点不存在");
-      if (pgResult.kind === "readonly") return errorJson(409, "空间不是进行中状态");
-      if (pgResult.kind === "invalid") return errorJson(400, "输入过短");
-      return okJson({ ok: true, node_id: params.nodeId, raw_question_text: pgResult.questionText });
+      if (pgResult.kind === "not_found") return errorJson(404, "node not found");
+      if (pgResult.kind === "readonly") return errorJson(409, "space is not active");
+      if (pgResult.kind === "invalid") return errorJson(400, "input too short");
+      return okJson({
+        ok: true,
+        node_id: params.nodeId,
+        raw_question_text: pgResult.questionText,
+        updated_at: responseUpdatedAt,
+        client_mutation_id: clientMutationId
+      });
     }
 
     let kind: "ok" | "not_found" | "readonly" | "invalid" = "not_found";
@@ -59,10 +72,16 @@ export const POST = withApiRoute(
       if (result.kind === "ok") questionText = result.node.raw_question_text;
     });
 
-    if (kind === "not_found") return errorJson(404, "节点不存在");
-    if (kind === "readonly") return errorJson(409, "空间不是进行中状态");
-    if (kind === "invalid") return errorJson(400, "输入过短");
-    return okJson({ ok: true, node_id: params.nodeId, raw_question_text: questionText });
+    if (kind === "not_found") return errorJson(404, "node not found");
+    if (kind === "readonly") return errorJson(409, "space is not active");
+    if (kind === "invalid") return errorJson(400, "input too short");
+    return okJson({
+      ok: true,
+      node_id: params.nodeId,
+      raw_question_text: questionText,
+      updated_at: responseUpdatedAt,
+      client_mutation_id: clientMutationId
+    });
   },
   { rateLimit: { bucket: "thinking-node-update", max: 120, windowMs: 60 * 1000 } }
 );

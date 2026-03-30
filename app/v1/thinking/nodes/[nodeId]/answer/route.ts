@@ -1,18 +1,23 @@
-import { NextRequest } from "next/server";
+﻿import { NextRequest } from "next/server";
 
 import { runPgTransaction, updateDbScoped } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateNodeAnswer } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
 
 export const POST = withApiRoute(
   "thinking.nodes.answer",
   async (request: NextRequest, { params }: { params: { nodeId: string } }) => {
-    const body = await parseJsonBody<{ answer_text?: string | null }>(request);
+    const body = await parseJsonBody<{ answer_text?: string | null; client_mutation_id?: string; client_updated_at?: string }>(request);
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
     const normalizedAnswer = typeof body?.answer_text === "string" ? body.answer_text.trim() || null : null;
+    const responseUpdatedAt = clientUpdatedAt ?? nowIso();
+
     const pgResult = await runPgTransaction("thinking.nodes.answer.sql", async (client) => {
       const hasAnswerColumn = await client.query<{ exists: number }>(
         `SELECT 1 as exists
@@ -42,9 +47,15 @@ export const POST = withApiRoute(
     });
 
     if (pgResult && pgResult.kind !== "fallback") {
-      if (pgResult.kind === "not_found") return errorJson(404, "节点不存在");
-      if (pgResult.kind === "readonly") return errorJson(409, "空间不是进行中状态");
-      return okJson({ ok: true, node_id: params.nodeId, answer_text: pgResult.answerText });
+      if (pgResult.kind === "not_found") return errorJson(404, "node not found");
+      if (pgResult.kind === "readonly") return errorJson(409, "space is not active");
+      return okJson({
+        ok: true,
+        node_id: params.nodeId,
+        answer_text: pgResult.answerText,
+        updated_at: responseUpdatedAt,
+        client_mutation_id: clientMutationId
+      });
     }
 
     let found = false;
@@ -61,9 +72,15 @@ export const POST = withApiRoute(
       answerText = result.node.answer_text ?? null;
     });
 
-    if (!found) return errorJson(404, "节点不存在");
-    if (readonly) return errorJson(409, "空间不是进行中状态");
-    return okJson({ ok: true, node_id: params.nodeId, answer_text: answerText });
+    if (!found) return errorJson(404, "node not found");
+    if (readonly) return errorJson(409, "space is not active");
+    return okJson({
+      ok: true,
+      node_id: params.nodeId,
+      answer_text: answerText,
+      updated_at: responseUpdatedAt,
+      client_mutation_id: clientMutationId
+    });
   },
   { rateLimit: { bucket: "thinking-node-answer", max: 120, windowMs: 60 * 1000 } }
 );
