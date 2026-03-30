@@ -53,7 +53,7 @@ export const POST = withApiRoute(
   "system.import.validate",
   async (request: NextRequest) => {
     const body = await parseJsonBody<ValidateBody>(request);
-  if (!body) return errorJson(400, "无效请求体");
+    if (!body) return errorJson(400, "无效请求体");
 
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();

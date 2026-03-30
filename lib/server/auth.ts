@@ -3,6 +3,7 @@ import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 
 const AUTH_COOKIE = "zhihuo_session";
 const DEFAULT_AUTH_SECRET = "zhihuo_dev_only_change_me";
 const SESSION_TTL_DAYS = 30;
+let warnedDefaultSecret = false;
 
 type SessionPayload = {
   uid: string;
@@ -10,7 +11,18 @@ type SessionPayload = {
 };
 
 function getSecret() {
-  return process.env.AUTH_SECRET || DEFAULT_AUTH_SECRET;
+  const configured = process.env.AUTH_SECRET?.trim();
+  if (configured) return configured;
+  const isCi = process.env.CI === "true";
+  if (process.env.NODE_ENV === "production" && !isCi) {
+    throw new Error("AUTH_SECRET is required in production");
+  }
+  if (!warnedDefaultSecret) {
+    warnedDefaultSecret = true;
+    const reason = isCi ? "ci fallback" : "development fallback";
+    console.warn(`[auth] AUTH_SECRET is not set, using ${reason} secret`);
+  }
+  return DEFAULT_AUTH_SECRET;
 }
 
 function base64UrlEncode(value: string) {

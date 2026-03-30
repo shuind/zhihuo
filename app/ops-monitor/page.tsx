@@ -88,7 +88,7 @@ export default function OpsMonitorPage() {
   }, [data]);
 
   return (
-    <main className="min-h-screen bg-slate-950 px-6 py-8 pb-24 text-slate-100 md:px-10">
+    <main className="h-[100dvh] overflow-y-auto overscroll-contain bg-slate-950 px-6 py-8 pb-32 text-slate-100 md:px-10">
       <div className="mx-auto max-w-6xl space-y-6">
         <header className="flex flex-wrap items-center justify-between gap-4">
           <div>

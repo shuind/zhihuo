@@ -6,7 +6,8 @@ export function getUserId(request: NextRequest) {
   const sessionToken = request.cookies.get(getAuthCookieName())?.value;
   const session = readSessionToken(sessionToken);
   if (session?.uid) return session.uid;
-  if (process.env.ALLOW_USER_HEADER === "true") {
+  const allowUserHeader = process.env.ALLOW_USER_HEADER === "true" && process.env.NODE_ENV !== "production";
+  if (allowUserHeader) {
     const fromHeader = request.headers.get("x-user-id")?.trim();
     if (fromHeader) return fromHeader;
   }

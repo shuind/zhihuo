@@ -28,10 +28,22 @@ const DEFAULT_MONITOR_RESPONSE_BYTES = Math.max(
   1,
   Number.parseInt(process.env.MONITOR_DEFAULT_RESPONSE_BYTES ?? "12288", 10) || 12288
 );
+const MONITOR_RETENTION_DAYS = Math.max(
+  1,
+  Number.parseInt(process.env.MONITOR_TRAFFIC_RETENTION_DAYS ?? "7", 10) || 7
+);
+const MONITOR_PRUNE_INTERVAL_MS = Math.max(
+  60_000,
+  Number.parseInt(process.env.MONITOR_TRAFFIC_PRUNE_INTERVAL_MS ?? "1800000", 10) || 1_800_000
+);
 const THINKING_DIMENSIONS: ReadonlySet<DimensionKey> = new Set(["definition", "resource", "risk", "value", "path", "evidence"]);
 
 function normalizeDimension(input: unknown): DimensionKey {
   return THINKING_DIMENSIONS.has(input as DimensionKey) ? (input as DimensionKey) : "definition";
+}
+
+function normalizeVerificationPurpose(input: unknown): "register" | "reset_password" {
+  return input === "reset_password" ? "reset_password" : "register";
 }
 
 const EMPTY_DB: DbState = {
@@ -51,6 +63,7 @@ const EMPTY_DB: DbState = {
 let writeQueue: Promise<void> = Promise.resolve();
 let pgPool: Pool | null = null;
 let pgReadyPromise: Promise<void> | null = null;
+let monitorLastPruneAt = 0;
 
 function shouldUsePostgres() {
   return Boolean(process.env.DATABASE_URL);
@@ -149,6 +162,7 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
     email_verification_codes: Array.isArray(input?.email_verification_codes)
       ? input.email_verification_codes.map((row) => ({
           ...row,
+          purpose: normalizeVerificationPurpose(row.purpose),
           consumed_at: typeof row.consumed_at === "string" ? row.consumed_at : null,
           send_count: Number.isFinite(row.send_count) ? Number(row.send_count) : 1
         }))
@@ -313,7 +327,7 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
     ),
     client.query(
-      "SELECT id, space_id, parent_node_id, raw_question_text, note_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+      "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
     ),
     client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox"),
     client.query("SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"),
@@ -338,7 +352,8 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       ...row,
       order_index: Number(row.order_index),
       is_suggested: Boolean(row.is_suggested),
-      note_text: typeof row.note_text === "string" ? row.note_text : null
+      note_text: typeof row.note_text === "string" ? row.note_text : null,
+      answer_text: typeof row.answer_text === "string" ? row.answer_text : null
     })) as DbState["thinking_nodes"],
     thinking_inbox: inbox.rows as DbState["thinking_inbox"],
     thinking_scratch: scratch.rows.map((row) => ({
@@ -386,30 +401,12 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     })) as DbState["thinking_node_links"],
     email_verification_codes: emailVerificationCodes.rows.map((row) => ({
       ...row,
-      purpose: "register" as const,
+      purpose: normalizeVerificationPurpose(row.purpose),
       consumed_at: typeof row.consumed_at === "string" ? row.consumed_at : null,
       send_count: Number(row.send_count ?? 1)
     })) as DbState["email_verification_codes"],
     audit_logs: auditLogs.rows as DbState["audit_logs"]
   });
-}
-
-async function replaceTable(client: PoolClient, table: string, columns: string[], rows: unknown[][]) {
-  await client.query(`DELETE FROM ${table}`);
-  if (!rows.length) return;
-
-  const placeholders: string[] = [];
-  const params: unknown[] = [];
-  for (let rowIndex = 0; rowIndex < rows.length; rowIndex += 1) {
-    const row = rows[rowIndex];
-    const rowPlaceholders: string[] = [];
-    for (let columnIndex = 0; columnIndex < columns.length; columnIndex += 1) {
-      params.push(row[columnIndex] ?? null);
-      rowPlaceholders.push(`$${params.length}`);
-    }
-    placeholders.push(`(${rowPlaceholders.join(", ")})`);
-  }
-  await client.query(`INSERT INTO ${table} (${columns.join(", ")}) VALUES ${placeholders.join(", ")}`, params);
 }
 
 async function upsertTable(
@@ -454,156 +451,231 @@ async function deleteRowsNotInSet(client: PoolClient, table: string, idColumn: s
 }
 
 async function persistDbToPg(client: PoolClient, db: DbState) {
-  await replaceTable(
-    client,
+  type FullSyncPlan = {
+    table: string;
+    idColumn: string;
+    columns: string[];
+    conflictColumns: string[];
+    rows: unknown[][];
+  };
+
+  const plans: FullSyncPlan[] = [
+    {
+      table: "users",
+      idColumn: "id",
+      columns: ["id", "email", "password_hash", "created_at", "deleted_at"],
+      conflictColumns: ["id"],
+      rows: db.users.map((row) => [row.id, row.email, row.password_hash, row.created_at, row.deleted_at])
+    },
+    {
+      table: "doubts",
+      idColumn: "id",
+      columns: ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+      conflictColumns: ["id"],
+      rows: db.doubts.map((row) => [
+        row.id,
+        row.user_id,
+        row.raw_text,
+        row.first_node_preview ?? null,
+        row.last_node_preview ?? null,
+        row.created_at,
+        row.archived_at,
+        row.deleted_at
+      ])
+    },
+    {
+      table: "doubt_notes",
+      idColumn: "id",
+      columns: ["id", "doubt_id", "note_text", "created_at"],
+      conflictColumns: ["id"],
+      rows: db.doubt_notes.map((row) => [row.id, row.doubt_id, row.note_text, row.created_at])
+    },
+    {
+      table: "thinking_spaces",
+      idColumn: "id",
+      columns: ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
+      conflictColumns: ["id"],
+      rows: db.thinking_spaces.map((row) => [
+        row.id,
+        row.user_id,
+        row.root_question_text,
+        row.status,
+        row.created_at,
+        row.frozen_at,
+        row.source_time_doubt_id
+      ])
+    },
+    {
+      table: "thinking_space_meta",
+      idColumn: "space_id",
+      columns: [
+        "space_id",
+        "user_freeze_note",
+        "export_version",
+        "background_text",
+        "background_version",
+        "suggestion_decay",
+        "last_track_id",
+        "last_organized_order",
+        "parking_track_id",
+        "pending_track_id",
+        "empty_track_ids",
+        "milestone_node_ids",
+        "track_direction_hints"
+      ],
+      conflictColumns: ["space_id"],
+      rows: db.thinking_space_meta.map((row) => [
+        row.space_id,
+        row.user_freeze_note,
+        row.export_version,
+        row.background_text ?? null,
+        row.background_version ?? 0,
+        row.suggestion_decay ?? 0,
+        row.last_track_id ?? null,
+        row.last_organized_order ?? -1,
+        row.parking_track_id ?? null,
+        row.pending_track_id ?? null,
+        row.empty_track_ids ?? [],
+        row.milestone_node_ids ?? [],
+        row.track_direction_hints ?? {}
+      ])
+    },
+    {
+      table: "thinking_nodes",
+      idColumn: "id",
+      columns: [
+        "id",
+        "space_id",
+        "parent_node_id",
+        "raw_question_text",
+        "note_text",
+        "answer_text",
+        "created_at",
+        "order_index",
+        "is_suggested",
+        "state",
+        "dimension"
+      ],
+      conflictColumns: ["id"],
+      rows: db.thinking_nodes.map((row) => [
+        row.id,
+        row.space_id,
+        row.parent_node_id,
+        row.raw_question_text,
+        row.note_text ?? null,
+        row.answer_text ?? null,
+        row.created_at,
+        row.order_index,
+        row.is_suggested,
+        row.state,
+        row.dimension
+      ])
+    },
+    {
+      table: "thinking_inbox",
+      idColumn: "id",
+      columns: ["id", "space_id", "raw_text", "created_at"],
+      conflictColumns: ["id"],
+      rows: db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
+    },
+    {
+      table: "thinking_scratch",
+      idColumn: "id",
+      columns: ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
+      conflictColumns: ["id"],
+      rows: db.thinking_scratch.map((row) => [
+        row.id,
+        row.user_id,
+        row.raw_text,
+        row.created_at,
+        row.updated_at,
+        row.archived_at,
+        row.deleted_at,
+        row.derived_space_id,
+        row.fed_time_doubt_id
+      ])
+    },
+    {
+      table: "thinking_node_links",
+      idColumn: "id",
+      columns: ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
+      conflictColumns: ["id"],
+      rows: db.thinking_node_links.map((row) => [
+        row.id,
+        row.space_id,
+        row.source_node_id,
+        row.target_node_id,
+        row.link_type,
+        row.score,
+        row.created_at
+      ])
+    },
+    {
+      table: "email_verification_codes",
+      idColumn: "id",
+      columns: ["id", "email", "purpose", "code_hash", "expires_at", "consumed_at", "created_at", "last_sent_at", "send_count"],
+      conflictColumns: ["id"],
+      rows: db.email_verification_codes.map((row) => [
+        row.id,
+        row.email,
+        row.purpose,
+        row.code_hash,
+        row.expires_at,
+        row.consumed_at,
+        row.created_at,
+        row.last_sent_at,
+        row.send_count
+      ])
+    },
+    {
+      table: "audit_logs",
+      idColumn: "id",
+      columns: ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
+      conflictColumns: ["id"],
+      rows: db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
+    }
+  ];
+
+  const planByTable = new Map(plans.map((plan) => [plan.table, plan]));
+
+  const upsertOrder = [
     "users",
-    ["id", "email", "password_hash", "created_at", "deleted_at"],
-    db.users.map((row) => [row.id, row.email, row.password_hash, row.created_at, row.deleted_at])
-  );
-  await replaceTable(
-    client,
     "doubts",
-    ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
-    db.doubts.map((row) => [
-      row.id,
-      row.user_id,
-      row.raw_text,
-      row.first_node_preview ?? null,
-      row.last_node_preview ?? null,
-      row.created_at,
-      row.archived_at,
-      row.deleted_at
-    ])
-  );
-  await replaceTable(
-    client,
-    "doubt_notes",
-    ["id", "doubt_id", "note_text", "created_at"],
-    db.doubt_notes.map((row) => [row.id, row.doubt_id, row.note_text, row.created_at])
-  );
-  await replaceTable(
-    client,
     "thinking_spaces",
-    ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
-    db.thinking_spaces.map((row) => [
-      row.id,
-      row.user_id,
-      row.root_question_text,
-      row.status,
-      row.created_at,
-      row.frozen_at,
-      row.source_time_doubt_id
-    ])
-  );
-  await replaceTable(
-    client,
-    "thinking_space_meta",
-    [
-      "space_id",
-      "user_freeze_note",
-      "export_version",
-      "background_text",
-      "background_version",
-      "suggestion_decay",
-      "last_track_id",
-      "last_organized_order",
-      "parking_track_id",
-      "pending_track_id",
-      "empty_track_ids",
-      "milestone_node_ids",
-      "track_direction_hints"
-    ],
-    db.thinking_space_meta.map((row) => [
-      row.space_id,
-      row.user_freeze_note,
-      row.export_version,
-      row.background_text ?? null,
-      row.background_version ?? 0,
-      row.suggestion_decay ?? 0,
-      row.last_track_id ?? null,
-      row.last_organized_order ?? -1,
-      row.parking_track_id ?? null,
-      row.pending_track_id ?? null,
-      row.empty_track_ids ?? [],
-      row.milestone_node_ids ?? [],
-      row.track_direction_hints ?? {}
-    ])
-  );
-  await replaceTable(
-    client,
-    "thinking_nodes",
-    ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
-    db.thinking_nodes.map((row) => [
-      row.id,
-      row.space_id,
-      row.parent_node_id,
-      row.raw_question_text,
-      row.note_text ?? null,
-      row.created_at,
-      row.order_index,
-      row.is_suggested,
-      row.state,
-      row.dimension
-    ])
-  );
-  await replaceTable(
-    client,
-    "thinking_inbox",
-    ["id", "space_id", "raw_text", "created_at"],
-    db.thinking_inbox.map((row) => [row.id, row.space_id, row.raw_text, row.created_at])
-  );
-  await replaceTable(
-    client,
     "thinking_scratch",
-    ["id", "user_id", "raw_text", "created_at", "updated_at", "archived_at", "deleted_at", "derived_space_id", "fed_time_doubt_id"],
-    db.thinking_scratch.map((row) => [
-      row.id,
-      row.user_id,
-      row.raw_text,
-      row.created_at,
-      row.updated_at,
-      row.archived_at,
-      row.deleted_at,
-      row.derived_space_id,
-      row.fed_time_doubt_id
-    ])
-  );
-  await replaceTable(
-    client,
-    "thinking_node_links",
-    ["id", "space_id", "source_node_id", "target_node_id", "link_type", "score", "created_at"],
-    db.thinking_node_links.map((row) => [
-      row.id,
-      row.space_id,
-      row.source_node_id,
-      row.target_node_id,
-      row.link_type,
-      row.score,
-      row.created_at
-    ])
-  );
-  await replaceTable(
-    client,
-    "email_verification_codes",
-    ["id", "email", "purpose", "code_hash", "expires_at", "consumed_at", "created_at", "last_sent_at", "send_count"],
-    db.email_verification_codes.map((row) => [
-      row.id,
-      row.email,
-      row.purpose,
-      row.code_hash,
-      row.expires_at,
-      row.consumed_at,
-      row.created_at,
-      row.last_sent_at,
-      row.send_count
-    ])
-  );
-  await replaceTable(
-    client,
     "audit_logs",
-    ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
-    db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
-  );
+    "email_verification_codes",
+    "doubt_notes",
+    "thinking_space_meta",
+    "thinking_nodes",
+    "thinking_inbox",
+    "thinking_node_links"
+  ];
+  for (const table of upsertOrder) {
+    const plan = planByTable.get(table);
+    if (!plan) continue;
+    await upsertTable(client, plan.table, plan.columns, plan.rows, plan.conflictColumns);
+  }
+
+  const deleteOrder = [
+    "thinking_node_links",
+    "thinking_inbox",
+    "thinking_nodes",
+    "thinking_space_meta",
+    "doubt_notes",
+    "thinking_spaces",
+    "doubts",
+    "thinking_scratch",
+    "email_verification_codes",
+    "audit_logs",
+    "users"
+  ];
+  for (const table of deleteOrder) {
+    const plan = planByTable.get(table);
+    if (!plan) continue;
+    const ids = [...new Set(plan.rows.map((row) => String(row[0])))];
+    await deleteRowsNotInSet(client, plan.table, plan.idColumn, ids);
+  }
 }
 
 type ScopedTable =
@@ -706,13 +778,14 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     }
     if (table === "thinking_nodes") {
       const { rows } = await client.query(
-        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
       );
       state.thinking_nodes = rows.map((row) => ({
         ...row,
         order_index: Number(row.order_index),
         is_suggested: Boolean(row.is_suggested),
-        note_text: typeof row.note_text === "string" ? row.note_text : null
+        note_text: typeof row.note_text === "string" ? row.note_text : null,
+        answer_text: typeof row.answer_text === "string" ? row.answer_text : null
       })) as DbState["thinking_nodes"];
       continue;
     }
@@ -854,7 +927,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       planByScope.set(item, {
         table: "thinking_nodes",
         idColumn: "id",
-        columns: ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
+        columns: ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "answer_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
         conflictColumns: ["id"],
         rows: db.thinking_nodes.map((row) => [
           row.id,
@@ -862,6 +935,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.parent_node_id,
           row.raw_question_text,
           row.note_text ?? null,
+          row.answer_text ?? null,
           row.created_at,
           row.order_index,
           row.is_suggested,
@@ -1009,6 +1083,7 @@ export async function runPgTransaction<T>(
     const client = await pool.connect();
     try {
       await client.query("BEGIN");
+      await client.query("SELECT pg_advisory_xact_lock($1)", [DB_LOCK_KEY]);
       const result = await operation(client);
       await client.query("COMMIT");
       return result;
@@ -1032,10 +1107,20 @@ export async function recordApiMinuteStat(args: { route: string; status: number;
     typeof args.responseBytes === "number" && Number.isFinite(args.responseBytes) && args.responseBytes > 0
       ? Math.round(args.responseBytes)
       : DEFAULT_MONITOR_RESPONSE_BYTES;
+  const now = Date.now();
+  const shouldPrune = now - monitorLastPruneAt >= MONITOR_PRUNE_INTERVAL_MS;
 
   await withPgRetry("recordApiMinuteStat", async () => {
     const client = await pool.connect();
     try {
+      if (shouldPrune) {
+        await client.query(
+          `DELETE FROM api_request_minute_stats
+           WHERE date_key < to_char((now() AT TIME ZONE 'Asia/Shanghai') - ($1::int * INTERVAL '1 day'), 'YYYY-MM-DD')`,
+          [MONITOR_RETENTION_DAYS]
+        );
+        monitorLastPruneAt = now;
+      }
       await client.query(
         `INSERT INTO api_request_minute_stats (
            minute_key, date_key, route, status_class, request_count, response_bytes_sum, updated_at

@@ -22,6 +22,11 @@
       timeout: 5s
       retries: 5
       start_period: 20s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   postgres:
     image: docker.m.daocloud.io/library/postgres:16-alpine
@@ -41,6 +46,11 @@
       timeout: 5s
       retries: 5
       start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 volumes:
   zhihuo-pgdata:

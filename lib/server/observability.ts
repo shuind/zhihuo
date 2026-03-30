@@ -27,6 +27,23 @@ const DEFAULT_RESPONSE_BYTES = Math.max(
   1,
   Number.parseInt(process.env.MONITOR_DEFAULT_RESPONSE_BYTES ?? "12288", 10) || 12288
 );
+const TRAFFIC_ERROR_BACKOFF_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.MONITOR_TRAFFIC_ERROR_BACKOFF_MS ?? "60000", 10) || 60_000
+);
+const TRAFFIC_ERROR_LOG_THROTTLE_MS = Math.max(
+  1_000,
+  Number.parseInt(process.env.MONITOR_TRAFFIC_ERROR_LOG_THROTTLE_MS ?? "60000", 10) || 60_000
+);
+const TRAFFIC_ERROR_THRESHOLD = Math.max(
+  1,
+  Number.parseInt(process.env.MONITOR_TRAFFIC_ERROR_THRESHOLD ?? "3", 10) || 3
+);
+const trafficState = {
+  consecutiveFailures: 0,
+  mutedUntil: 0,
+  lastErrorLoggedAt: 0
+};
 
 function pruneRateLimitStore(now: number) {
   if (rateLimitStore.size < 500) return;
@@ -59,15 +76,36 @@ function responseBytes(response: Response) {
 
 async function recordTraffic(path: string, status: number, bytes: number) {
   if (!shouldRecordTraffic(path)) return;
+  const now = Date.now();
+  if (trafficState.mutedUntil > now) return;
   try {
     const { recordApiMinuteStat } = await import("@/lib/server/db");
     await recordApiMinuteStat({ route: path, status, responseBytes: bytes });
+    if (trafficState.consecutiveFailures > 0) {
+      logInfo("monitor.traffic.record_recovered", {
+        path,
+        recoveredAfterFailures: trafficState.consecutiveFailures
+      });
+    }
+    trafficState.consecutiveFailures = 0;
+    trafficState.mutedUntil = 0;
   } catch (error) {
-    logWarn("monitor.traffic.record_failed", {
-      path,
-      status,
-      error: error instanceof Error ? error.message : String(error)
-    });
+    trafficState.consecutiveFailures += 1;
+    const message = error instanceof Error ? error.message : String(error);
+    const shouldLog = now - trafficState.lastErrorLoggedAt >= TRAFFIC_ERROR_LOG_THROTTLE_MS;
+    if (shouldLog) {
+      trafficState.lastErrorLoggedAt = now;
+      logWarn("monitor.traffic.record_failed", {
+        path,
+        status,
+        consecutiveFailures: trafficState.consecutiveFailures,
+        backoffMs: trafficState.consecutiveFailures >= TRAFFIC_ERROR_THRESHOLD ? TRAFFIC_ERROR_BACKOFF_MS : 0,
+        error: message
+      });
+    }
+    if (trafficState.consecutiveFailures >= TRAFFIC_ERROR_THRESHOLD) {
+      trafficState.mutedUntil = now + TRAFFIC_ERROR_BACKOFF_MS;
+    }
   }
 }
 
