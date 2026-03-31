@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import { useMemo, useState } from "react";
 
@@ -25,6 +25,12 @@ export function SettingsLayer(props: {
   setFixedTopSpacesEnabled: (enabled: boolean) => void;
   setFixedTopSpaceIds: (ids: string[]) => void;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
+  pinEnabled: boolean;
+  pinLockedUntil: number;
+  onEnablePin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
+  onDisablePin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
+  onChangePin: (currentPin: string, nextPin: string) => Promise<{ ok: boolean; error?: string }>;
+  onForgotPin: () => Promise<void> | void;
   onClearAll: () => void;
   onLogout: () => void;
   showNotice: (message: string) => void;
@@ -35,12 +41,20 @@ export function SettingsLayer(props: {
   const [exportText, setExportText] = useState("");
   const [loadingExport, setLoadingExport] = useState(false);
 
+  const [pinMode, setPinMode] = useState<"enable" | "change" | "disable">("enable");
+  const [pinCurrent, setPinCurrent] = useState("");
+  const [pinNext, setPinNext] = useState("");
+  const [pinConfirm, setPinConfirm] = useState("");
+  const [pinLoading, setPinLoading] = useState(false);
+
   const timezoneOptions = useMemo(() => {
     if (TIMEZONE_OPTIONS.some((item) => item.value === props.timezone)) return TIMEZONE_OPTIONS;
     return [{ value: props.timezone, label: `${props.timezone} (当前)` }, ...TIMEZONE_OPTIONS];
   }, [props.timezone]);
 
   const pinnedSet = useMemo(() => new Set(props.fixedTopSpaceIds), [props.fixedTopSpaceIds]);
+
+  const pinLockedSeconds = Math.max(0, Math.ceil((props.pinLockedUntil - Date.now()) / 1000));
 
   const loadExport = () => {
     if (!includeLife && !includeThinking) {
@@ -52,6 +66,59 @@ export function SettingsLayer(props: {
       const text = await props.onSystemExport({ includeLife, includeThinking });
       setExportText(text ?? "");
       setLoadingExport(false);
+    })();
+  };
+
+  const normalizePin = (value: string) => value.replace(/\D+/g, "").slice(0, 12);
+
+  const submitPin = () => {
+    if (pinLoading) return;
+    setPinLoading(true);
+    void (async () => {
+      try {
+        if (pinMode === "enable") {
+          if (pinNext.length < 4 || pinNext.length > 12) {
+            props.showNotice("PIN 需为 4-12 位数字");
+            return;
+          }
+          if (pinNext !== pinConfirm) {
+            props.showNotice("两次 PIN 不一致");
+            return;
+          }
+          const result = await props.onEnablePin(pinNext);
+          props.showNotice(result.ok ? "已开启本地锁屏 PIN" : result.error ?? "PIN 设置失败");
+          if (result.ok) {
+            setPinNext("");
+            setPinConfirm("");
+          }
+          return;
+        }
+
+        if (pinMode === "disable") {
+          const result = await props.onDisablePin(pinCurrent);
+          props.showNotice(result.ok ? "已关闭本地锁屏 PIN" : result.error ?? "PIN 关闭失败");
+          if (result.ok) setPinCurrent("");
+          return;
+        }
+
+        if (pinNext.length < 4 || pinNext.length > 12) {
+          props.showNotice("新 PIN 需为 4-12 位数字");
+          return;
+        }
+        if (pinNext !== pinConfirm) {
+          props.showNotice("两次新 PIN 不一致");
+          return;
+        }
+        const result = await props.onChangePin(pinCurrent, pinNext);
+        props.showNotice(result.ok ? "PIN 已更新" : result.error ?? "PIN 修改失败");
+        if (result.ok) {
+          setPinCurrent("");
+          setPinNext("");
+          setPinConfirm("");
+        }
+      } finally {
+        setPinLoading(false);
+      }
     })();
   };
 
@@ -135,6 +202,97 @@ export function SettingsLayer(props: {
                   <p className="text-xs text-slate-500">暂无活跃空间</p>
                 )}
               </div>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>本地锁屏 PIN</CardTitle>
+            <CardDescription>离线或在线首开都需要先通过 PIN 门禁。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                className={pinMode === "enable" ? "rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs text-white" : "rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-600"}
+                onClick={() => setPinMode("enable")}
+              >
+                开启
+              </button>
+              <button
+                type="button"
+                disabled={!props.pinEnabled}
+                className={pinMode === "change" ? "rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs text-white disabled:opacity-45" : "rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-600 disabled:opacity-45"}
+                onClick={() => setPinMode("change")}
+              >
+                修改
+              </button>
+              <button
+                type="button"
+                disabled={!props.pinEnabled}
+                className={pinMode === "disable" ? "rounded-full border border-slate-800 bg-slate-900 px-3 py-1 text-xs text-white disabled:opacity-45" : "rounded-full border border-slate-300 bg-white px-3 py-1 text-xs text-slate-600 disabled:opacity-45"}
+                onClick={() => setPinMode("disable")}
+              >
+                关闭
+              </button>
+            </div>
+
+            <div className="grid gap-2 rounded-lg border border-slate-300 bg-white p-3">
+              {pinMode !== "enable" ? (
+                <input
+                  type="password"
+                  inputMode="numeric"
+                  value={pinCurrent}
+                  onChange={(event) => setPinCurrent(normalizePin(event.target.value))}
+                  placeholder="当前 PIN"
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                />
+              ) : null}
+
+              {pinMode !== "disable" ? (
+                <>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={pinNext}
+                    onChange={(event) => setPinNext(normalizePin(event.target.value))}
+                    placeholder={pinMode === "enable" ? "新 PIN（4-12 位数字）" : "新的 PIN"}
+                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                  />
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={pinConfirm}
+                    onChange={(event) => setPinConfirm(normalizePin(event.target.value))}
+                    placeholder="重复输入 PIN"
+                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                  />
+                </>
+              ) : null}
+
+              <div className="flex flex-wrap items-center gap-2">
+                <Button type="button" size="sm" variant="ghost" className="rounded-full border border-slate-400/40 bg-white text-slate-700" onClick={submitPin} disabled={pinLoading}>
+                  {pinLoading ? "处理中..." : pinMode === "enable" ? "开启 PIN" : pinMode === "change" ? "更新 PIN" : "关闭 PIN"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-red-400/40 bg-red-100/70 text-red-800"
+                  onClick={() => {
+                    void props.onForgotPin();
+                    props.showNotice("已清理本地离线数据，请重新登录后设置 PIN");
+                  }}
+                >
+                  忘记 PIN（清本地）
+                </Button>
+              </div>
+
+              <p className="text-xs text-slate-500">
+                状态：{props.pinEnabled ? "已开启" : "未开启"}
+                {pinLockedSeconds > 0 ? `，当前锁定 ${pinLockedSeconds}s` : ""}
+              </p>
             </div>
           </CardContent>
         </Card>

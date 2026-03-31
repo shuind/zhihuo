@@ -10,14 +10,20 @@ import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
+  changePin,
   clearOfflineState,
+  clearPinStatus,
+  disablePin,
+  enablePin,
   enqueueOfflineMutation,
+  getPinStatus,
   isOfflineNetworkError,
   listOfflineMutations,
   loadOfflineSnapshot,
   removeOfflineMutation,
   saveOfflineSnapshot,
   updateOfflineMutation,
+  verifyPin,
   type QueuedMutation
 } from "@/components/offline-store";
 import {
@@ -292,6 +298,12 @@ export function TimeArchive() {
   const [notice, setNotice] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [pinReady, setPinReady] = useState(false);
+  const [pinEnabled, setPinEnabled] = useState(false);
+  const [pinLockedUntil, setPinLockedUntil] = useState(0);
+  const [pinUnlocked, setPinUnlocked] = useState(false);
+  const [offlineSnapshotExists, setOfflineSnapshotExists] = useState(false);
+  const [pinTick, setPinTick] = useState(0);
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
@@ -337,6 +349,19 @@ export function TimeArchive() {
       noticeTimerRef.current = null;
     }, duration);
   }, []);
+
+  const refreshPinState = useCallback(() => {
+    const status = getPinStatus();
+    setPinEnabled(status.enabled);
+    setPinLockedUntil(status.lockedUntil);
+    return status;
+  }, []);
+
+  const canEnterOffline = useMemo(() => {
+    if (!hydrated) return false;
+    if (!offlineSnapshotExists) return false;
+    return typeof navigator !== "undefined" && navigator.onLine === false;
+  }, [hydrated, offlineSnapshotExists]);
 
   const syncAuth = useCallback(async () => {
     try {
@@ -638,9 +663,7 @@ export function TimeArchive() {
                 },
                 ...prev.doubts.filter((item) => item.id !== localDoubtId)
               ]
-            }));
-            showNotice("离线已保存，联网后会自动同步");
-            return true;
+            }));            return true;
           }
           showNotice("放入失败，请稍后再试");
           return false;
@@ -664,9 +687,7 @@ export function TimeArchive() {
               },
               ...prev.doubts.filter((item) => item.id !== localDoubtId)
             ]
-          }));
-          showNotice("离线已保存，联网后会自动同步");
-          return true;
+          }));          return true;
         }
         showNotice("网络异常，请稍后再试");
         return false;
@@ -699,9 +720,7 @@ export function TimeArchive() {
                   ]
                 : prev.notes.filter((item) => item.doubtId !== doubtId);
               return { ...prev, notes: nextNotes };
-            });
-            showNotice("离线已保存，联网后会自动同步");
-            return true;
+            });            return true;
           }
           showNotice("注记保存失败");
           return false;
@@ -721,9 +740,7 @@ export function TimeArchive() {
                 ]
               : prev.notes.filter((item) => item.doubtId !== doubtId);
             return { ...prev, notes: nextNotes };
-          });
-          showNotice("离线已保存，联网后会自动同步");
-          return true;
+          });          return true;
         }
         showNotice("网络异常，请稍后再试");
         return false;
@@ -895,9 +912,7 @@ export function TimeArchive() {
         spaceMeta: [localMeta, ...prev.spaceMeta.filter((item) => item.spaceId !== localSpaceId)]
       }));
       setActiveSpaceId(localSpaceId);
-      setThinkingView(localView);
-      showNotice("离线已创建，联网后会自动同步");
-      return {
+      setThinkingView(localView);      return {
         ok: true,
         spaceId: localSpaceId,
         converted: false,
@@ -910,10 +925,18 @@ export function TimeArchive() {
   );
 
   useEffect(() => {
-    void syncAuth();
-  }, [syncAuth]);
+    const status = refreshPinState();
+    setPinUnlocked(!status.enabled);
+    setPinReady(true);
+  }, [refreshPinState]);
 
   useEffect(() => {
+    if (!pinReady || (pinEnabled && !pinUnlocked)) return;
+    void syncAuth();
+  }, [pinEnabled, pinReady, pinUnlocked, syncAuth]);
+
+  useEffect(() => {
+    if (!pinReady || (pinEnabled && !pinUnlocked)) return;
     let cancelled = false;
     void (async () => {
       const snapshot = await loadOfflineSnapshot();
@@ -928,9 +951,11 @@ export function TimeArchive() {
           Object.values(snapshot.thinkingViews ?? {})[0] ??
           null;
         setThinkingView(initialView);
+        setOfflineSnapshotExists(true);
         setHydrated(true);
         return;
       }
+      setOfflineSnapshotExists(false);
       const loadedLife = loadLifeStore();
       const loadedThinking = loadThinkingStore();
       setLifeStore(loadedLife);
@@ -941,7 +966,7 @@ export function TimeArchive() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [pinEnabled, pinReady, pinUnlocked]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1042,6 +1067,13 @@ export function TimeArchive() {
       fixedTopSpaceIds: prev.fixedTopSpaceIds.filter((id, index, array) => activeIdSet.has(id) && array.indexOf(id) === index).slice(0, 3)
     }));
   }, [hydrated, thinkingStore.fixedTopSpaceIds, thinkingStore.spaces]);
+
+  useEffect(() => {
+    if (!pinEnabled) return;
+    if (pinLockedUntil <= Date.now()) return;
+    const timer = window.setInterval(() => setPinTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [pinEnabled, pinLockedUntil]);
 
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser) return;
@@ -1181,9 +1213,7 @@ export function TimeArchive() {
           },
           ...prev.scratch.filter((item) => item.id !== localScratchId)
         ]
-      }));
-      showNotice("离线已记下，联网后会自动同步");
-      return true;
+      }));      return true;
     },
     [handleUnauthorized, queueMutation, showNotice, syncThinkingScratchFromApi]
   );
@@ -1405,9 +1435,7 @@ export function TimeArchive() {
             dimension: "definition"
           }
         ]
-      }));
-      showNotice("离线已记录，联网后会自动同步");
-      return {
+      }));      return {
         ok: true as const,
         converted: false,
         noteText: null,
@@ -1555,9 +1583,7 @@ export function TimeArchive() {
       setThinkingStore((prev) => ({
         ...prev,
         nodes: prev.nodes.map((node) => (node.id === nodeId ? { ...node, rawQuestionText: nextQuestion } : node))
-      }));
-      showNotice("离线已保存，联网后会自动同步");
-      return true;
+      }));      return true;
     },
     [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
   );
@@ -1611,9 +1637,7 @@ export function TimeArchive() {
           thinkingViewCacheRef.current[activeSpaceId] = nextView;
           if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
         }
-      }
-      showNotice("离线已保存，联网后会自动同步");
-      return true;
+      }      return true;
     },
     [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
   );
@@ -1835,9 +1859,7 @@ export function TimeArchive() {
       const nextActive = nextSpacesForPick[0]?.id ?? null;
       setActiveSpaceId(nextActive);
       if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
-      else setThinkingView(null);
-      showNotice("离线已写入，联网后会自动同步");
-      return { ok: true as const };
+      else setThinkingView(null);      return { ok: true as const };
     },
     [handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces, thinkingView]
   );
@@ -1910,7 +1932,6 @@ export function TimeArchive() {
         ...prev,
         spaces: prev.spaces.map((space) => (space.id === spaceId ? { ...space, rootQuestionText: nextText, lastActivityAt: now } : space))
       }));
-      showNotice("离线已保存，联网后会自动同步");
       return { ok: true as const, rootQuestionText: nextText };
     },
     [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncThinkingSpacesFromApi]
@@ -1954,6 +1975,7 @@ export function TimeArchive() {
     setActiveSpaceId(null);
     setThinkingView(null);
     setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
+    setOfflineSnapshotExists(false);
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(LIFE_STORAGE_KEY);
       window.localStorage.removeItem(THINKING_STORAGE_KEY);
@@ -1964,7 +1986,74 @@ export function TimeArchive() {
     showNotice("本地缓存已清理");
   }, [showNotice, syncLifeFromApi, syncThinkingSpacesFromApi]);
 
-  if (!authReady) {
+  const handlePinVerified = useCallback(() => {
+    setPinUnlocked(true);
+    const status = refreshPinState();
+    if (!status.enabled) setPinEnabled(false);
+  }, [refreshPinState]);
+
+  const handleEnablePin = useCallback(
+    async (pin: string) => {
+      const result = await enablePin(pin);
+      refreshPinState();
+      return result;
+    },
+    [refreshPinState]
+  );
+
+  const handleDisablePin = useCallback(
+    async (pin: string) => {
+      const result = await disablePin(pin);
+      refreshPinState();
+      if (result.ok) setPinUnlocked(true);
+      return result;
+    },
+    [refreshPinState]
+  );
+
+  const handleChangePin = useCallback(
+    async (currentPin: string, nextPin: string) => {
+      const result = await changePin(currentPin, nextPin);
+      refreshPinState();
+      return result;
+    },
+    [refreshPinState]
+  );
+
+  const handleForgotPin = useCallback(async () => {
+    await clearOfflineState();
+    clearPinStatus();
+    setPinUnlocked(true);
+    setOfflineSnapshotExists(false);
+    setSessionUser(null);
+    setThinkingView(null);
+    setActiveSpaceId(null);
+    refreshPinState();
+  }, [refreshPinState]);
+
+  void pinTick;
+
+  if (!pinReady) {
+    return (
+      <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
+        <p className="text-sm tracking-[0.12em] text-slate-300/80">加载中...</p>
+      </div>
+    );
+  }
+
+  if (pinEnabled && !pinUnlocked) {
+    return <PinGate lockedUntil={pinLockedUntil} onVerified={handlePinVerified} />;
+  }
+
+  if (!hydrated) {
+    return (
+      <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
+        <p className="text-sm tracking-[0.12em] text-slate-300/80">加载中...</p>
+      </div>
+    );
+  }
+
+  if (!authReady && !canEnterOffline) {
     return (
       <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
         <p className="text-sm tracking-[0.12em] text-slate-300/80">验证身份中...</p>
@@ -1972,7 +2061,7 @@ export function TimeArchive() {
     );
   }
 
-  if (!sessionUser) {
+  if (!sessionUser && !canEnterOffline) {
     return <AuthPanel onAuthed={() => void syncAuth()} />;
   }
 
@@ -2116,6 +2205,12 @@ export function TimeArchive() {
                 activeThinkingSpaces={activeThinkingSpaceOptions}
                 fixedTopSpacesEnabled={thinkingStore.fixedTopSpacesEnabled}
                 fixedTopSpaceIds={thinkingStore.fixedTopSpaceIds}
+                pinEnabled={pinEnabled}
+                pinLockedUntil={pinLockedUntil}
+                onEnablePin={handleEnablePin}
+                onDisablePin={handleDisablePin}
+                onChangePin={handleChangePin}
+                onForgotPin={handleForgotPin}
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
                     const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);
@@ -2251,6 +2346,70 @@ function MobileBottomTabIcon(props: { icon: "life" | "thinking" | "settings" }) 
       />
       <circle cx="9" cy="9" r="6.2" stroke="currentColor" strokeWidth="1.1" opacity="0.32" />
     </svg>
+  );
+}
+
+function PinGate(props: { lockedUntil: number; onVerified: () => void }) {
+  const [pin, setPin] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState("");
+  const [tick, setTick] = useState(0);
+
+  useEffect(() => {
+    if (props.lockedUntil <= Date.now()) return;
+    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [props.lockedUntil]);
+
+  void tick;
+
+  const lockedSeconds = Math.max(0, Math.ceil((props.lockedUntil - Date.now()) / 1000));
+
+  const submit = useCallback(() => {
+    if (submitting) return;
+    setSubmitting(true);
+    setError("");
+    void (async () => {
+      try {
+        const result = await verifyPin(pin);
+        if (!result.ok) {
+          setError(result.error ?? "PIN 校验失败");
+          return;
+        }
+        setPin("");
+        props.onVerified();
+      } finally {
+        setSubmitting(false);
+      }
+    })();
+  }, [pin, props, submitting]);
+
+  return (
+    <div className="grid h-screen place-items-center bg-slate-950 px-4">
+      <div className="w-full max-w-sm rounded-2xl border border-slate-300/15 bg-slate-900/70 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
+        <p className="text-sm tracking-[0.22em] text-slate-300/85">本地锁屏</p>
+        <p className="mt-2 text-xs text-slate-400/75">请输入 PIN 以解锁离线内容。</p>
+        <input
+          type="password"
+          inputMode="numeric"
+          value={pin}
+          onChange={(event) => setPin(event.target.value.replace(/\D+/g, "").slice(0, 12))}
+          placeholder="PIN"
+          className="mt-4 h-10 w-full rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
+          onKeyDown={(event) => event.key === "Enter" && submit()}
+          disabled={lockedSeconds > 0}
+        />
+        <Button
+          type="button"
+          disabled={submitting || lockedSeconds > 0}
+          className="mt-4 w-full rounded-full border border-slate-300/30 bg-slate-900/70 text-slate-100 hover:bg-slate-800/90"
+          onClick={submit}
+        >
+          {lockedSeconds > 0 ? `请等待 ${lockedSeconds}s` : submitting ? "解锁中..." : "解锁"}
+        </Button>
+        <p className={cn("mt-3 min-h-[1.2em] text-xs text-red-300/85", error ? "opacity-100" : "opacity-0")}>{error}</p>
+      </div>
+    </div>
   );
 }
 
@@ -2489,6 +2648,9 @@ function AuthPanel(props: { onAuthed: () => void }) {
     </div>
   );
 }
+
+
+
 
 
 
