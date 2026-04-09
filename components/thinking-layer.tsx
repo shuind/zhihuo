@@ -249,6 +249,7 @@ export function ThinkingLayer(props: {
   const scratchInputRef = useRef<HTMLTextAreaElement | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
+  const lastRestoredSpaceIdRef = useRef<string | null>(null);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const spaceFinderInputRef = useRef<HTMLInputElement | null>(null);
   const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
@@ -550,12 +551,25 @@ export function ThinkingLayer(props: {
   }, [moreOpen]);
 
   useEffect(() => {
+    if (props.activeSpaceId) return;
+    lastRestoredSpaceIdRef.current = null;
+  }, [props.activeSpaceId]);
+
+  useEffect(() => {
     if (!activeSpace || !activeTrack) return;
     const key = `${activeSpace.id}:${activeTrack.id}`;
     const saved = trackPositionsRef.current[key];
+    const isMobileViewport = window.matchMedia("(max-width: 767px)").matches;
+    const isEnteringSpace = lastRestoredSpaceIdRef.current !== activeSpace.id;
+    lastRestoredSpaceIdRef.current = activeSpace.id;
     const frame = window.requestAnimationFrame(() => {
       const container = trackScrollRef.current;
       if (!container) return;
+      if (isMobileViewport && isEnteringSpace) {
+        container.scrollTop = 0;
+        return;
+      }
+
       container.scrollTop = saved ? saved.scrollTop : container.scrollHeight;
       if (saved?.focusNodeId) {
         const target = document.getElementById(`thinking-node-${saved.focusNodeId}`);
@@ -668,9 +682,35 @@ export function ThinkingLayer(props: {
       let timerId = 0;
       let settleId = 0;
       let cancelled = false;
+      const isMobileViewport = window.matchMedia("(max-width: 767px)").matches;
 
       const run = () => {
         if (cancelled) return;
+        if (isMobileViewport) {
+          const container = trackScrollRef.current;
+          const target = document.getElementById(`thinking-node-${nodeId}`);
+          if (!container || !target) {
+            if (tries >= 20) return;
+            tries += 1;
+            timerId = window.setTimeout(run, 40);
+            return;
+          }
+          const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
+          container.scrollTo({ top: maxTop, behavior: tries > 0 ? "smooth" : "auto" });
+          settleId = window.setTimeout(() => {
+            if (cancelled) return;
+            const latestContainer = trackScrollRef.current;
+            if (!latestContainer) return;
+            const targetTrackId = trackId ?? activeTrackId;
+            if (!targetTrackId) return;
+            rememberTrackPosition(spaceId, targetTrackId, {
+              scrollTop: latestContainer.scrollTop,
+              focusNodeId: nodeId
+            });
+          }, 220);
+          return;
+        }
+
         const centered = centerNodeInTrack(nodeId, tries > 0 ? "smooth" : "auto");
         if (!centered) {
           if (tries >= 20) return;
