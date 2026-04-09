@@ -49,6 +49,7 @@ export function LifeLayer(props: {
   const [mobileDetailOpen, setMobileDetailOpen] = useState(false);
   const [mobileSearchMode, setMobileSearchMode] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [deviceReady, setDeviceReady] = useState(false);
   const [fieldFocused, setFieldFocused] = useState(false);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
@@ -94,7 +95,10 @@ export function LifeLayer(props: {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const media = window.matchMedia("(max-width: 767px)");
-    const sync = () => setIsMobile(media.matches);
+    const sync = () => {
+      setIsMobile(media.matches);
+      setDeviceReady(true);
+    };
     sync();
     media.addEventListener("change", sync);
     return () => media.removeEventListener("change", sync);
@@ -119,13 +123,14 @@ export function LifeLayer(props: {
   }, [isMobile, selectedDoubtId, mobileSearchMode]);
 
   useEffect(() => {
+    if (!deviceReady) return;
     if (!selectedDoubtId) {
       if (!isMobile) composerRef.current?.focus();
       return;
     }
     rowRefs.current[selectedDoubtId]?.scrollIntoView({ block: "nearest", behavior: "smooth" });
     if (!isMobile || mobileSearchMode) searchRef.current?.focus();
-  }, [selectedDoubtId, isMobile, mobileSearchMode]);
+  }, [selectedDoubtId, isMobile, mobileSearchMode, deviceReady]);
 
   useEffect(() => {
     const timer = ritualTimerRef;

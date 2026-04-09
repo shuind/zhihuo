@@ -10,6 +10,8 @@ function normalizeEmail(value: string) {
   return value.trim().toLowerCase();
 }
 
+const RESET_FAILED_MESSAGE = "重置失败，请检查邮箱、验证码和密码";
+
 export const POST = withApiRoute(
   "auth.password.reset",
   async (request: NextRequest) => {
@@ -23,30 +25,17 @@ export const POST = withApiRoute(
     if (newPassword.length < 8) return errorJson(400, "密码至少 8 位");
 
     let resetOk = false;
-    let resetError = "";
     await updateDb((db) => {
       const user = db.users.find((item) => item.email === email && !item.deleted_at);
-      if (!user) {
-        resetError = "邮箱不存在";
-        return;
-      }
+      if (!user) return;
 
       const now = Date.now();
       const verification = [...db.email_verification_codes]
         .filter((item) => item.email === email && item.purpose === "reset_password" && !item.consumed_at)
         .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-      if (!verification) {
-        resetError = "请先获取验证码";
-        return;
-      }
-      if (new Date(verification.expires_at).getTime() <= now) {
-        resetError = "验证码已过期";
-        return;
-      }
-      if (!verifyEmailVerificationCode(email, "reset_password", code, verification.code_hash)) {
-        resetError = "验证码错误";
-        return;
-      }
+      if (!verification) return;
+      if (new Date(verification.expires_at).getTime() <= now) return;
+      if (!verifyEmailVerificationCode(email, "reset_password", code, verification.code_hash)) return;
 
       user.password_hash = hashPassword(newPassword);
       verification.consumed_at = nowIso();
@@ -62,7 +51,7 @@ export const POST = withApiRoute(
       resetOk = true;
     });
 
-    if (!resetOk) return errorJson(resetError === "邮箱不存在" ? 404 : 400, resetError || "重置失败");
+    if (!resetOk) return errorJson(400, RESET_FAILED_MESSAGE);
     return NextResponse.json({ ok: true });
   },
   { rateLimit: { bucket: "auth-password-reset", max: 10, windowMs: 10 * 60 * 1000 } }

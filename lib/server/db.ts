@@ -1309,13 +1309,14 @@ export async function updateDb(mutator: (db: DbState) => void | Promise<void>): 
   }
 
   let nextState: DbState = { ...EMPTY_DB };
-  writeQueue = writeQueue.then(async () => {
+  const queuedWrite = writeQueue.catch(() => undefined).then(async () => {
     const db = await readDb();
     await mutator(db);
     await ensureDataDir();
     await writeFile(DB_FILE, JSON.stringify(db, null, 2), "utf8");
     nextState = db;
   });
-  await writeQueue;
+  writeQueue = queuedWrite;
+  await queuedWrite;
   return nextState;
 }

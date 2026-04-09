@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { isIP } from "node:net";
 
 import { NextRequest, NextResponse } from "next/server";
 
@@ -23,6 +24,8 @@ type WrappedContext = { params?: Record<string, string | string[]> };
 type RouteHandler<Context extends WrappedContext> = (request: NextRequest, context: Context, meta: RequestMeta) => Promise<Response>;
 
 const rateLimitStore = new Map<string, { count: number; resetAt: number }>();
+const TRUST_PROXY_HEADERS =
+  process.env.TRUST_PROXY_HEADERS === "1" || process.env.TRUST_PROXY_HEADERS?.toLowerCase() === "true";
 const DEFAULT_RESPONSE_BYTES = Math.max(
   1,
   Number.parseInt(process.env.MONITOR_DEFAULT_RESPONSE_BYTES ?? "12288", 10) || 12288
@@ -52,13 +55,39 @@ function pruneRateLimitStore(now: number) {
   }
 }
 
+function normalizeIp(value: string | null | undefined): string | null {
+  if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const unwrapped =
+    trimmed.startsWith("[") && trimmed.endsWith("]") && trimmed.length > 2 ? trimmed.slice(1, -1) : trimmed;
+  if (isIP(unwrapped)) return unwrapped;
+
+  // Some proxies include port in IPv4 values, e.g. "203.0.113.9:12345".
+  const lastColon = unwrapped.lastIndexOf(":");
+  if (lastColon > 0 && unwrapped.indexOf(":") === lastColon) {
+    const maybeIpv4 = unwrapped.slice(0, lastColon);
+    if (isIP(maybeIpv4) === 4) return maybeIpv4;
+  }
+  return null;
+}
+
 function getClientIp(request: NextRequest) {
-  const candidate =
-    request.headers.get("x-real-ip") ??
-    request.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
-    request.headers.get("cf-connecting-ip") ??
-    "unknown";
-  return candidate || "unknown";
+  if (!TRUST_PROXY_HEADERS) return "untrusted";
+
+  const fromCf = normalizeIp(request.headers.get("cf-connecting-ip"));
+  if (fromCf) return fromCf;
+
+  const fromRealIp = normalizeIp(request.headers.get("x-real-ip"));
+  if (fromRealIp) return fromRealIp;
+
+  const forwardedFor = request.headers.get("x-forwarded-for");
+  if (!forwardedFor) return "unknown";
+  for (const segment of forwardedFor.split(",")) {
+    const candidate = normalizeIp(segment);
+    if (candidate) return candidate;
+  }
+  return "unknown";
 }
 
 function shouldRecordTraffic(path: string) {

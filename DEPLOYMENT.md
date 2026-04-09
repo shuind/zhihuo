@@ -21,6 +21,7 @@ Edit `.env.production`:
 - set `AUTH_SECRET` to a strong random value
 - set `POSTGRES_PASSWORD`
 - ensure `DATABASE_URL` matches the Postgres credentials
+- if deployed behind trusted reverse proxy (Nginx/Caddy/Cloudflare), set `TRUST_PROXY_HEADERS=true`; otherwise keep it `false`
 - set SMTP variables: `SMTP_HOST`, `SMTP_PORT`, `SMTP_SECURE`, `SMTP_USER`, `SMTP_PASSWORD`, `SMTP_FROM`
 - for QQ/Foxmail, recommend `SMTP_HOST=smtp.qq.com`, `SMTP_PORT=465`, `SMTP_SECURE=true`
 
