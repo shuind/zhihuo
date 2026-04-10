@@ -297,6 +297,119 @@ function isCloudPayloadEmpty(payload: UserExportPayload) {
   );
 }
 
+function canonicalizeExportPayload(payload: UserExportPayload) {
+  return {
+    life: {
+      doubts: [...payload.life.doubts]
+        .map((item) => ({
+          id: item.id,
+          raw_text: item.raw_text,
+          first_node_preview: item.first_node_preview ?? null,
+          last_node_preview: item.last_node_preview ?? null,
+          created_at: item.created_at,
+          archived_at: item.archived_at ?? null,
+          deleted_at: item.deleted_at ?? null
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      notes: [...payload.life.notes]
+        .map((item) => ({
+          id: item.id,
+          doubt_id: item.doubt_id,
+          note_text: item.note_text,
+          created_at: item.created_at
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+    },
+    thinking: {
+      spaces: [...payload.thinking.spaces]
+        .map((item) => ({
+          id: item.id,
+          rootQuestionText: item.rootQuestionText,
+          status: item.status,
+          createdAt: item.createdAt,
+          frozenAt: item.frozenAt ?? null,
+          sourceTimeDoubtId: item.sourceTimeDoubtId ?? null
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      nodes: [...payload.thinking.nodes]
+        .map((item) => ({
+          id: item.id,
+          spaceId: item.spaceId,
+          parentNodeId: item.parentNodeId ?? null,
+          rawQuestionText: item.rawQuestionText,
+          noteText: item.noteText ?? null,
+          answerText: item.answerText ?? null,
+          createdAt: item.createdAt,
+          orderIndex: item.orderIndex,
+          isSuggested: item.isSuggested,
+          state: item.state,
+          dimension: item.dimension
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      space_meta: [...payload.thinking.space_meta]
+        .map((item) => ({
+          spaceId: item.spaceId,
+          userFreezeNote: item.userFreezeNote ?? null,
+          exportVersion: item.exportVersion,
+          backgroundText: item.backgroundText ?? null,
+          backgroundVersion: item.backgroundVersion ?? 0,
+          suggestionDecay: item.suggestionDecay ?? 0,
+          lastTrackId: item.lastTrackId ?? null,
+          lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
+          parkingTrackId: item.parkingTrackId ?? null,
+          pendingTrackId: item.pendingTrackId ?? null,
+          emptyTrackIds: [...(item.emptyTrackIds ?? [])].sort(),
+          milestoneNodeIds: [...(item.milestoneNodeIds ?? [])].sort(),
+          trackDirectionHints: Object.fromEntries(
+            Object.entries(item.trackDirectionHints ?? {}).sort(([a], [b]) => a.localeCompare(b))
+          )
+        }))
+        .sort((a, b) => a.spaceId.localeCompare(b.spaceId)),
+      node_links: [...payload.thinking.node_links]
+        .map((item) => ({
+          id: item.id,
+          spaceId: item.spaceId,
+          sourceNodeId: item.sourceNodeId,
+          targetNodeId: item.targetNodeId,
+          linkType: item.linkType,
+          score: item.score,
+          createdAt: item.createdAt
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id)),
+      inbox: Object.fromEntries(
+        Object.entries(payload.thinking.inbox)
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([spaceId, items]) => [
+            spaceId,
+            [...items]
+              .map((item) => ({
+                id: item.id,
+                rawText: item.rawText,
+                createdAt: item.createdAt
+              }))
+              .sort((a, b) => a.id.localeCompare(b.id))
+          ])
+      ),
+      scratch: [...(payload.thinking.scratch ?? [])]
+        .map((item) => ({
+          id: item.id,
+          rawText: item.rawText,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+          archivedAt: item.archivedAt ?? null,
+          deletedAt: item.deletedAt ?? null,
+          derivedSpaceId: item.derivedSpaceId ?? null,
+          fedTimeDoubtId: item.fedTimeDoubtId ?? null
+        }))
+        .sort((a, b) => a.id.localeCompare(b.id))
+    }
+  };
+}
+
+function arePayloadsEquivalent(localPayload: UserExportPayload, cloudPayload: UserExportPayload) {
+  return stableStringify(canonicalizeExportPayload(localPayload)) === stableStringify(canonicalizeExportPayload(cloudPayload));
+}
+
 function toTrackParentId(trackId: string) {
   return trackId.startsWith("track:") ? trackId : `track:${trackId}`;
 }
@@ -1486,11 +1599,27 @@ export function TimeArchive() {
     void (async () => {
       const cloud = await fetchCloudExport();
       if (cancelled || !cloud?.payload) return;
+      const localPayload = buildLocalExportPayload(sessionUser);
       if (isCloudPayloadEmpty(cloud.payload)) {
         const imported = await importLocalPayloadToCloud(sessionUser);
         if (cancelled || !imported) return;
         bindingCheckUserIdRef.current = sessionUser.userId;
         showNotice("本地数据已绑定到当前账号");
+        return;
+      }
+      if (arePayloadsEquivalent(localPayload, cloud.payload)) {
+        updateOfflineMeta((current) => ({
+          ...current,
+          ownerMode: "user",
+          boundUserId: sessionUser.userId,
+          syncState: {
+            lastSyncedAt: new Date().toISOString(),
+            hasLocalChanges: false,
+            bindingRequired: false
+          }
+        }));
+        bindingCheckUserIdRef.current = sessionUser.userId;
+        showNotice("本地与云端数据一致，已自动完成绑定");
         return;
       }
       updateOfflineMeta((current) => ({
@@ -1508,6 +1637,7 @@ export function TimeArchive() {
     };
   }, [
     authReady,
+    buildLocalExportPayload,
     fetchCloudExport,
     hydrated,
     importLocalPayloadToCloud,
