@@ -597,6 +597,63 @@ export function getDoubtDetail(db: DbState, userId: string, doubtId: string) {
   return { doubt, notes };
 }
 
+export function replaceLifeSnapshot(
+  db: DbState,
+  userId: string,
+  snapshot: {
+    doubts?: Array<{
+      id?: string;
+      raw_text?: string;
+      first_node_preview?: string | null;
+      last_node_preview?: string | null;
+      created_at?: string;
+      archived_at?: string | null;
+      deleted_at?: string | null;
+    }>;
+    notes?: Array<{
+      id?: string;
+      doubt_id?: string;
+      note_text?: string;
+      created_at?: string;
+    }>;
+  }
+) {
+  const nextDoubts: DoubtRecord[] = (snapshot.doubts ?? [])
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      user_id: userId,
+      raw_text: collapseWhitespace(item.raw_text ?? ""),
+      first_node_preview:
+        typeof item.first_node_preview === "string" ? collapseWhitespace(item.first_node_preview) || null : null,
+      last_node_preview:
+        typeof item.last_node_preview === "string" ? collapseWhitespace(item.last_node_preview) || null : null,
+      created_at: typeof item.created_at === "string" ? item.created_at : nowIso(),
+      archived_at: typeof item.archived_at === "string" ? item.archived_at : null,
+      deleted_at: typeof item.deleted_at === "string" ? item.deleted_at : null
+    }))
+    .filter((item) => item.raw_text);
+
+  const doubtIds = new Set(nextDoubts.map((item) => item.id));
+  const nextNotes: DoubtNoteRecord[] = (snapshot.notes ?? [])
+    .filter((item) => typeof item.doubt_id === "string" && doubtIds.has(item.doubt_id))
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      doubt_id: item.doubt_id as string,
+      note_text: collapseWhitespace(item.note_text ?? "").slice(0, 42),
+      created_at: typeof item.created_at === "string" ? item.created_at : nowIso()
+    }))
+    .filter((item) => item.note_text);
+
+  db.doubts = [...db.doubts.filter((item) => item.user_id !== userId), ...nextDoubts];
+  db.doubt_notes = [
+    ...db.doubt_notes.filter((item) => {
+      const parent = db.doubts.find((doubt) => doubt.id === item.doubt_id);
+      return parent?.user_id !== userId;
+    }),
+    ...nextNotes
+  ];
+}
+
 export function archiveDoubt(db: DbState, userId: string, doubtId: string) {
   const doubt = requireDoubt(db, userId, doubtId);
   if (!doubt) return null;

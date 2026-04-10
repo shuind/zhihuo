@@ -24,6 +24,8 @@ export function SettingsLayer(props: {
   fixedTopSpaceIds: string[];
   setFixedTopSpacesEnabled: (enabled: boolean) => void;
   setFixedTopSpaceIds: (ids: string[]) => void;
+  sessionEmail: string | null;
+  cloudSyncEnabled: boolean;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
   pinEnabled: boolean;
   pinLockedUntil: number;
@@ -31,6 +33,7 @@ export function SettingsLayer(props: {
   onDisablePin: (pin: string) => Promise<{ ok: boolean; error?: string }>;
   onChangePin: (currentPin: string, nextPin: string) => Promise<{ ok: boolean; error?: string }>;
   onForgotPin: () => Promise<void> | void;
+  onOpenAuth: () => void;
   onClearAll: () => void;
   onLogout: () => void;
   showNotice: (message: string) => void;
@@ -390,18 +393,37 @@ export function SettingsLayer(props: {
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
             <CardTitle>账号 / 会话</CardTitle>
-            <CardDescription>退出当前登录账号。</CardDescription>
+            <CardDescription>
+              {props.sessionEmail
+                ? `当前设备已绑定账号${props.cloudSyncEnabled ? "，云端同步已开启。" : "。"}`
+                : "当前是本地离线模式，登录后可把本地数据绑定到账号。"}
+            </CardDescription>
           </CardHeader>
           <CardFooter>
-            <Button
-              type="button"
-              size="sm"
-              variant="ghost"
-              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
-              onClick={props.onLogout}
-            >
-              退出登录
-            </Button>
+            {props.sessionEmail ? (
+              <div className="flex flex-wrap items-center gap-3">
+                <span className="text-sm text-slate-700">{props.sessionEmail}</span>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+                  onClick={props.onLogout}
+                >
+                  退出登录
+                </Button>
+              </div>
+            ) : (
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+                onClick={props.onOpenAuth}
+              >
+                登录 / 注册
+              </Button>
+            )}
           </CardFooter>
         </Card>
       </div>

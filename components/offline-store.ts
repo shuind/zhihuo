@@ -9,6 +9,7 @@ const SNAPSHOT_STORE = "snapshot";
 const QUEUE_STORE = "mutation_queue";
 const SNAPSHOT_KEY = "main";
 const PIN_STORAGE_KEY = "zhihuo_pin_v1";
+const LOCAL_PROFILE_STORAGE_KEY = "zhihuo_local_profile_v1";
 
 type PinStorage = {
   pin_enabled: boolean;
@@ -30,6 +31,22 @@ export type OfflineSnapshot = {
   activeSpaceId: string | null;
   thinkingViews: Record<string, ThinkingSpaceView>;
   savedAt: string;
+  meta: OfflineSnapshotMeta;
+};
+
+export type OfflineOwnerMode = "guest" | "user";
+
+export type OfflineSyncState = {
+  lastSyncedAt: string | null;
+  hasLocalChanges: boolean;
+  bindingRequired: boolean;
+};
+
+export type OfflineSnapshotMeta = {
+  localProfileId: string;
+  ownerMode: OfflineOwnerMode;
+  boundUserId: string | null;
+  syncState: OfflineSyncState;
 };
 
 export type QueuedMutation = {
@@ -49,6 +66,50 @@ type SnapshotRecord = {
   key: string;
   value: OfflineSnapshot;
 };
+
+function createLocalId() {
+  if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
+    return globalThis.crypto.randomUUID();
+  }
+  return `local_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+}
+
+export function getOrCreateLocalProfileId() {
+  if (!canUseLocalStorage()) return createLocalId();
+  const existing = window.localStorage.getItem(LOCAL_PROFILE_STORAGE_KEY);
+  if (existing && existing.trim()) return existing;
+  const nextId = createLocalId();
+  window.localStorage.setItem(LOCAL_PROFILE_STORAGE_KEY, nextId);
+  return nextId;
+}
+
+export function createOfflineSnapshotMeta(localProfileId: string, options?: Partial<OfflineSnapshotMeta>): OfflineSnapshotMeta {
+  return {
+    localProfileId,
+    ownerMode: options?.ownerMode === "user" ? "user" : "guest",
+    boundUserId: typeof options?.boundUserId === "string" && options.boundUserId.trim() ? options.boundUserId : null,
+    syncState: {
+      lastSyncedAt:
+        typeof options?.syncState?.lastSyncedAt === "string" && options.syncState.lastSyncedAt.trim()
+          ? options.syncState.lastSyncedAt
+          : null,
+      hasLocalChanges: options?.syncState?.hasLocalChanges === true,
+      bindingRequired: options?.syncState?.bindingRequired === true
+    }
+  };
+}
+
+function normalizeOfflineSnapshot(raw: OfflineSnapshot): OfflineSnapshot {
+  const localProfileId = getOrCreateLocalProfileId();
+  return {
+    lifeStore: cloneValue(raw.lifeStore),
+    thinkingStore: cloneValue(raw.thinkingStore),
+    activeSpaceId: raw.activeSpaceId ?? null,
+    thinkingViews: cloneValue(raw.thinkingViews ?? {}),
+    savedAt: typeof raw.savedAt === "string" ? raw.savedAt : new Date().toISOString(),
+    meta: createOfflineSnapshotMeta(localProfileId, raw.meta)
+  };
+}
 
 function canUseIdb() {
   return typeof window !== "undefined" && typeof window.indexedDB !== "undefined";
@@ -248,7 +309,7 @@ export async function loadOfflineSnapshot(): Promise<OfflineSnapshot | null> {
     req.onerror = () => resolve(null);
     req.onsuccess = () => {
       const row = req.result as SnapshotRecord | undefined;
-      resolve(row?.value ? cloneValue(row.value) : null);
+      resolve(row?.value ? normalizeOfflineSnapshot(row.value) : null);
     };
   });
 }
@@ -256,10 +317,11 @@ export async function loadOfflineSnapshot(): Promise<OfflineSnapshot | null> {
 export async function saveOfflineSnapshot(snapshot: OfflineSnapshot): Promise<void> {
   const db = await openDb();
   if (!db) return;
+  const normalized = normalizeOfflineSnapshot(snapshot);
   await new Promise<void>((resolve) => {
     const tx = db.transaction(SNAPSHOT_STORE, "readwrite");
     const store = tx.objectStore(SNAPSHOT_STORE);
-    store.put({ key: SNAPSHOT_KEY, value: cloneValue(snapshot) } satisfies SnapshotRecord);
+    store.put({ key: SNAPSHOT_KEY, value: cloneValue(normalized) } satisfies SnapshotRecord);
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();

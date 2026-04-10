@@ -54,6 +54,16 @@ export type ThinkingScratchItem = {
   fedTimeDoubtId: string | null;
 };
 
+export type ThinkingNodeLink = {
+  id: string;
+  spaceId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  linkType: "related";
+  score: number;
+  createdAt: string;
+};
+
 export type ThinkingNode = {
   id: string;
   spaceId: string;
@@ -92,6 +102,7 @@ export type ThinkingStore = {
   spaces: ThinkingSpace[];
   nodes: ThinkingNode[];
   spaceMeta: ThinkingSpaceMeta[];
+  nodeLinks: ThinkingNodeLink[];
   scratch: ThinkingScratchItem[];
   inbox: Record<string, ThinkingInboxItem[]>;
   assistEnabled: boolean;
@@ -144,6 +155,7 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   spaces: [],
   nodes: [],
   spaceMeta: [],
+  nodeLinks: [],
   scratch: [],
   inbox: {},
   assistEnabled: true,
@@ -465,6 +477,17 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
     milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : []
   })).filter((meta) => meta.spaceId);
+  const nodeLinks: ThinkingNodeLink[] = (store.nodeLinks ?? [])
+    .map((link) => ({
+      id: typeof link.id === "string" ? link.id : createId(),
+      spaceId: typeof link.spaceId === "string" ? link.spaceId : "",
+      sourceNodeId: typeof link.sourceNodeId === "string" ? link.sourceNodeId : "",
+      targetNodeId: typeof link.targetNodeId === "string" ? link.targetNodeId : "",
+      linkType: "related" as const,
+      score: typeof link.score === "number" && Number.isFinite(link.score) ? link.score : 0,
+      createdAt: toIso(link.createdAt)
+    }))
+    .filter((item) => item.spaceId && item.sourceNodeId && item.targetNodeId && item.sourceNodeId !== item.targetNodeId);
   const inbox: Record<string, ThinkingInboxItem[]> = {};
   for (const [spaceId, items] of Object.entries(store.inbox ?? {})) {
     inbox[spaceId] = (items ?? []).map((item) => ({
@@ -498,6 +521,7 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     spaces,
     nodes,
     spaceMeta,
+    nodeLinks,
     scratch,
     inbox,
     assistEnabled: store.assistEnabled !== false,

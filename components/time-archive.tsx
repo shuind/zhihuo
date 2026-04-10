@@ -13,10 +13,12 @@ import {
   changePin,
   clearOfflineState,
   clearPinStatus,
+  createOfflineSnapshotMeta,
   disablePin,
   enablePin,
   enqueueOfflineMutation,
   getPinStatus,
+  getOrCreateLocalProfileId,
   isOfflineNetworkError,
   listOfflineMutations,
   loadOfflineSnapshot,
@@ -24,14 +26,17 @@ import {
   saveOfflineSnapshot,
   updateOfflineMutation,
   verifyPin,
+  type OfflineSnapshotMeta,
   type QueuedMutation
 } from "@/components/offline-store";
+import { canAccessGuestMode, canUseCloudSync } from "@/lib/capabilities";
 import {
   type LayerTab,
   type LifeDoubt,
   type LifeNote,
   type ThinkingSpace,
   type ThinkingScratchItem,
+  type ThinkingNodeLink,
   type ThinkingSpaceMeta,
   type TrackDirectionHint,
   type ThinkingStore,
@@ -156,9 +161,199 @@ type ThinkingJumpTarget = {
   doubtId?: string;
 };
 
+type UserExportPayload = {
+  version: "2026-03-03";
+  exported_at: string;
+  user_id: string;
+  user_email: string;
+  life: {
+    doubts: Array<{
+      id: string;
+      raw_text: string;
+      first_node_preview: string | null;
+      last_node_preview: string | null;
+      created_at: string;
+      archived_at: string | null;
+      deleted_at: string | null;
+    }>;
+    notes: Array<{
+      id: string;
+      doubt_id: string;
+      note_text: string;
+      created_at: string;
+    }>;
+  };
+  thinking: {
+    spaces: Array<{
+      id: string;
+      userId: string;
+      rootQuestionText: string;
+      status: "active" | "hidden";
+      createdAt: string;
+      frozenAt: string | null;
+      sourceTimeDoubtId: string | null;
+    }>;
+    nodes: Array<{
+      id: string;
+      spaceId: string;
+      parentNodeId: string | null;
+      rawQuestionText: string;
+      noteText?: string | null;
+      answerText?: string | null;
+      createdAt: string;
+      orderIndex: number;
+      isSuggested: boolean;
+      state: "normal" | "hidden";
+      dimension: string;
+    }>;
+    space_meta: Array<{
+      spaceId: string;
+      userFreezeNote: string | null;
+      exportVersion: number;
+      backgroundText?: string | null;
+      backgroundVersion?: number;
+      suggestionDecay?: number;
+      lastTrackId?: string | null;
+      lastOrganizedOrder?: number;
+      parkingTrackId?: string | null;
+      pendingTrackId?: string | null;
+      emptyTrackIds?: string[];
+      milestoneNodeIds?: string[];
+      trackDirectionHints?: Record<string, TrackDirectionHint | null>;
+    }>;
+    node_links: Array<{
+      id: string;
+      spaceId: string;
+      sourceNodeId: string;
+      targetNodeId: string;
+      linkType: "related";
+      score: number;
+      createdAt: string;
+    }>;
+    inbox: Record<string, Array<{ id: string; rawText: string; createdAt: string }>>;
+    scratch?: Array<{
+      id: string;
+      userId: string;
+      rawText: string;
+      createdAt: string;
+      updatedAt: string;
+      archivedAt: string | null;
+      deletedAt: string | null;
+      derivedSpaceId: string | null;
+      fedTimeDoubtId: string | null;
+    }>;
+  };
+  audit: Array<Record<string, never>>;
+};
+
+type BindingDialogState = {
+  cloudPayload: UserExportPayload;
+  submitting: boolean;
+};
+
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
 const OFFLINE_RETRY_BASE_MS = 1200;
 const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
+
+function stableStringify(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map((item) => stableStringify(item)).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const record = value as Record<string, unknown>;
+    const keys = Object.keys(record).sort();
+    return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(record[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+async function sha256Hex(input: string) {
+  const encoder = new TextEncoder();
+  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+function hasMeaningfulLocalData(lifeStore: typeof EMPTY_LIFE_STORE, thinkingStore: ThinkingStore) {
+  return (
+    lifeStore.doubts.length > 0 ||
+    lifeStore.notes.length > 0 ||
+    thinkingStore.spaces.length > 0 ||
+    thinkingStore.nodes.length > 0 ||
+    thinkingStore.scratch.length > 0 ||
+    Object.values(thinkingStore.inbox).some((items) => items.length > 0)
+  );
+}
+
+function isCloudPayloadEmpty(payload: UserExportPayload) {
+  return (
+    payload.life.doubts.length === 0 &&
+    payload.life.notes.length === 0 &&
+    payload.thinking.spaces.length === 0 &&
+    payload.thinking.nodes.length === 0 &&
+    (payload.thinking.scratch?.length ?? 0) === 0 &&
+    Object.values(payload.thinking.inbox).every((items) => items.length === 0)
+  );
+}
+
+function toTrackParentId(trackId: string) {
+  return trackId.startsWith("track:") ? trackId : `track:${trackId}`;
+}
+
+function fromTrackParentId(parentNodeId: string | null | undefined) {
+  if (!parentNodeId) return null;
+  return parentNodeId.startsWith("track:") ? parentNodeId.slice(6) : parentNodeId;
+}
+
+function normalizeTrackListWithLinks(
+  tracks: ThinkingSpaceView["tracks"],
+  nodeLinks: ThinkingNodeLink[],
+  spaceId: string
+): ThinkingSpaceView["tracks"] {
+  const linkedNodeIds = new Set<string>();
+  for (const link of nodeLinks) {
+    if (link.spaceId !== spaceId) continue;
+    linkedNodeIds.add(link.sourceNodeId);
+    linkedNodeIds.add(link.targetNodeId);
+  }
+  return tracks.map((track) => ({
+    ...track,
+    nodeCount: track.nodes.length,
+    nodes: track.nodes.map((node) => ({
+      ...node,
+      hasRelatedLink: linkedNodeIds.has(node.id)
+    }))
+  }));
+}
+
+function syncStoreNodesFromView(store: ThinkingStore, spaceId: string, view: ThinkingSpaceView): ThinkingStore {
+  const existingById = new Map(store.nodes.filter((node) => node.spaceId === spaceId).map((node) => [node.id, node]));
+  let orderIndex = 0;
+  const nextNodes = view.tracks.flatMap((track) =>
+    track.nodes.map((node) => {
+      const existing = existingById.get(node.id);
+      const next = {
+        id: node.id,
+        spaceId,
+        parentNodeId: toTrackParentId(track.id),
+        rawQuestionText: node.questionText,
+        createdAt: existing?.createdAt ?? node.createdAt ?? new Date().toISOString(),
+        orderIndex,
+        isSuggested: node.isSuggested,
+        state: "normal" as const,
+        dimension: existing?.dimension ?? "definition"
+      };
+      orderIndex += 1;
+      return next;
+    })
+  );
+
+  return {
+    ...store,
+    nodes: [...store.nodes.filter((node) => node.spaceId !== spaceId), ...nextNodes]
+  };
+}
 
 function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
   return {
@@ -302,15 +497,20 @@ export function TimeArchive() {
   const [pinEnabled, setPinEnabled] = useState(false);
   const [pinLockedUntil, setPinLockedUntil] = useState(0);
   const [pinUnlocked, setPinUnlocked] = useState(false);
-  const [offlineSnapshotExists, setOfflineSnapshotExists] = useState(false);
+  const [, setOfflineSnapshotExists] = useState(false);
+  const [offlineMeta, setOfflineMeta] = useState<OfflineSnapshotMeta | null>(null);
   const [pinTick, setPinTick] = useState(0);
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
+  const [authDialogOpen, setAuthDialogOpen] = useState(false);
+  const [bindingDialog, setBindingDialog] = useState<BindingDialogState | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
   const offlineSyncingRef = useRef(false);
+  const localProfileIdRef = useRef("");
+  const bindingCheckUserIdRef = useRef<string | null>(null);
   const [stars] = useState(() => createStars(36));
   const freezeNoteByDoubtId = useMemo(() => {
     const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
@@ -357,11 +557,152 @@ export function TimeArchive() {
     return status;
   }, []);
 
-  const canEnterOffline = useMemo(() => {
-    if (!hydrated) return false;
-    if (!offlineSnapshotExists) return false;
-    return typeof navigator !== "undefined" && navigator.onLine === false;
-  }, [hydrated, offlineSnapshotExists]);
+  const guestModeEnabled = canAccessGuestMode();
+  const cloudSyncEnabled = canUseCloudSync(sessionUser);
+  const cloudSyncReady =
+    cloudSyncEnabled &&
+    offlineMeta?.ownerMode === "user" &&
+    offlineMeta.boundUserId === sessionUser?.userId &&
+    offlineMeta.syncState.bindingRequired !== true;
+
+  const updateOfflineMeta = useCallback((updater: (current: OfflineSnapshotMeta) => OfflineSnapshotMeta) => {
+    setOfflineMeta((current) => {
+      const fallback = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId());
+      return updater(current ?? fallback);
+    });
+  }, []);
+
+  const markLocalChange = useCallback(() => {
+    updateOfflineMeta((current) => ({
+      ...current,
+      syncState: {
+        ...current.syncState,
+        hasLocalChanges: true
+      }
+    }));
+  }, [updateOfflineMeta]);
+
+  const markCloudSynced = useCallback(
+    (userId?: string | null) => {
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: userId ? "user" : current.ownerMode,
+        boundUserId: userId ?? current.boundUserId,
+        syncState: {
+          ...current.syncState,
+          lastSyncedAt: new Date().toISOString(),
+          hasLocalChanges: false,
+          bindingRequired: false
+        }
+      }));
+    },
+    [updateOfflineMeta]
+  );
+
+  const buildLocalExportPayload = useCallback(
+    (user: SessionUser): UserExportPayload => ({
+      version: "2026-03-03",
+      exported_at: new Date().toISOString(),
+      user_id: user.userId,
+      user_email: user.email,
+      life: {
+        doubts: lifeStore.doubts.map((item) => ({
+          id: item.id,
+          raw_text: item.rawText,
+          first_node_preview: item.firstNodePreview,
+          last_node_preview: item.lastNodePreview,
+          created_at: item.createdAt,
+          archived_at: item.archivedAt,
+          deleted_at: item.deletedAt
+        })),
+        notes: lifeStore.notes.map((item) => ({
+          id: item.id,
+          doubt_id: item.doubtId,
+          note_text: item.noteText,
+          created_at: item.createdAt
+        }))
+      },
+      thinking: {
+        spaces: thinkingStore.spaces.map((item) => ({
+          id: item.id,
+          userId: user.userId,
+          rootQuestionText: item.rootQuestionText,
+          status: item.status,
+          createdAt: item.createdAt,
+          frozenAt: item.frozenAt,
+          sourceTimeDoubtId: item.sourceTimeDoubtId
+        })),
+        nodes: thinkingStore.nodes.map((item) => ({
+          id: item.id,
+          spaceId: item.spaceId,
+          parentNodeId: item.parentNodeId,
+          rawQuestionText: item.rawQuestionText,
+          createdAt: item.createdAt,
+          orderIndex: item.orderIndex,
+          isSuggested: item.isSuggested,
+          state: item.state,
+          dimension: item.dimension
+        })),
+        space_meta: thinkingStore.spaceMeta.map((item) => ({
+          spaceId: item.spaceId,
+          userFreezeNote: item.userFreezeNote,
+          exportVersion: item.exportVersion,
+          backgroundText: item.backgroundText ?? null,
+          backgroundVersion: item.backgroundVersion ?? 0,
+          suggestionDecay: item.suggestionDecay ?? 0,
+          lastTrackId: item.lastTrackId ?? null,
+          lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
+          parkingTrackId: item.parkingTrackId ?? null,
+          pendingTrackId: item.pendingTrackId ?? null,
+          emptyTrackIds: item.emptyTrackIds ?? [],
+          milestoneNodeIds: item.milestoneNodeIds ?? [],
+          trackDirectionHints: item.trackDirectionHints ?? {}
+        })),
+        node_links: thinkingStore.nodeLinks.map((item) => ({
+          id: item.id,
+          spaceId: item.spaceId,
+          sourceNodeId: item.sourceNodeId,
+          targetNodeId: item.targetNodeId,
+          linkType: item.linkType,
+          score: item.score,
+          createdAt: item.createdAt
+        })),
+        inbox: thinkingStore.inbox,
+        scratch: thinkingStore.scratch.map((item) => ({
+          id: item.id,
+          userId: user.userId,
+          rawText: item.rawText,
+          createdAt: item.createdAt,
+          updatedAt: item.updatedAt,
+          archivedAt: item.archivedAt,
+          deletedAt: item.deletedAt,
+          derivedSpaceId: item.derivedSpaceId,
+          fedTimeDoubtId: item.fedTimeDoubtId
+        }))
+      },
+      audit: []
+    }),
+    [lifeStore.doubts, lifeStore.notes, thinkingStore.inbox, thinkingStore.nodeLinks, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
+  );
+
+  const getLocalSpaceView = useCallback(
+    (spaceId: string) => thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null),
+    [thinkingView]
+  );
+
+  const commitLocalSpaceView = useCallback(
+    (spaceId: string, nextView: ThinkingSpaceView | null) => {
+      if (nextView) thinkingViewCacheRef.current[spaceId] = nextView;
+      else delete thinkingViewCacheRef.current[spaceId];
+      if ((thinkingView?.spaceId === spaceId || activeSpaceId === spaceId) && nextView !== thinkingView) {
+        setThinkingView(nextView);
+      }
+      if (!nextView && (thinkingView?.spaceId === spaceId || activeSpaceId === spaceId)) {
+        setThinkingView(null);
+      }
+    },
+    [activeSpaceId, thinkingView]
+  );
 
   const syncAuth = useCallback(async () => {
     try {
@@ -392,10 +733,10 @@ export function TimeArchive() {
       if (response.status !== 401) return false;
       setSessionUser(null);
       setAuthReady(true);
-      showNotice("登录已失效，请重新登录");
+      if (sessionUser) showNotice("登录已失效，请重新登录");
       return true;
     },
-    [showNotice]
+    [sessionUser, showNotice]
   );
 
   const syncLifeFromApi = useCallback(
@@ -544,6 +885,70 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
+  const fetchCloudExport = useCallback(async () => {
+    const response = await fetch("/v1/system/export", { method: "GET", cache: "no-store" });
+    if (handleUnauthorized(response) || !response.ok) return null;
+    const payload = (await response.json().catch(() => null)) as { payload?: UserExportPayload; checksum?: string } | null;
+    if (!payload?.payload || typeof payload.checksum !== "string") return null;
+    return payload;
+  }, [handleUnauthorized]);
+
+  const refreshFromCloud = useCallback(
+    async (preferredSpaceId?: string | null) => {
+      const [lifeOk, spaces, scratch] = await Promise.all([
+        syncLifeFromApi(true),
+        syncThinkingSpacesFromApi(true),
+        syncThinkingScratchFromApi(true)
+      ]);
+      const nextActive =
+        (preferredSpaceId && spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
+        pickDefaultSpaceId(spaces);
+      thinkingViewCacheRef.current = {};
+      setActiveSpaceId(nextActive);
+      if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+      else setThinkingView(null);
+      if (lifeOk || spaces.length || scratch.length || !hasMeaningfulLocalData(lifeStore, thinkingStore)) {
+        markCloudSynced(sessionUser?.userId ?? null);
+      }
+    },
+    [
+      lifeStore,
+      loadThinkingViewFromApi,
+      markCloudSynced,
+      sessionUser?.userId,
+      syncLifeFromApi,
+      syncThinkingScratchFromApi,
+      syncThinkingSpacesFromApi,
+      thinkingStore
+    ]
+  );
+
+  const importLocalPayloadToCloud = useCallback(
+    async (user: SessionUser) => {
+      const payload = buildLocalExportPayload(user);
+      const checksum = await sha256Hex(stableStringify(payload));
+      const response = await fetch("/v1/system/import", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ payload, checksum, mode: "replace" })
+      });
+      if (handleUnauthorized(response) || !response.ok) return false;
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: "user",
+        boundUserId: user.userId,
+        syncState: {
+          lastSyncedAt: new Date().toISOString(),
+          hasLocalChanges: false,
+          bindingRequired: false
+        }
+      }));
+      await refreshFromCloud(null);
+      return true;
+    },
+    [buildLocalExportPayload, handleUnauthorized, refreshFromCloud, updateOfflineMeta]
+  );
+
   const syncQueuedMutations = useCallback(async () => {
     if (offlineSyncingRef.current) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
@@ -610,6 +1015,10 @@ export function TimeArchive() {
 
   const queueMutation = useCallback(
     async (route: string, body: Record<string, unknown> | null = null) => {
+      if (!cloudSyncReady || !sessionUser) {
+        markLocalChange();
+        return null;
+      }
       const now = new Date().toISOString();
       const queued: QueuedMutation = {
         id: createId(),
@@ -624,9 +1033,10 @@ export function TimeArchive() {
         lastError: null
       };
       await enqueueOfflineMutation(queued);
+      markLocalChange();
       return queued;
     },
-    []
+    [cloudSyncReady, markLocalChange, sessionUser]
   );
 
   const createLifeDoubt = useCallback(
@@ -639,114 +1049,123 @@ export function TimeArchive() {
         client_entity_id: localDoubtId,
         client_updated_at: now
       };
-      try {
-        const response = await fetch("/v1/doubts", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) {
-          if (response.status >= 500) {
-            await queueMutation("/v1/doubts", payload);
-            setLifeStore((prev) => ({
-              ...prev,
-              doubts: [
-                {
-                  id: localDoubtId,
-                  rawText,
-                  firstNodePreview: null,
-                  lastNodePreview: null,
-                  createdAt: now,
-                  archivedAt: null,
-                  deletedAt: null
-                },
-                ...prev.doubts.filter((item) => item.id !== localDoubtId)
-              ]
-            }));            return true;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch("/v1/doubts", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) {
+            if (response.status >= 500) {
+              await queueMutation("/v1/doubts", payload);
+              setLifeStore((prev) => ({
+                ...prev,
+                doubts: [
+                  {
+                    id: localDoubtId,
+                    rawText,
+                    firstNodePreview: null,
+                    lastNodePreview: null,
+                    createdAt: now,
+                    archivedAt: null,
+                    deletedAt: null
+                  },
+                  ...prev.doubts.filter((item) => item.id !== localDoubtId)
+                ]
+              }));
+              return true;
+            }
+            showNotice("放入失败，请稍后再试");
+            return false;
           }
-          showNotice("放入失败，请稍后再试");
-          return false;
+          void syncLifeFromApi(true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            showNotice("网络异常，请稍后再试");
+            return false;
+          }
         }
-        void syncLifeFromApi(true);
-        return true;
-      } catch (error) {
-        if (isOfflineNetworkError(error)) {
-          await queueMutation("/v1/doubts", payload);
-          setLifeStore((prev) => ({
-            ...prev,
-            doubts: [
-              {
-                id: localDoubtId,
-                rawText,
-                firstNodePreview: null,
-                lastNodePreview: null,
-                createdAt: now,
-                archivedAt: null,
-                deletedAt: null
-              },
-              ...prev.doubts.filter((item) => item.id !== localDoubtId)
-            ]
-          }));          return true;
-        }
-        showNotice("网络异常，请稍后再试");
-        return false;
       }
+      await queueMutation("/v1/doubts", payload);
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: [
+          {
+            id: localDoubtId,
+            rawText,
+            firstNodePreview: null,
+            lastNodePreview: null,
+            createdAt: now,
+            archivedAt: null,
+            deletedAt: null
+          },
+          ...prev.doubts.filter((item) => item.id !== localDoubtId)
+        ]
+      }));
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, queueMutation, showNotice, syncLifeFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi]
   );
 
   const saveLifeDoubtNote = useCallback(
     async (doubtId: string, noteText: string) => {
       const now = new Date().toISOString();
       const payload = { note_text: noteText, client_updated_at: now };
-      try {
-        const response = await fetch(`/v1/doubts/${doubtId}/note`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) {
-          if (response.status >= 500) {
-            await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
-            setLifeStore((prev) => {
-              const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
-              const cleaned = noteText.trim();
-              const nextNotes = cleaned
-                ? [
-                    ...prev.notes.filter((item) => item.doubtId !== doubtId),
-                    { id: noteId, doubtId, noteText: cleaned, createdAt: now }
-                  ]
-                : prev.notes.filter((item) => item.doubtId !== doubtId);
-              return { ...prev, notes: nextNotes };
-            });            return true;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/doubts/${doubtId}/note`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) {
+            if (response.status >= 500) {
+              await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
+              setLifeStore((prev) => {
+                const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
+                const cleaned = noteText.trim();
+                const nextNotes = cleaned
+                  ? [
+                      ...prev.notes.filter((item) => item.doubtId !== doubtId),
+                      { id: noteId, doubtId, noteText: cleaned, createdAt: now }
+                    ]
+                  : prev.notes.filter((item) => item.doubtId !== doubtId);
+                return { ...prev, notes: nextNotes };
+              });
+              return true;
+            }
+            showNotice("注记保存失败");
+            return false;
           }
-          showNotice("注记保存失败");
-          return false;
+          void syncLifeFromApi(true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            showNotice("网络异常，请稍后再试");
+            return false;
+          }
         }
-        void syncLifeFromApi(true);
-        return true;
-      } catch (error) {
-        if (isOfflineNetworkError(error)) {
-          await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
-          setLifeStore((prev) => {
-            const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
-            const cleaned = noteText.trim();
-            const nextNotes = cleaned
-              ? [
-                  ...prev.notes.filter((item) => item.doubtId !== doubtId),
-                  { id: noteId, doubtId, noteText: cleaned, createdAt: now }
-                ]
-              : prev.notes.filter((item) => item.doubtId !== doubtId);
-            return { ...prev, notes: nextNotes };
-          });          return true;
-        }
-        showNotice("网络异常，请稍后再试");
-        return false;
       }
+      await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
+      setLifeStore((prev) => {
+        const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
+        const cleaned = noteText.trim();
+        const nextNotes = cleaned
+          ? [...prev.notes.filter((item) => item.doubtId !== doubtId), { id: noteId, doubtId, noteText: cleaned, createdAt: now }]
+          : prev.notes.filter((item) => item.doubtId !== doubtId);
+        return { ...prev, notes: nextNotes };
+      });
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, queueMutation, showNotice, syncLifeFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi]
   );
 
   const pruneDerivedThinkingByDoubt = useCallback((doubtId: string) => {
@@ -767,26 +1186,37 @@ export function TimeArchive() {
 
   const deleteLifeDoubtWithDerived = useCallback(
     async (doubtId: string) => {
-      try {
-        const response = await fetch(`/v1/doubts/${doubtId}/delete`, { method: "POST" });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) {
-          showNotice("删除失败，请稍后再试");
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/doubts/${doubtId}/delete`, { method: "POST" });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) {
+            showNotice("删除失败，请稍后再试");
+            return false;
+          }
+          pruneDerivedThinkingByDoubt(doubtId);
+          void syncLifeFromApi(true);
+          void syncThinkingSpacesFromApi(true);
+          if (activeSpaceId && thinkingStore.spaces.some((space) => space.sourceTimeDoubtId === doubtId && space.id === activeSpaceId)) {
+            setThinkingView(null);
+          }
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch {
+          showNotice("网络异常，请稍后再试");
           return false;
         }
-        pruneDerivedThinkingByDoubt(doubtId);
-        void syncLifeFromApi(true);
-        void syncThinkingSpacesFromApi(true);
-        if (activeSpaceId && thinkingStore.spaces.some((space) => space.sourceTimeDoubtId === doubtId && space.id === activeSpaceId)) {
-          setThinkingView(null);
-        }
-        return true;
-      } catch {
-        showNotice("网络异常，请稍后再试");
-        return false;
       }
+      pruneDerivedThinkingByDoubt(doubtId);
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: prev.doubts.filter((item) => item.id !== doubtId),
+        notes: prev.notes.filter((item) => item.doubtId !== doubtId)
+      }));
+      markLocalChange();
+      return true;
     },
-    [activeSpaceId, handleUnauthorized, pruneDerivedThinkingByDoubt, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces]
+    [activeSpaceId, cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, pruneDerivedThinkingByDoubt, sessionUser?.userId, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces]
   );
 
   const createThinkingSpaceApi = useCallback(
@@ -814,47 +1244,50 @@ export function TimeArchive() {
         client_parking_track_id: localParkingTrackId,
         client_updated_at: now
       };
-      try {
-        const response = await fetch("/v1/thinking/spaces", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(basePayload)
-        });
-        if (handleUnauthorized(response)) return { ok: false, message: "登录已失效，请重新登录" };
-        if (response.status === 409) return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
-        const payload = (await response.json().catch(() => ({}))) as {
-          space_id?: string;
-          converted?: boolean;
-          created_as_statement?: boolean;
-          suggested_questions?: string[];
-          question_suggestion?: string | null;
-          error?: string;
-        };
-        if (!response.ok) {
-          return {
-            ok: false,
-            message: typeof payload.error === "string" ? payload.error : "创建空间失败",
-            suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : []
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch("/v1/thinking/spaces", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(basePayload)
+          });
+          if (handleUnauthorized(response)) return { ok: false, message: "登录已失效，请重新登录" };
+          if (response.status === 409) return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
+          const payload = (await response.json().catch(() => ({}))) as {
+            space_id?: string;
+            converted?: boolean;
+            created_as_statement?: boolean;
+            suggested_questions?: string[];
+            question_suggestion?: string | null;
+            error?: string;
           };
-        }
-        const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
-        if (!spaceId) return { ok: false, message: "创建空间失败" };
-        const spaces = await syncThinkingSpacesFromApi(true);
-        setActiveSpaceId(spaceId);
-        if (spaces.some((space) => space.id === spaceId)) {
-          await loadThinkingViewFromApi(spaceId, true);
-        }
-        return {
-          ok: true,
-          spaceId,
-          converted: payload.converted === true,
-          createdAsStatement: payload.created_as_statement === true,
-          suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
-          questionSuggestion: typeof payload.question_suggestion === "string" ? payload.question_suggestion : null
-        };
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) {
-          return { ok: false, message: "网络异常，请稍后再试" };
+          if (!response.ok) {
+            return {
+              ok: false,
+              message: typeof payload.error === "string" ? payload.error : "创建空间失败",
+              suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : []
+            };
+          }
+          const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
+          if (!spaceId) return { ok: false, message: "创建空间失败" };
+          const spaces = await syncThinkingSpacesFromApi(true);
+          setActiveSpaceId(spaceId);
+          if (spaces.some((space) => space.id === spaceId)) {
+            await loadThinkingViewFromApi(spaceId, true);
+          }
+          markCloudSynced(sessionUser?.userId ?? null);
+          return {
+            ok: true,
+            spaceId,
+            converted: payload.converted === true,
+            createdAsStatement: payload.created_as_statement === true,
+            suggestedQuestions: Array.isArray(payload.suggested_questions) ? payload.suggested_questions : [],
+            questionSuggestion: typeof payload.question_suggestion === "string" ? payload.question_suggestion : null
+          };
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            return { ok: false, message: "网络异常，请稍后再试" };
+          }
         }
       }
       await queueMutation("/v1/thinking/spaces", basePayload);
@@ -912,7 +1345,9 @@ export function TimeArchive() {
         spaceMeta: [localMeta, ...prev.spaceMeta.filter((item) => item.spaceId !== localSpaceId)]
       }));
       setActiveSpaceId(localSpaceId);
-      setThinkingView(localView);      return {
+      setThinkingView(localView);
+      markLocalChange();
+      return {
         ok: true,
         spaceId: localSpaceId,
         converted: false,
@@ -921,7 +1356,7 @@ export function TimeArchive() {
         questionSuggestion: null
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
+    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
   );
 
   useEffect(() => {
@@ -939,6 +1374,8 @@ export function TimeArchive() {
     if (!pinReady || (pinEnabled && !pinUnlocked)) return;
     let cancelled = false;
     void (async () => {
+      const localProfileId = getOrCreateLocalProfileId();
+      localProfileIdRef.current = localProfileId;
       const snapshot = await loadOfflineSnapshot();
       if (cancelled) return;
       if (snapshot) {
@@ -952,10 +1389,12 @@ export function TimeArchive() {
           null;
         setThinkingView(initialView);
         setOfflineSnapshotExists(true);
+        setOfflineMeta(snapshot.meta ?? createOfflineSnapshotMeta(localProfileId));
         setHydrated(true);
         return;
       }
       setOfflineSnapshotExists(false);
+      setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
       const loadedLife = loadLifeStore();
       const loadedThinking = loadThinkingStore();
       setLifeStore(loadedLife);
@@ -980,22 +1419,22 @@ export function TimeArchive() {
   }, [thinkingFocusMode]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     void syncLifeFromApi(true);
-  }, [authReady, hydrated, sessionUser, syncLifeFromApi]);
+  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncLifeFromApi]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     void syncThinkingScratchFromApi(true);
-  }, [authReady, hydrated, sessionUser, syncThinkingScratchFromApi]);
+  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncThinkingScratchFromApi]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     void syncQueuedMutations();
-  }, [authReady, hydrated, sessionUser, syncQueuedMutations]);
+  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncQueuedMutations]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     const onOnline = () => {
       void syncQueuedMutations();
     };
@@ -1007,10 +1446,10 @@ export function TimeArchive() {
       window.removeEventListener("online", onOnline);
       window.clearInterval(timer);
     };
-  }, [authReady, hydrated, sessionUser, syncQueuedMutations]);
+  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncQueuedMutations]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     void (async () => {
       const spaces = await syncThinkingSpacesFromApi(true);
       const initial = pickDefaultSpaceId(spaces);
@@ -1018,7 +1457,67 @@ export function TimeArchive() {
       if (initial) await loadThinkingViewFromApi(initial, true);
       else setThinkingView(null);
     })();
-  }, [authReady, hydrated, loadThinkingViewFromApi, sessionUser, syncThinkingSpacesFromApi]);
+  }, [authReady, cloudSyncReady, hydrated, loadThinkingViewFromApi, sessionUser, syncThinkingSpacesFromApi]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser || !offlineMeta) return;
+    if (bindingCheckUserIdRef.current === sessionUser.userId) return;
+    if (offlineMeta.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId) {
+      bindingCheckUserIdRef.current = sessionUser.userId;
+      return;
+    }
+
+    const localHasData = hasMeaningfulLocalData(lifeStore, thinkingStore);
+    if (!localHasData) {
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: "user",
+        boundUserId: sessionUser.userId,
+        syncState: {
+          ...current.syncState,
+          bindingRequired: false
+        }
+      }));
+      bindingCheckUserIdRef.current = sessionUser.userId;
+      return;
+    }
+
+    let cancelled = false;
+    void (async () => {
+      const cloud = await fetchCloudExport();
+      if (cancelled || !cloud?.payload) return;
+      if (isCloudPayloadEmpty(cloud.payload)) {
+        const imported = await importLocalPayloadToCloud(sessionUser);
+        if (cancelled || !imported) return;
+        bindingCheckUserIdRef.current = sessionUser.userId;
+        showNotice("本地数据已绑定到当前账号");
+        return;
+      }
+      updateOfflineMeta((current) => ({
+        ...current,
+        syncState: {
+          ...current.syncState,
+          bindingRequired: true
+        }
+      }));
+      setBindingDialog({ cloudPayload: cloud.payload, submitting: false });
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    authReady,
+    fetchCloudExport,
+    hydrated,
+    importLocalPayloadToCloud,
+    lifeStore,
+    offlineMeta,
+    sessionUser,
+    showNotice,
+    thinkingStore,
+    updateOfflineMeta
+  ]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1031,7 +1530,7 @@ export function TimeArchive() {
   }, [hydrated, thinkingStore]);
 
   useEffect(() => {
-    if (!hydrated) return;
+    if (!hydrated || !offlineMeta) return;
     if (thinkingView) {
       thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
     }
@@ -1040,9 +1539,10 @@ export function TimeArchive() {
       thinkingStore,
       activeSpaceId,
       thinkingViews: thinkingViewCacheRef.current,
-      savedAt: new Date().toISOString()
+      savedAt: new Date().toISOString(),
+      meta: offlineMeta
     });
-  }, [activeSpaceId, hydrated, lifeStore, thinkingStore, thinkingView]);
+  }, [activeSpaceId, hydrated, lifeStore, offlineMeta, thinkingStore, thinkingView]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1076,7 +1576,7 @@ export function TimeArchive() {
   }, [pinEnabled, pinLockedUntil]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser) return;
+    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     if (!activeSpaceId) {
       setThinkingView(null);
       return;
@@ -1085,7 +1585,7 @@ export function TimeArchive() {
     if (cached) setThinkingView(cached);
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     void loadThinkingViewFromApi(activeSpaceId, true);
-  }, [activeSpaceId, authReady, hydrated, loadThinkingViewFromApi, sessionUser]);
+  }, [activeSpaceId, authReady, cloudSyncReady, hydrated, loadThinkingViewFromApi, sessionUser]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1184,18 +1684,21 @@ export function TimeArchive() {
         client_entity_id: localScratchId,
         client_updated_at: now
       };
-      try {
-        const response = await fetch("/v1/thinking/scratch", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        await syncThinkingScratchFromApi(true);
-        return true;
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch("/v1/thinking/scratch", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await syncThinkingScratchFromApi(true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
       }
       await queueMutation("/v1/thinking/scratch", payload);
       setThinkingStore((prev) => ({
@@ -1213,44 +1716,94 @@ export function TimeArchive() {
           },
           ...prev.scratch.filter((item) => item.id !== localScratchId)
         ]
-      }));      return true;
+      }));
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, queueMutation, showNotice, syncThinkingScratchFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingScratchFromApi]
   );
 
   const handleFeedThinkingScratchToTime = useCallback(
     async (scratchId: string) => {
-      try {
-        const response = await fetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        await syncLifeFromApi(true);
-        await syncThinkingScratchFromApi(true);
-        return true;
-      } catch {
-        return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await syncLifeFromApi(true);
+          await syncThinkingScratchFromApi(true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch {
+          return false;
+        }
       }
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch) return false;
+      const createdAt = new Date().toISOString();
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: [
+          {
+            id: scratch.fedTimeDoubtId ?? createId(),
+            rawText: scratch.rawText,
+            firstNodePreview: null,
+            lastNodePreview: null,
+            createdAt,
+            archivedAt: null,
+            deletedAt: null
+          },
+          ...prev.doubts
+        ]
+      }));
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.filter((item) => item.id !== scratchId)
+      }));
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, syncLifeFromApi, syncThinkingScratchFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, sessionUser?.userId, syncLifeFromApi, syncThinkingScratchFromApi, thinkingStore.scratch]
   );
 
   const handleDeleteThinkingScratch = useCallback(
     async (scratchId: string) => {
-      try {
-        const response = await fetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        await syncThinkingScratchFromApi(true);
-        return true;
-      } catch {
-        return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await syncThinkingScratchFromApi(true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch {
+          return false;
+        }
       }
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.filter((item) => item.id !== scratchId)
+      }));
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, syncThinkingScratchFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingScratchFromApi]
   );
 
   const handleScratchToSpace = useCallback(
     async (scratchId: string) => {
+      if (!cloudSyncReady) {
+        const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+        if (!scratch) return { ok: false as const, message: "随记不存在" };
+        const created = await createThinkingSpaceApi(scratch.rawText, null);
+        if (!created.ok) return { ok: false as const, message: created.message };
+        setThinkingStore((prev) => ({
+          ...prev,
+          scratch: prev.scratch.filter((item) => item.id !== scratchId)
+        }));
+        markLocalChange();
+        return { ok: true as const, spaceId: created.spaceId };
+      }
       try {
         const response = await fetch(`/v1/thinking/scratch/${scratchId}/to-space`, { method: "POST" });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
@@ -1265,12 +1818,13 @@ export function TimeArchive() {
         if (spaces.some((space) => space.id === spaceId)) {
           await loadThinkingViewFromApi(spaceId, true);
         }
+        markCloudSynced(sessionUser?.userId ?? null);
         return { ok: true as const, spaceId };
       } catch {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingScratchFromApi, syncThinkingSpacesFromApi]
+    [cloudSyncReady, createThinkingSpaceApi, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingScratchFromApi, syncThinkingSpacesFromApi, thinkingStore.scratch]
   );
 
   const handleThinkingAddQuestion = useCallback(
@@ -1280,57 +1834,60 @@ export function TimeArchive() {
     ) => {
       const now = new Date().toISOString();
       const localNodeId = createId();
-      try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/questions`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            raw_text: payload.rawInput,
-            track_id: payload.trackId,
-            from_suggestion: payload.fromSuggestion === true,
-            client_node_id: localNodeId,
-            client_created_at: now,
-            client_updated_at: now
-          })
-        });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        const body = (await response.json().catch(() => ({}))) as {
-          node_id?: string;
-          converted?: boolean;
-          note_text?: string | null;
-          track_id?: string;
-          error?: string;
-          suggested_questions?: string[];
-          related_candidate?: { node_id?: string; preview?: string; score?: number } | null;
-        };
-        if (!response.ok) {
-          if (response.status === 409) return { ok: false as const, message: "该空间已只读" };
-          if (response.status === 400) return { ok: false as const, message: typeof body.error === "string" ? body.error : "输入过短" };
-          return { ok: false as const, message: "放入结构失败" };
-        }
-        if (typeof body.node_id !== "string" || !body.node_id.trim()) {
-          return { ok: false as const, message: "放入结构失败：未返回节点标识" };
-        }
-        await loadThinkingViewFromApi(spaceId, true);
-        return {
-          ok: true as const,
-          converted: body.converted === true,
-          noteText: typeof body.note_text === "string" ? body.note_text : null,
-          trackId: typeof body.track_id === "string" ? body.track_id : payload.trackId ?? "",
-          nodeId: body.node_id,
-          suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : [],
-          relatedCandidate:
-            body.related_candidate && typeof body.related_candidate.node_id === "string"
-              ? {
-                  nodeId: body.related_candidate.node_id,
-                  preview: typeof body.related_candidate.preview === "string" ? body.related_candidate.preview : "",
-                  score: Number.isFinite(body.related_candidate.score) ? Number(body.related_candidate.score) : 0
-                }
-              : null
-        };
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) {
-          return { ok: false as const, message: "网络异常，请稍后再试" };
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/spaces/${spaceId}/questions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              raw_text: payload.rawInput,
+              track_id: payload.trackId,
+              from_suggestion: payload.fromSuggestion === true,
+              client_node_id: localNodeId,
+              client_created_at: now,
+              client_updated_at: now
+            })
+          });
+          if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+          const body = (await response.json().catch(() => ({}))) as {
+            node_id?: string;
+            converted?: boolean;
+            note_text?: string | null;
+            track_id?: string;
+            error?: string;
+            suggested_questions?: string[];
+            related_candidate?: { node_id?: string; preview?: string; score?: number } | null;
+          };
+          if (!response.ok) {
+            if (response.status === 409) return { ok: false as const, message: "该空间已只读" };
+            if (response.status === 400) return { ok: false as const, message: typeof body.error === "string" ? body.error : "输入过短" };
+            return { ok: false as const, message: "放入结构失败" };
+          }
+          if (typeof body.node_id !== "string" || !body.node_id.trim()) {
+            return { ok: false as const, message: "放入结构失败：未返回节点标识" };
+          }
+          await loadThinkingViewFromApi(spaceId, true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return {
+            ok: true as const,
+            converted: body.converted === true,
+            noteText: typeof body.note_text === "string" ? body.note_text : null,
+            trackId: typeof body.track_id === "string" ? body.track_id : payload.trackId ?? "",
+            nodeId: body.node_id,
+            suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : [],
+            relatedCandidate:
+              body.related_candidate && typeof body.related_candidate.node_id === "string"
+                ? {
+                    nodeId: body.related_candidate.node_id,
+                    preview: typeof body.related_candidate.preview === "string" ? body.related_candidate.preview : "",
+                    score: Number.isFinite(body.related_candidate.score) ? Number(body.related_candidate.score) : 0
+                  }
+                : null
+          };
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            return { ok: false as const, message: "网络异常，请稍后再试" };
+          }
         }
       }
       let resolvedTrackId = payload.trackId;
@@ -1435,7 +1992,9 @@ export function TimeArchive() {
             dimension: "definition"
           }
         ]
-      }));      return {
+      }));
+      markLocalChange();
+      return {
         ok: true as const,
         converted: false,
         noteText: null,
@@ -1445,11 +2004,12 @@ export function TimeArchive() {
         relatedCandidate: null
       };
     },
-    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
+    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
   );
 
   const handleThinkingOrganizePreview = useCallback(
     async (spaceId: string) => {
+      if (!cloudSyncReady) return [];
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-preview`, { method: "POST" });
         if (handleUnauthorized(response)) return [];
@@ -1470,11 +2030,52 @@ export function TimeArchive() {
         return [];
       }
     },
-    [handleUnauthorized]
+    [cloudSyncReady, handleUnauthorized]
   );
 
   const handleThinkingOrganizeApply = useCallback(
     async (spaceId: string, moves: Array<{ nodeId: string; targetTrackId: string }>) => {
+      if (!cloudSyncReady) {
+        const currentView = getLocalSpaceView(spaceId);
+        if (!currentView) return { ok: false as const, message: "当前空间未加载完成" };
+        const movingIds = new Set(moves.map((item) => item.nodeId));
+        let resolvedTargetTrackId = moves[0]?.targetTrackId ?? "__new__";
+        let nextTracks = currentView.tracks.map((track) => ({
+          ...track,
+          nodes: track.nodes.filter((node) => !movingIds.has(node.id))
+        }));
+        const movedNodes = currentView.tracks.flatMap((track) => track.nodes.filter((node) => movingIds.has(node.id)));
+        if (!movedNodes.length) return { ok: true as const, movedCount: 0 };
+        if (resolvedTargetTrackId === "__new__") {
+          resolvedTargetTrackId = createId();
+          const createdTrack = {
+            id: resolvedTargetTrackId,
+            titleQuestionText: movedNodes[0]?.questionText ?? "新方向",
+            directionHint: null,
+            isParking: false,
+            isEmpty: false,
+            nodeCount: movedNodes.length,
+            nodes: movedNodes
+          };
+          const parkingTrackId = currentView.parkingTrackId;
+          const parkingIndex = parkingTrackId ? nextTracks.findIndex((track) => track.id === parkingTrackId) : -1;
+          if (parkingIndex >= 0) nextTracks.splice(parkingIndex, 0, createdTrack);
+          else nextTracks.push(createdTrack);
+        } else {
+          nextTracks = nextTracks.map((track) =>
+            track.id === resolvedTargetTrackId ? { ...track, nodes: [...track.nodes, ...movedNodes], isEmpty: false } : track
+          );
+        }
+        const linkedTracks = normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, spaceId);
+        const nextView: ThinkingSpaceView = {
+          ...currentView,
+          tracks: linkedTracks
+        };
+        commitLocalSpaceView(spaceId, nextView);
+        setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+        markLocalChange();
+        return { ok: true as const, movedCount: movedNodes.length };
+      }
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-apply`, {
           method: "POST",
@@ -1487,16 +2088,54 @@ export function TimeArchive() {
         const body = (await response.json().catch(() => ({}))) as { moved_count?: number; error?: string };
         if (!response.ok) return { ok: false as const, message: typeof body.error === "string" ? body.error : "整理失败" };
         await loadThinkingViewFromApi(spaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return { ok: true as const, movedCount: Number.isFinite(body.moved_count) ? Number(body.moved_count) : 0 };
       } catch {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
   );
 
   const handleThinkingLinkNodes = useCallback(
     async (nodeId: string, targetNodeId: string) => {
+      if (!cloudSyncReady) {
+        const source = thinkingStore.nodes.find((node) => node.id === nodeId);
+        const target = thinkingStore.nodes.find((node) => node.id === targetNodeId);
+        if (!source || !target || source.spaceId !== target.spaceId || source.id === target.id) return false;
+        const sourceNodeId = [source.id, target.id].sort()[0];
+        const targetNodeIdSorted = [source.id, target.id].sort()[1];
+        const exists = thinkingStore.nodeLinks.some(
+          (link) =>
+            link.spaceId === source.spaceId &&
+            link.sourceNodeId === sourceNodeId &&
+            link.targetNodeId === targetNodeIdSorted &&
+            link.linkType === "related"
+        );
+        if (exists) return true;
+        const nextLink: ThinkingNodeLink = {
+          id: createId(),
+          spaceId: source.spaceId,
+          sourceNodeId,
+          targetNodeId: targetNodeIdSorted,
+          linkType: "related",
+          score: 1,
+          createdAt: new Date().toISOString()
+        };
+        setThinkingStore((prev) => ({
+          ...prev,
+          nodeLinks: [...prev.nodeLinks, nextLink]
+        }));
+        const currentView = getLocalSpaceView(source.spaceId);
+        if (currentView) {
+          commitLocalSpaceView(source.spaceId, {
+            ...currentView,
+            tracks: normalizeTrackListWithLinks(currentView.tracks, [...thinkingStore.nodeLinks, nextLink], source.spaceId)
+          });
+        }
+        markLocalChange();
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/link`, {
           method: "POST",
@@ -1506,16 +2145,37 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks, thinkingStore.nodes]
   );
 
   const handleThinkingMoveNode = useCallback(
     async (nodeId: string, targetTrackId: string) => {
+      if (!cloudSyncReady) {
+        if (!activeSpaceId) return false;
+        const currentView = getLocalSpaceView(activeSpaceId);
+        if (!currentView) return false;
+        const movingNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+        if (!movingNode) return false;
+        const nextTracks = currentView.tracks.map((track) =>
+          track.id === targetTrackId
+            ? { ...track, nodes: [...track.nodes.filter((node) => node.id !== nodeId), movingNode], isEmpty: false }
+            : { ...track, nodes: track.nodes.filter((node) => node.id !== nodeId) }
+        );
+        const nextView = {
+          ...currentView,
+          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+        };
+        commitLocalSpaceView(activeSpaceId, nextView);
+        setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
+        markLocalChange();
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/move`, {
           method: "POST",
@@ -1525,45 +2185,76 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
   );
 
   const handleThinkingDeleteNode = useCallback(
     async (nodeId: string) => {
+      if (!cloudSyncReady) {
+        if (!activeSpaceId) return false;
+        const currentView = getLocalSpaceView(activeSpaceId);
+        if (!currentView) return false;
+        const nextLinks = thinkingStore.nodeLinks.filter((link) => link.sourceNodeId !== nodeId && link.targetNodeId !== nodeId);
+        const nextTracks = currentView.tracks.map((track) => ({
+          ...track,
+          nodes: track.nodes.filter((node) => node.id !== nodeId)
+        }));
+        const nextView = {
+          ...currentView,
+          tracks: normalizeTrackListWithLinks(nextTracks, nextLinks, activeSpaceId)
+        };
+        commitLocalSpaceView(activeSpaceId, nextView);
+        setThinkingStore((prev) => ({
+          ...syncStoreNodesFromView(prev, activeSpaceId, nextView),
+          nodeLinks: nextLinks,
+          spaceMeta: prev.spaceMeta.map((meta) =>
+            meta.spaceId === activeSpaceId
+              ? { ...meta, milestoneNodeIds: (meta.milestoneNodeIds ?? []).filter((id) => id !== nodeId) }
+              : meta
+          )
+        }));
+        markLocalChange();
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/delete`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
   );
 
   const handleThinkingUpdateNode = useCallback(
     async (nodeId: string, rawQuestionText: string) => {
       const now = new Date().toISOString();
       const payload = { raw_question_text: rawQuestionText, client_updated_at: now };
-      try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/update`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        return true;
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/nodes/${nodeId}/update`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
       }
       await queueMutation(`/v1/thinking/nodes/${nodeId}/update`, payload);
       const nextQuestion = rawQuestionText.trim();
@@ -1583,13 +2274,43 @@ export function TimeArchive() {
       setThinkingStore((prev) => ({
         ...prev,
         nodes: prev.nodes.map((node) => (node.id === nodeId ? { ...node, rawQuestionText: nextQuestion } : node))
-      }));      return true;
+      }));
+      markLocalChange();
+      return true;
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
+    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
   );
 
   const handleThinkingCopyNode = useCallback(
     async (nodeId: string, targetTrackId?: string) => {
+      if (!cloudSyncReady) {
+        if (!activeSpaceId) return null;
+        const currentView = getLocalSpaceView(activeSpaceId);
+        if (!currentView) return null;
+        const sourceNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+        if (!sourceNode) return null;
+        const nextNodeId = createId();
+        const nextNode = {
+          ...sourceNode,
+          id: nextNodeId,
+          createdAt: new Date().toISOString(),
+          echoNodeId: null,
+          echoTrackId: null
+        };
+        const resolvedTrackId = targetTrackId ?? fromTrackParentId(thinkingStore.nodes.find((node) => node.id === nodeId)?.parentNodeId) ?? currentView.currentTrackId ?? currentView.tracks[0]?.id ?? null;
+        if (!resolvedTrackId) return null;
+        const nextTracks = currentView.tracks.map((track) =>
+          track.id === resolvedTrackId ? { ...track, nodes: [...track.nodes, nextNode], isEmpty: false } : track
+        );
+        const nextView = {
+          ...currentView,
+          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+        };
+        commitLocalSpaceView(activeSpaceId, nextView);
+        setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
+        markLocalChange();
+        return nextNodeId;
+      }
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/copy`, {
           method: "POST",
@@ -1600,30 +2321,34 @@ export function TimeArchive() {
         const body = (await response.json().catch(() => ({}))) as { node_id?: string };
         if (!response.ok) return null;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return typeof body.node_id === "string" ? body.node_id : null;
       } catch {
         return null;
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks, thinkingStore.nodes]
   );
 
   const handleThinkingSaveNodeAnswer = useCallback(
     async (nodeId: string, answerText: string | null) => {
       const now = new Date().toISOString();
       const payload = { answer_text: answerText, client_updated_at: now };
-      try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/answer`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        return true;
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/nodes/${nodeId}/answer`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
       }
       await queueMutation(`/v1/thinking/nodes/${nodeId}/answer`, payload);
       if (activeSpaceId) {
@@ -1637,28 +2362,87 @@ export function TimeArchive() {
           thinkingViewCacheRef.current[activeSpaceId] = nextView;
           if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
         }
-      }      return true;
+      }
+      markLocalChange();
+      return true;
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, thinkingView]
+    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
   );
 
   const handleThinkingMisplacedNode = useCallback(
     async (nodeId: string) => {
+      if (!cloudSyncReady) {
+        if (!activeSpaceId) return false;
+        const currentView = getLocalSpaceView(activeSpaceId);
+        if (!currentView) return false;
+        let parkingTrackId = currentView.parkingTrackId;
+        let nextTracks = [...currentView.tracks];
+        if (!parkingTrackId) {
+          parkingTrackId = createId();
+          nextTracks.push({
+            id: parkingTrackId,
+            titleQuestionText: "先放这里",
+            directionHint: null,
+            isParking: true,
+            isEmpty: false,
+            nodeCount: 0,
+            nodes: []
+          });
+        }
+        const movingNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+        if (!movingNode) return false;
+        nextTracks = nextTracks.map((track) =>
+          track.id === parkingTrackId
+            ? { ...track, nodes: [...track.nodes.filter((node) => node.id !== nodeId), movingNode], isEmpty: false }
+            : { ...track, nodes: track.nodes.filter((node) => node.id !== nodeId) }
+        );
+        const nextView = {
+          ...currentView,
+          parkingTrackId,
+          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+        };
+        commitLocalSpaceView(activeSpaceId, nextView);
+        setThinkingStore((prev) => {
+          const next = syncStoreNodesFromView(prev, activeSpaceId, nextView);
+          return {
+            ...next,
+            spaceMeta: prev.spaceMeta.map((meta) =>
+              meta.spaceId === activeSpaceId ? { ...meta, parkingTrackId } : meta
+            )
+          };
+        });
+        markLocalChange();
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/nodes/${nodeId}/misplaced`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
   );
 
   const handleThinkingSetActiveTrack = useCallback(
     async (spaceId: string, trackId: string) => {
+      if (!cloudSyncReady) {
+        const currentView = getLocalSpaceView(spaceId);
+        if (!currentView || !currentView.tracks.some((track) => track.id === trackId)) return false;
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          currentTrackId: trackId
+        });
+        setThinkingStore((prev) => ({
+          ...prev,
+          spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? { ...meta, lastTrackId: trackId } : meta))
+        }));
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/active-track`, {
           method: "POST",
@@ -1668,16 +2452,46 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         await loadThinkingViewFromApi(spaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, sessionUser?.userId]
   );
 
   const handleThinkingCreateTrack = useCallback(
     async (spaceId: string) => {
+      if (!cloudSyncReady) {
+        const currentView = getLocalSpaceView(spaceId);
+        if (!currentView) return null;
+        const trackId = createId();
+        const nextTrack = {
+          id: trackId,
+          titleQuestionText: "新方向",
+          directionHint: null,
+          isParking: false,
+          isEmpty: true,
+          nodeCount: 0,
+          nodes: []
+        };
+        const parkingIndex = currentView.parkingTrackId ? currentView.tracks.findIndex((track) => track.id === currentView.parkingTrackId) : -1;
+        const nextTracks = [...currentView.tracks];
+        if (parkingIndex >= 0) nextTracks.splice(parkingIndex, 0, nextTrack);
+        else nextTracks.push(nextTrack);
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          currentTrackId: trackId,
+          tracks: nextTracks
+        });
+        setThinkingStore((prev) => ({
+          ...prev,
+          spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? { ...meta, lastTrackId: trackId } : meta))
+        }));
+        markLocalChange();
+        return trackId;
+      }
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/tracks`, {
           method: "POST",
@@ -1687,16 +2501,41 @@ export function TimeArchive() {
         const body = (await response.json().catch(() => ({}))) as { track_id?: string };
         if (!response.ok) return null;
         await loadThinkingViewFromApi(spaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return typeof body.track_id === "string" ? body.track_id : null;
       } catch {
         return null;
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingTrackDirection = useCallback(
     async (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => {
+      if (!cloudSyncReady) {
+        const currentView = getLocalSpaceView(spaceId);
+        if (!currentView) return false;
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          tracks: currentView.tracks.map((track) => (track.id === trackId ? { ...track, directionHint } : track))
+        });
+        setThinkingStore((prev) => ({
+          ...prev,
+          spaceMeta: prev.spaceMeta.map((meta) =>
+            meta.spaceId === spaceId
+              ? {
+                  ...meta,
+                  trackDirectionHints: {
+                    ...(meta.trackDirectionHints ?? {}),
+                    [trackId]: directionHint
+                  }
+                }
+              : meta
+          )
+        }));
+        markLocalChange();
+        return true;
+      }
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/track-direction`, {
           method: "POST",
@@ -1709,16 +2548,41 @@ export function TimeArchive() {
           return false;
         }
         await loadThinkingViewFromApi(spaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingSaveBackground = useCallback(
     async (spaceId: string, backgroundText: string | null) => {
+      if (!cloudSyncReady) {
+        const currentView = getLocalSpaceView(spaceId);
+        if (!currentView) return { ok: false as const, message: "当前空间未加载完成" };
+        const nextVersion = (currentView.backgroundVersion ?? 0) + 1;
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          backgroundText,
+          backgroundVersion: nextVersion
+        });
+        setThinkingStore((prev) => ({
+          ...prev,
+          spaceMeta: prev.spaceMeta.map((meta) =>
+            meta.spaceId === spaceId
+              ? {
+                  ...meta,
+                  backgroundText,
+                  backgroundVersion: nextVersion
+                }
+              : meta
+          )
+        }));
+        markLocalChange();
+        return { ok: true as const, version: nextVersion };
+      }
       try {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}/background`, {
           method: "POST",
@@ -1735,6 +2599,7 @@ export function TimeArchive() {
           return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "背景保存失败" };
         }
         await loadThinkingViewFromApi(spaceId, true);
+        markCloudSynced(sessionUser?.userId ?? null);
         return {
           ok: true as const,
           version: Number.isFinite(payload.background_version) ? Number(payload.background_version) : 0
@@ -1743,34 +2608,37 @@ export function TimeArchive() {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [handleUnauthorized, loadThinkingViewFromApi]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingWriteToTime = useCallback(
     async (spaceId: string, freezeNote?: string) => {
       const now = new Date().toISOString();
       const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
-      try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
-          method: "POST",
-          headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
-          body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote, client_updated_at: now }) : JSON.stringify({ client_updated_at: now })
-        });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        if (!response.ok) {
-          if (response.status === 404) return { ok: false as const, message: "空间不存在" };
-          return { ok: false as const, message: "写入时间失败" };
-        }
-        await syncLifeFromApi(true);
-        const spaces = await syncThinkingSpacesFromApi(true);
-        const nextActive = pickDefaultSpaceId(spaces);
-        setActiveSpaceId(nextActive);
-        if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-        else setThinkingView(null);
-        return { ok: true as const };
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) {
-          return { ok: false as const, message: "网络异常，请稍后再试" };
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
+            method: "POST",
+            headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
+            body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote, client_updated_at: now }) : JSON.stringify({ client_updated_at: now })
+          });
+          if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+          if (!response.ok) {
+            if (response.status === 404) return { ok: false as const, message: "空间不存在" };
+            return { ok: false as const, message: "写入时间失败" };
+          }
+          await syncLifeFromApi(true);
+          const spaces = await syncThinkingSpacesFromApi(true);
+          const nextActive = pickDefaultSpaceId(spaces);
+          setActiveSpaceId(nextActive);
+          if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+          else setThinkingView(null);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return { ok: true as const };
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            return { ok: false as const, message: "网络异常，请稍后再试" };
+          }
         }
       }
       const currentSpace = thinkingStore.spaces.find((item) => item.id === spaceId);
@@ -1859,31 +2727,49 @@ export function TimeArchive() {
       const nextActive = nextSpacesForPick[0]?.id ?? null;
       setActiveSpaceId(nextActive);
       if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
-      else setThinkingView(null);      return { ok: true as const };
+      else setThinkingView(null);
+      markLocalChange();
+      return { ok: true as const };
     },
-    [handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces, thinkingView]
+    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces, thinkingView]
   );
 
   const handleThinkingDeleteSpace = useCallback(
     async (spaceId: string) => {
-      try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/delete`, { method: "POST" });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string };
-          return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "删除空间失败" };
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/spaces/${spaceId}/delete`, { method: "POST" });
+          if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+          if (!response.ok) {
+            const payload = (await response.json().catch(() => ({}))) as { error?: string };
+            return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "删除空间失败" };
+          }
+          const spaces = await syncThinkingSpacesFromApi(true);
+          const nextActive = pickDefaultSpaceId(spaces);
+          setActiveSpaceId(nextActive);
+          if (nextActive) await loadThinkingViewFromApi(nextActive, true);
+          else setThinkingView(null);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return { ok: true as const };
+        } catch {
+          return { ok: false as const, message: "网络异常，请稍后再试" };
         }
-        const spaces = await syncThinkingSpacesFromApi(true);
-        const nextActive = pickDefaultSpaceId(spaces);
-        setActiveSpaceId(nextActive);
-        if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-        else setThinkingView(null);
-        return { ok: true as const };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
       }
+      delete thinkingViewCacheRef.current[spaceId];
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: prev.spaces.filter((space) => space.id !== spaceId),
+        nodes: prev.nodes.filter((node) => node.spaceId !== spaceId),
+        spaceMeta: prev.spaceMeta.filter((meta) => meta.spaceId !== spaceId),
+        inbox: Object.fromEntries(Object.entries(prev.inbox).filter(([key]) => key !== spaceId))
+      }));
+      const nextActive = pickDefaultSpaceId(thinkingStore.spaces.filter((space) => space.id !== spaceId));
+      setActiveSpaceId(nextActive);
+      setThinkingView(nextActive ? thinkingViewCacheRef.current[nextActive] ?? null : null);
+      markLocalChange();
+      return { ok: true as const };
     },
-    [handleUnauthorized, loadThinkingViewFromApi, syncThinkingSpacesFromApi]
+    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingSpacesFromApi, thinkingStore.spaces]
   );
 
   const handleThinkingExport = useCallback(async (spaceId: string) => {
@@ -1902,28 +2788,31 @@ export function TimeArchive() {
     async (spaceId: string, rootQuestionText: string) => {
       const now = new Date().toISOString();
       const payload = { root_question_text: rootQuestionText, client_updated_at: now };
-      try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/rename`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(payload)
-        });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        const responseBody = (await response.json().catch(() => ({}))) as { error?: string; root_question_text?: string };
-        if (!response.ok) {
-          return { ok: false as const, message: typeof responseBody.error === "string" ? responseBody.error : "重命名失败" };
-        }
-        const spaces = await syncThinkingSpacesFromApi(true);
-        if (activeSpaceId && spaces.some((space) => space.id === activeSpaceId)) {
-          await loadThinkingViewFromApi(activeSpaceId, true);
-        }
-        return {
-          ok: true as const,
-          rootQuestionText: typeof responseBody.root_question_text === "string" ? responseBody.root_question_text : rootQuestionText
-        };
-      } catch (error) {
-        if (!isOfflineNetworkError(error)) {
-          return { ok: false as const, message: "网络异常，请稍后再试" };
+      if (cloudSyncReady) {
+        try {
+          const response = await fetch(`/v1/thinking/spaces/${spaceId}/rename`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
+          const responseBody = (await response.json().catch(() => ({}))) as { error?: string; root_question_text?: string };
+          if (!response.ok) {
+            return { ok: false as const, message: typeof responseBody.error === "string" ? responseBody.error : "重命名失败" };
+          }
+          const spaces = await syncThinkingSpacesFromApi(true);
+          if (activeSpaceId && spaces.some((space) => space.id === activeSpaceId)) {
+            await loadThinkingViewFromApi(activeSpaceId, true);
+          }
+          markCloudSynced(sessionUser?.userId ?? null);
+          return {
+            ok: true as const,
+            rootQuestionText: typeof responseBody.root_question_text === "string" ? responseBody.root_question_text : rootQuestionText
+          };
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) {
+            return { ok: false as const, message: "网络异常，请稍后再试" };
+          }
         }
       }
       await queueMutation(`/v1/thinking/spaces/${spaceId}/rename`, payload);
@@ -1932,13 +2821,15 @@ export function TimeArchive() {
         ...prev,
         spaces: prev.spaces.map((space) => (space.id === spaceId ? { ...space, rootQuestionText: nextText, lastActivityAt: now } : space))
       }));
+      markLocalChange();
       return { ok: true as const, rootQuestionText: nextText };
     },
-    [activeSpaceId, handleUnauthorized, loadThinkingViewFromApi, queueMutation, showNotice, syncThinkingSpacesFromApi]
+    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
   );
 
   const handleSystemExport = useCallback(
     async (options: { includeLife: boolean; includeThinking: boolean }) => {
+      if (!sessionUser) return null;
       try {
         const params = new URLSearchParams({
           format: "markdown",
@@ -1954,21 +2845,67 @@ export function TimeArchive() {
         return null;
       }
     },
-    [handleUnauthorized]
+    [handleUnauthorized, sessionUser]
   );
+
+  const keepCloudData = useCallback(async () => {
+    if (!sessionUser) return;
+    setBindingDialog((current) => (current ? { ...current, submitting: true } : current));
+    thinkingViewCacheRef.current = {};
+    updateOfflineMeta((current) => ({
+      ...current,
+      ownerMode: "user",
+      boundUserId: sessionUser.userId,
+      syncState: {
+        ...current.syncState,
+        bindingRequired: false,
+        hasLocalChanges: false
+      }
+    }));
+    await refreshFromCloud(null);
+    bindingCheckUserIdRef.current = sessionUser.userId;
+    setBindingDialog(null);
+    showNotice("已保留云端数据");
+  }, [refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
+
+  const uploadLocalData = useCallback(async () => {
+    if (!sessionUser) return;
+    setBindingDialog((current) => (current ? { ...current, submitting: true } : current));
+    const imported = await importLocalPayloadToCloud(sessionUser);
+    if (!imported) {
+      setBindingDialog((current) => (current ? { ...current, submitting: false } : current));
+      showNotice("本地数据绑定失败，请稍后再试");
+      return;
+    }
+    bindingCheckUserIdRef.current = sessionUser.userId;
+    setBindingDialog(null);
+    showNotice("本地数据已上传并覆盖云端");
+  }, [importLocalPayloadToCloud, sessionUser, showNotice]);
 
   const logout = useCallback(() => {
     void (async () => {
       try {
         await fetch("/v1/auth/logout", { method: "POST" });
       } finally {
+        bindingCheckUserIdRef.current = null;
         setSessionUser(null);
+        setBindingDialog(null);
+        setAuthDialogOpen(false);
         setThinkingView(null);
         setActiveSpaceId(null);
+        updateOfflineMeta((current) => ({
+          ...current,
+          ownerMode: "guest",
+          boundUserId: null,
+          syncState: {
+            ...current.syncState,
+            bindingRequired: false
+          }
+        }));
         showNotice("已退出登录");
       }
     })();
-  }, [showNotice]);
+  }, [showNotice, updateOfflineMeta]);
 
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
@@ -1976,15 +2913,28 @@ export function TimeArchive() {
     setThinkingView(null);
     setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
     setOfflineSnapshotExists(false);
+    setBindingDialog(null);
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(LIFE_STORAGE_KEY);
       window.localStorage.removeItem(THINKING_STORAGE_KEY);
     }
     void clearOfflineState();
-    void syncLifeFromApi(true);
-    void syncThinkingSpacesFromApi(true);
+    updateOfflineMeta((current) => ({
+      ...current,
+      ownerMode: sessionUser ? "user" : "guest",
+      boundUserId: sessionUser?.userId ?? null,
+      syncState: {
+        lastSyncedAt: current.syncState.lastSyncedAt,
+        hasLocalChanges: false,
+        bindingRequired: false
+      }
+    }));
+    if (cloudSyncEnabled) {
+      void syncLifeFromApi(true);
+      void syncThinkingSpacesFromApi(true);
+    }
     showNotice("本地缓存已清理");
-  }, [showNotice, syncLifeFromApi, syncThinkingSpacesFromApi]);
+  }, [cloudSyncEnabled, sessionUser, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, updateOfflineMeta]);
 
   const handlePinVerified = useCallback(() => {
     setPinUnlocked(true);
@@ -2028,6 +2978,7 @@ export function TimeArchive() {
     setSessionUser(null);
     setThinkingView(null);
     setActiveSpaceId(null);
+    setOfflineMeta(createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
     refreshPinState();
   }, [refreshPinState]);
 
@@ -2053,16 +3004,8 @@ export function TimeArchive() {
     );
   }
 
-  if (!authReady && !canEnterOffline) {
-    return (
-      <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
-        <p className="text-sm tracking-[0.12em] text-slate-300/80">验证身份中...</p>
-      </div>
-    );
-  }
-
-  if (!sessionUser && !canEnterOffline) {
-    return <AuthPanel onAuthed={() => void syncAuth()} />;
+  if (!sessionUser && !guestModeEnabled) {
+    return <AuthPanel onAuthed={() => void syncAuth()} onClose={() => setAuthDialogOpen(false)} />;
   }
 
   const thinkingChromeHidden = tab === "thinking" && (thinkingFocusMode || thinkingViewMode === "detail");
@@ -2205,12 +3148,15 @@ export function TimeArchive() {
                 activeThinkingSpaces={activeThinkingSpaceOptions}
                 fixedTopSpacesEnabled={thinkingStore.fixedTopSpacesEnabled}
                 fixedTopSpaceIds={thinkingStore.fixedTopSpaceIds}
+                sessionEmail={sessionUser?.email ?? null}
+                cloudSyncEnabled={cloudSyncEnabled}
                 pinEnabled={pinEnabled}
                 pinLockedUntil={pinLockedUntil}
                 onEnablePin={handleEnablePin}
                 onDisablePin={handleDisablePin}
                 onChangePin={handleChangePin}
                 onForgotPin={handleForgotPin}
+                onOpenAuth={() => setAuthDialogOpen(true)}
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
                     const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);
@@ -2262,6 +3208,15 @@ export function TimeArchive() {
       >
         {notice}
       </p>
+
+      {authDialogOpen ? <AuthDialog onClose={() => setAuthDialogOpen(false)} onAuthed={() => void syncAuth()} /> : null}
+      {bindingDialog ? (
+        <BindingDialog
+          submitting={bindingDialog.submitting}
+          onKeepCloud={() => void keepCloudData()}
+          onUploadLocal={() => void uploadLocalData()}
+        />
+      ) : null}
     </div>
   );
 }
@@ -2413,7 +3368,50 @@ function PinGate(props: { lockedUntil: number; onVerified: () => void }) {
   );
 }
 
-function AuthPanel(props: { onAuthed: () => void }) {
+function AuthDialog(props: { onClose: () => void; onAuthed: () => void }) {
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md">
+        <AuthPanel onAuthed={props.onAuthed} onClose={props.onClose} />
+      </div>
+    </div>
+  );
+}
+
+function BindingDialog(props: { submitting: boolean; onUploadLocal: () => void; onKeepCloud: () => void }) {
+  return (
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+      <div className="w-full max-w-md rounded-3xl border border-slate-200/15 bg-slate-950/95 p-6 text-slate-100 shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
+        <p className="text-sm tracking-[0.18em] text-slate-300/85">首次绑定账号</p>
+        <h2 className="mt-3 text-xl font-medium">云端已存在数据</h2>
+        <p className="mt-2 text-sm leading-6 text-slate-300/80">
+          当前设备里也有本地离线数据。为了避免误合并，这次需要明确选择保留哪一边。
+        </p>
+        <div className="mt-6 grid gap-3">
+          <Button
+            type="button"
+            disabled={props.submitting}
+            className="rounded-full border border-slate-200/25 bg-slate-100 text-slate-950 hover:bg-white"
+            onClick={props.onUploadLocal}
+          >
+            {props.submitting ? "处理中..." : "上传本地覆盖云端"}
+          </Button>
+          <Button
+            type="button"
+            disabled={props.submitting}
+            variant="ghost"
+            className="rounded-full border border-slate-300/20 bg-slate-900/60 text-slate-100 hover:bg-slate-800/80"
+            onClick={props.onKeepCloud}
+          >
+            保留云端丢弃本地
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -2502,6 +3500,7 @@ function AuthPanel(props: { onAuthed: () => void }) {
           return;
         }
         props.onAuthed();
+        props.onClose?.();
       } catch {
         setError("网络异常，请稍后再试");
       } finally {
@@ -2540,9 +3539,20 @@ function AuthPanel(props: { onAuthed: () => void }) {
   }, [email, mode]);
 
   return (
-    <div className="grid h-screen place-items-center bg-slate-950 px-4">
+    <div className={cn("px-4", props.onClose ? "" : "grid h-screen place-items-center bg-slate-950")}>
       <div className="w-full max-w-md rounded-2xl border border-slate-300/15 bg-slate-900/65 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-        <p className="inline-flex items-center gap-2 text-sm tracking-[0.22em] text-slate-300/85"><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="inline-flex items-center gap-2 text-sm tracking-[0.22em] text-slate-300/85"><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></p>
+          {props.onClose ? (
+            <button
+              type="button"
+              className="rounded-full border border-slate-300/20 px-2.5 py-1 text-xs text-slate-300/75 transition-colors hover:bg-slate-800/70"
+              onClick={props.onClose}
+            >
+              关闭
+            </button>
+          ) : null}
+        </div>
         <p className="mt-2 text-xs tracking-[0.12em] text-slate-400/75">
           {mode === "login" ? "请先登录你的时间档案馆" : mode === "register" ? "用邮箱验证码完成注册" : "用邮箱验证码重置密码"}
         </p>
