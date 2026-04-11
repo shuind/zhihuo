@@ -298,6 +298,27 @@ function isCloudPayloadEmpty(payload: UserExportPayload) {
 }
 
 function canonicalizeExportPayload(payload: UserExportPayload) {
+  const rawSpaces = Array.isArray(payload.thinking.spaces) ? (payload.thinking.spaces as Array<Record<string, unknown>>) : [];
+  const rawNodes = Array.isArray(payload.thinking.nodes) ? (payload.thinking.nodes as Array<Record<string, unknown>>) : [];
+  const rawMeta = Array.isArray(payload.thinking.space_meta) ? (payload.thinking.space_meta as Array<Record<string, unknown>>) : [];
+  const rawNodeLinks = Array.isArray(payload.thinking.node_links) ? (payload.thinking.node_links as Array<Record<string, unknown>>) : [];
+  const rawScratch = Array.isArray(payload.thinking.scratch) ? (payload.thinking.scratch as Array<Record<string, unknown>>) : [];
+  const rawInbox = payload.thinking.inbox as unknown;
+  const normalizedInboxEntries = Array.isArray(rawInbox)
+    ? (rawInbox as Array<Record<string, unknown>>).reduce<Record<string, Array<Record<string, unknown>>>>((acc, item) => {
+        const spaceId = typeof item.space_id === "string" ? item.space_id : typeof item.spaceId === "string" ? item.spaceId : "";
+        if (!spaceId) return acc;
+        if (!acc[spaceId]) acc[spaceId] = [];
+        acc[spaceId].push(item);
+        return acc;
+      }, {})
+    : Object.fromEntries(
+        Object.entries((rawInbox ?? {}) as Record<string, unknown>).map(([spaceId, items]) => [
+          spaceId,
+          Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []
+        ])
+      );
+
   return {
     life: {
       doubts: [...payload.life.doubts]
@@ -310,7 +331,7 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
           archived_at: item.archived_at ?? null,
           deleted_at: item.deleted_at ?? null
         }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
       notes: [...payload.life.notes]
         .map((item) => ({
           id: item.id,
@@ -318,90 +339,192 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
           note_text: item.note_text,
           created_at: item.created_at
         }))
-        .sort((a, b) => a.id.localeCompare(b.id))
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
     },
     thinking: {
-      spaces: [...payload.thinking.spaces]
+      spaces: rawSpaces
         .map((item) => ({
           id: item.id,
-          rootQuestionText: item.rootQuestionText,
+          rootQuestionText:
+            typeof item.rootQuestionText === "string"
+              ? item.rootQuestionText
+              : typeof item.root_question_text === "string"
+                ? item.root_question_text
+                : "",
           status: item.status,
-          createdAt: item.createdAt,
-          frozenAt: item.frozenAt ?? null,
-          sourceTimeDoubtId: item.sourceTimeDoubtId ?? null
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : "",
+          frozenAt:
+            typeof item.frozenAt === "string" ? item.frozenAt : typeof item.frozen_at === "string" ? item.frozen_at : null,
+          sourceTimeDoubtId:
+            typeof item.sourceTimeDoubtId === "string"
+              ? item.sourceTimeDoubtId
+              : typeof item.source_time_doubt_id === "string"
+                ? item.source_time_doubt_id
+                : null
         }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
-      nodes: [...payload.thinking.nodes]
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+      nodes: rawNodes
         .map((item) => ({
           id: item.id,
-          spaceId: item.spaceId,
-          parentNodeId: item.parentNodeId ?? null,
-          rawQuestionText: item.rawQuestionText,
-          noteText: item.noteText ?? null,
-          answerText: item.answerText ?? null,
-          createdAt: item.createdAt,
-          orderIndex: item.orderIndex,
-          isSuggested: item.isSuggested,
+          spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
+          parentNodeId:
+            typeof item.parentNodeId === "string"
+              ? item.parentNodeId
+              : typeof item.parent_node_id === "string"
+                ? item.parent_node_id
+                : null,
+          rawQuestionText:
+            typeof item.rawQuestionText === "string"
+              ? item.rawQuestionText
+              : typeof item.raw_question_text === "string"
+                ? item.raw_question_text
+                : "",
+          noteText:
+            typeof item.noteText === "string" ? item.noteText : typeof item.note_text === "string" ? item.note_text : null,
+          answerText:
+            typeof item.answerText === "string"
+              ? item.answerText
+              : typeof item.answer_text === "string"
+                ? item.answer_text
+                : null,
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : "",
+          orderIndex:
+            typeof item.orderIndex === "number"
+              ? item.orderIndex
+              : typeof item.order_index === "number"
+                ? item.order_index
+                : 0,
+          isSuggested: item.isSuggested === true || item.is_suggested === true,
           state: item.state,
           dimension: item.dimension
         }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
-      space_meta: [...payload.thinking.space_meta]
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+      space_meta: rawMeta
         .map((item) => ({
-          spaceId: item.spaceId,
-          userFreezeNote: item.userFreezeNote ?? null,
-          exportVersion: item.exportVersion,
-          backgroundText: item.backgroundText ?? null,
-          backgroundVersion: item.backgroundVersion ?? 0,
-          suggestionDecay: item.suggestionDecay ?? 0,
-          lastTrackId: item.lastTrackId ?? null,
-          lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
-          parkingTrackId: item.parkingTrackId ?? null,
-          pendingTrackId: item.pendingTrackId ?? null,
-          emptyTrackIds: [...(item.emptyTrackIds ?? [])].sort(),
-          milestoneNodeIds: [...(item.milestoneNodeIds ?? [])].sort(),
+          spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
+          userFreezeNote:
+            typeof item.userFreezeNote === "string"
+              ? item.userFreezeNote
+              : typeof item.user_freeze_note === "string"
+                ? item.user_freeze_note
+                : null,
+          exportVersion:
+            typeof item.exportVersion === "number"
+              ? item.exportVersion
+              : typeof item.export_version === "number"
+                ? item.export_version
+                : 1,
+          backgroundText:
+            typeof item.backgroundText === "string"
+              ? item.backgroundText
+              : typeof item.background_text === "string"
+                ? item.background_text
+                : null,
+          backgroundVersion:
+            typeof item.backgroundVersion === "number"
+              ? item.backgroundVersion
+              : typeof item.background_version === "number"
+                ? item.background_version
+                : 0,
+          suggestionDecay:
+            typeof item.suggestionDecay === "number"
+              ? item.suggestionDecay
+              : typeof item.suggestion_decay === "number"
+                ? item.suggestion_decay
+                : 0,
+          lastTrackId:
+            typeof item.lastTrackId === "string"
+              ? item.lastTrackId
+              : typeof item.last_track_id === "string"
+                ? item.last_track_id
+                : null,
+          lastOrganizedOrder:
+            typeof item.lastOrganizedOrder === "number"
+              ? item.lastOrganizedOrder
+              : typeof item.last_organized_order === "number"
+                ? item.last_organized_order
+                : -1,
+          parkingTrackId:
+            typeof item.parkingTrackId === "string"
+              ? item.parkingTrackId
+              : typeof item.parking_track_id === "string"
+                ? item.parking_track_id
+                : null,
+          pendingTrackId:
+            typeof item.pendingTrackId === "string"
+              ? item.pendingTrackId
+              : typeof item.pending_track_id === "string"
+                ? item.pending_track_id
+                : null,
+          emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort(),
+          milestoneNodeIds: [...(((item.milestoneNodeIds ?? item.milestone_node_ids ?? []) as string[]) ?? [])].sort(),
           trackDirectionHints: Object.fromEntries(
-            Object.entries(item.trackDirectionHints ?? {}).sort(([a], [b]) => a.localeCompare(b))
+            Object.entries(((item.trackDirectionHints ?? item.track_direction_hints ?? {}) as Record<string, TrackDirectionHint | null>) ?? {}).sort(
+              ([a], [b]) => a.localeCompare(b)
+            )
           )
         }))
         .sort((a, b) => a.spaceId.localeCompare(b.spaceId)),
-      node_links: [...payload.thinking.node_links]
+      node_links: rawNodeLinks
         .map((item) => ({
           id: item.id,
-          spaceId: item.spaceId,
-          sourceNodeId: item.sourceNodeId,
-          targetNodeId: item.targetNodeId,
-          linkType: item.linkType,
+          spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
+          sourceNodeId:
+            typeof item.sourceNodeId === "string"
+              ? item.sourceNodeId
+              : typeof item.source_node_id === "string"
+                ? item.source_node_id
+                : "",
+          targetNodeId:
+            typeof item.targetNodeId === "string"
+              ? item.targetNodeId
+              : typeof item.target_node_id === "string"
+                ? item.target_node_id
+                : "",
+          linkType:
+            (typeof item.linkType === "string" ? item.linkType : typeof item.link_type === "string" ? item.link_type : "related") as "related",
           score: item.score,
-          createdAt: item.createdAt
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
         }))
-        .sort((a, b) => a.id.localeCompare(b.id)),
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
       inbox: Object.fromEntries(
-        Object.entries(payload.thinking.inbox)
+        Object.entries(normalizedInboxEntries)
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([spaceId, items]) => [
             spaceId,
             [...items]
               .map((item) => ({
                 id: item.id,
-                rawText: item.rawText,
-                createdAt: item.createdAt
+                rawText: typeof item.rawText === "string" ? item.rawText : typeof item.raw_text === "string" ? item.raw_text : "",
+                createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
               }))
-              .sort((a, b) => a.id.localeCompare(b.id))
+              .sort((a, b) => String(a.id).localeCompare(String(b.id)))
           ])
       ),
-      scratch: [...(payload.thinking.scratch ?? [])]
+      scratch: rawScratch
         .map((item) => ({
           id: item.id,
-          rawText: item.rawText,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt,
-          archivedAt: item.archivedAt ?? null,
-          deletedAt: item.deletedAt ?? null,
-          derivedSpaceId: item.derivedSpaceId ?? null,
-          fedTimeDoubtId: item.fedTimeDoubtId ?? null
+          rawText: typeof item.rawText === "string" ? item.rawText : typeof item.raw_text === "string" ? item.raw_text : "",
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : "",
+          updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : typeof item.updated_at === "string" ? item.updated_at : "",
+          archivedAt:
+            typeof item.archivedAt === "string" ? item.archivedAt : typeof item.archived_at === "string" ? item.archived_at : null,
+          deletedAt:
+            typeof item.deletedAt === "string" ? item.deletedAt : typeof item.deleted_at === "string" ? item.deleted_at : null,
+          derivedSpaceId:
+            typeof item.derivedSpaceId === "string"
+              ? item.derivedSpaceId
+              : typeof item.derived_space_id === "string"
+                ? item.derived_space_id
+                : null,
+          fedTimeDoubtId:
+            typeof item.fedTimeDoubtId === "string"
+              ? item.fedTimeDoubtId
+              : typeof item.fed_time_doubt_id === "string"
+                ? item.fed_time_doubt_id
+                : null
         }))
-        .sort((a, b) => a.id.localeCompare(b.id))
+        .sort((a, b) => String(a.id).localeCompare(String(b.id)))
     }
   };
 }
@@ -438,6 +561,105 @@ function normalizeTrackListWithLinks(
       hasRelatedLink: linkedNodeIds.has(node.id)
     }))
   }));
+}
+
+function getSpaceViewNodeIds(view: ThinkingSpaceView) {
+  return new Set(view.tracks.flatMap((track) => track.nodes.map((node) => node.id)));
+}
+
+function getStoreSpaceNodeIds(store: ThinkingStore, spaceId: string) {
+  return new Set(store.nodes.filter((node) => node.spaceId === spaceId && node.state !== "hidden").map((node) => node.id));
+}
+
+function isSpaceViewConsistentWithStore(store: ThinkingStore, spaceId: string, view: ThinkingSpaceView | null | undefined) {
+  if (!view || view.spaceId !== spaceId) return false;
+  const storeNodeIds = getStoreSpaceNodeIds(store, spaceId);
+  const viewNodeIds = getSpaceViewNodeIds(view);
+  if (storeNodeIds.size !== viewNodeIds.size) return false;
+  for (const nodeId of viewNodeIds) {
+    if (!storeNodeIds.has(nodeId)) return false;
+  }
+  return true;
+}
+
+function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): ThinkingSpaceView | null {
+  const space = store.spaces.find((item) => item.id === spaceId);
+  if (!space) return null;
+  const meta = store.spaceMeta.find((item) => item.spaceId === spaceId) ?? null;
+  const fallbackTrackId = meta?.lastTrackId ?? meta?.parkingTrackId ?? "local-track:" + spaceId;
+  const trackIds = new Set<string>();
+  const trackNodes = new Map<string, ThinkingSpaceView["tracks"][number]["nodes"]>();
+
+  for (const trackId of meta?.emptyTrackIds ?? []) {
+    trackIds.add(trackId);
+    trackNodes.set(trackId, []);
+  }
+  if (meta?.parkingTrackId) {
+    trackIds.add(meta.parkingTrackId);
+    if (!trackNodes.has(meta.parkingTrackId)) trackNodes.set(meta.parkingTrackId, []);
+  }
+
+  const sortedNodes = store.nodes
+    .filter((node) => node.spaceId === spaceId && node.state !== "hidden")
+    .sort((a, b) => a.orderIndex - b.orderIndex || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
+
+  for (const node of sortedNodes) {
+    const trackId = fromTrackParentId(node.parentNodeId) ?? fallbackTrackId;
+    trackIds.add(trackId);
+    const nodes = trackNodes.get(trackId) ?? [];
+    nodes.push({
+      id: node.id,
+      questionText: node.rawQuestionText,
+      noteText: null,
+      answerText: null,
+      isSuggested: node.isSuggested,
+      isMilestone: (meta?.milestoneNodeIds ?? []).includes(node.id),
+      hasRelatedLink: false,
+      createdAt: node.createdAt,
+      echoTrackId: null,
+      echoNodeId: null
+    });
+    trackNodes.set(trackId, nodes);
+  }
+
+  if (!trackIds.size) {
+    trackIds.add(fallbackTrackId);
+    trackNodes.set(fallbackTrackId, []);
+  }
+
+  const parkingTrackId = meta?.parkingTrackId ?? null;
+  const tracks = Array.from(trackIds)
+    .sort((a, b) => {
+      if (a === parkingTrackId) return 1;
+      if (b === parkingTrackId) return -1;
+      return a.localeCompare(b);
+    })
+    .map((trackId) => {
+      const nodes = trackNodes.get(trackId) ?? [];
+      const isParking = parkingTrackId === trackId;
+      return {
+        id: trackId,
+        titleQuestionText: isParking ? "????" : nodes[0]?.questionText ?? "???",
+        directionHint: meta?.trackDirectionHints?.[trackId] ?? null,
+        isParking,
+        isEmpty: nodes.length === 0,
+        nodeCount: nodes.length,
+        nodes
+      } satisfies ThinkingSpaceView["tracks"][number];
+    });
+
+  return {
+    spaceId,
+    currentTrackId: meta?.lastTrackId ?? tracks.find((track) => !track.isParking)?.id ?? parkingTrackId ?? tracks[0]?.id ?? null,
+    parkingTrackId,
+    pendingTrackId: meta?.pendingTrackId ?? null,
+    milestoneNodeIds: meta?.milestoneNodeIds ?? [],
+    tracks: normalizeTrackListWithLinks(tracks, store.nodeLinks, spaceId),
+    suggestedQuestions: [],
+    freezeNote: meta?.userFreezeNote ?? null,
+    backgroundText: meta?.backgroundText ?? null,
+    backgroundVersion: meta?.backgroundVersion ?? 0
+  };
 }
 
 function syncStoreNodesFromView(store: ThinkingStore, spaceId: string, view: ThinkingSpaceView): ThinkingStore {
@@ -624,6 +846,7 @@ export function TimeArchive() {
   const offlineSyncingRef = useRef(false);
   const localProfileIdRef = useRef("");
   const bindingCheckUserIdRef = useRef<string | null>(null);
+  const activeSpaceIdRef = useRef<string | null>(null);
   const [stars] = useState(() => createStars(36));
   const freezeNoteByDoubtId = useMemo(() => {
     const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
@@ -799,12 +1022,20 @@ export function TimeArchive() {
   );
 
   const getLocalSpaceView = useCallback(
-    (spaceId: string) => thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null),
-    [thinkingView]
+    (spaceId: string) => {
+      const cached = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      if (isSpaceViewConsistentWithStore(thinkingStore, spaceId, cached)) return cached;
+      const rebuilt = buildSpaceViewFromStore(thinkingStore, spaceId);
+      if (rebuilt) thinkingViewCacheRef.current[spaceId] = rebuilt;
+      else delete thinkingViewCacheRef.current[spaceId];
+      return rebuilt;
+    },
+    [thinkingStore, thinkingView]
   );
 
   const commitLocalSpaceView = useCallback(
     (spaceId: string, nextView: ThinkingSpaceView | null) => {
+      if (nextView && nextView.spaceId !== spaceId) return;
       if (nextView) thinkingViewCacheRef.current[spaceId] = nextView;
       else delete thinkingViewCacheRef.current[spaceId];
       if ((thinkingView?.spaceId === spaceId || activeSpaceId === spaceId) && nextView !== thinkingView) {
@@ -940,14 +1171,16 @@ export function TimeArchive() {
         const response = await fetch(`/v1/thinking/spaces/${spaceId}`, { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) {
-          if (response.status === 404) setThinkingView(null);
+          if (response.status === 404 && activeSpaceIdRef.current === spaceId) setThinkingView(null);
           else if (!silent) showNotice("思考详情加载失败");
           return false;
         }
         const payload = (await response.json()) as ApiThinkingSpaceView;
         const mappedView = mapApiThinkingView(payload);
-        setThinkingView(mappedView);
         thinkingViewCacheRef.current[mappedView.spaceId] = mappedView;
+        if (activeSpaceIdRef.current === mappedView.spaceId) {
+          setThinkingView(mappedView);
+        }
         const latestSpace = mapApiThinkingSpace(payload.root);
         setThinkingStore((prev) => {
           const index = prev.spaces.findIndex((space) => space.id === latestSpace.id);
@@ -1492,14 +1725,18 @@ export function TimeArchive() {
       const snapshot = await loadOfflineSnapshot();
       if (cancelled) return;
       if (snapshot) {
+        const initialSpaceId = snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces);
+        const cachedInitialView = initialSpaceId ? snapshot.thinkingViews?.[initialSpaceId] ?? null : null;
+        const initialView = isSpaceViewConsistentWithStore(snapshot.thinkingStore, initialSpaceId ?? "", cachedInitialView)
+          ? cachedInitialView
+          : initialSpaceId
+            ? buildSpaceViewFromStore(snapshot.thinkingStore, initialSpaceId)
+            : null;
         setLifeStore(snapshot.lifeStore);
         setThinkingStore(snapshot.thinkingStore);
-        setActiveSpaceId(snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces));
+        setActiveSpaceId(initialSpaceId);
         thinkingViewCacheRef.current = snapshot.thinkingViews ?? {};
-        const initialView =
-          (snapshot.activeSpaceId ? snapshot.thinkingViews?.[snapshot.activeSpaceId] ?? null : null) ??
-          Object.values(snapshot.thinkingViews ?? {})[0] ??
-          null;
+        if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
         setThinkingView(initialView);
         setOfflineSnapshotExists(true);
         setOfflineMeta(snapshot.meta ?? createOfflineSnapshotMeta(localProfileId));
@@ -1510,9 +1747,13 @@ export function TimeArchive() {
       setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
       const loadedLife = loadLifeStore();
       const loadedThinking = loadThinkingStore();
+      const initialSpaceId = pickDefaultSpaceId(loadedThinking.spaces);
+      const initialView = initialSpaceId ? buildSpaceViewFromStore(loadedThinking, initialSpaceId) : null;
       setLifeStore(loadedLife);
       setThinkingStore(loadedThinking);
-      setActiveSpaceId(pickDefaultSpaceId(loadedThinking.spaces));
+      setActiveSpaceId(initialSpaceId);
+      if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
+      setThinkingView(initialView);
       setHydrated(true);
     })();
     return () => {
@@ -1530,6 +1771,10 @@ export function TimeArchive() {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("zhihuo_thinking_focus_mode", thinkingFocusMode ? "1" : "0");
   }, [thinkingFocusMode]);
+
+  useEffect(() => {
+    activeSpaceIdRef.current = activeSpaceId;
+  }, [activeSpaceId]);
 
   useEffect(() => {
     if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
@@ -1706,16 +1951,17 @@ export function TimeArchive() {
   }, [pinEnabled, pinLockedUntil]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
+    if (!hydrated) return;
     if (!activeSpaceId) {
       setThinkingView(null);
       return;
     }
-    const cached = thinkingViewCacheRef.current[activeSpaceId] ?? null;
-    if (cached) setThinkingView(cached);
+    const cached = getLocalSpaceView(activeSpaceId);
+    setThinkingView(cached);
+    if (!authReady || !cloudSyncReady || !sessionUser) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     void loadThinkingViewFromApi(activeSpaceId, true);
-  }, [activeSpaceId, authReady, cloudSyncReady, hydrated, loadThinkingViewFromApi, sessionUser]);
+  }, [activeSpaceId, authReady, cloudSyncReady, getLocalSpaceView, hydrated, loadThinkingViewFromApi, sessionUser]);
 
   useEffect(() => {
     if (!hydrated) return;

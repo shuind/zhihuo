@@ -475,7 +475,25 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     lastTrackId: typeof meta.lastTrackId === "string" ? meta.lastTrackId : null,
     lastOrganizedOrder: typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
     parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
-    milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : []
+    pendingTrackId: typeof meta.pendingTrackId === "string" ? meta.pendingTrackId : null,
+    emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : [],
+    milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : [],
+    trackDirectionHints:
+      meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
+        ? Object.fromEntries(
+            Object.entries(meta.trackDirectionHints).filter(
+              ([trackId, hint]) =>
+                typeof trackId === "string" &&
+                (hint === null ||
+                  hint === "hypothesis" ||
+                  hint === "memory" ||
+                  hint === "counterpoint" ||
+                  hint === "worry" ||
+                  hint === "constraint" ||
+                  hint === "aside")
+            )
+          )
+        : {}
   })).filter((meta) => meta.spaceId);
   const nodeLinks: ThinkingNodeLink[] = (store.nodeLinks ?? [])
     .map((link) => ({
