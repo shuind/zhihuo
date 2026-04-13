@@ -1241,6 +1241,18 @@ export function TimeArchive() {
 
   const refreshFromCloud = useCallback(
     async (preferredSpaceId?: string | null) => {
+      thinkingViewCacheRef.current = {};
+      setThinkingView(null);
+      setActiveSpaceId(null);
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: [],
+        nodes: [],
+        spaceMeta: [],
+        nodeLinks: [],
+        scratch: [],
+        inbox: {}
+      }));
       const [lifeOk, spaces, scratch] = await Promise.all([
         syncLifeFromApi(true),
         syncThinkingSpacesFromApi(true),
@@ -1249,7 +1261,6 @@ export function TimeArchive() {
       const nextActive =
         (preferredSpaceId && spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
         pickDefaultSpaceId(spaces);
-      thinkingViewCacheRef.current = {};
       setActiveSpaceId(nextActive);
       if (nextActive) await loadThinkingViewFromApi(nextActive, true);
       else setThinkingView(null);
@@ -1787,6 +1798,49 @@ export function TimeArchive() {
   }, [authReady, cloudSyncReady, hydrated, sessionUser, syncThinkingScratchFromApi]);
 
   useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser || !offlineMeta) return;
+    if (offlineMeta.ownerMode !== "user") return;
+    if (!offlineMeta.boundUserId || offlineMeta.boundUserId === sessionUser.userId) return;
+
+    let cancelled = false;
+    void (async () => {
+      bindingCheckUserIdRef.current = sessionUser.userId;
+      setBindingDialog(null);
+      thinkingViewCacheRef.current = {};
+      setThinkingView(null);
+      setActiveSpaceId(null);
+      setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
+      setThinkingStore((prev) => ({
+        ...EMPTY_THINKING_STORE,
+        timezone: prev.timezone,
+        fixedTopSpacesEnabled: prev.fixedTopSpacesEnabled,
+        fixedTopSpaceIds: []
+      }));
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(LIFE_STORAGE_KEY);
+        window.localStorage.removeItem(THINKING_STORAGE_KEY);
+      }
+      await clearOfflineState();
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: "user",
+        boundUserId: sessionUser.userId,
+        syncState: {
+          lastSyncedAt: null,
+          hasLocalChanges: false,
+          bindingRequired: false
+        }
+      }));
+      await refreshFromCloud(null);
+      if (!cancelled) showNotice("已切换账号数据");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authReady, hydrated, offlineMeta, refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
+
+  useEffect(() => {
     if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
     void syncQueuedMutations();
   }, [authReady, cloudSyncReady, hydrated, sessionUser, syncQueuedMutations]);
@@ -1820,6 +1874,7 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser || !offlineMeta) return;
     if (bindingCheckUserIdRef.current === sessionUser.userId) return;
+    if (offlineMeta.ownerMode === "user" && offlineMeta.boundUserId && offlineMeta.boundUserId !== sessionUser.userId) return;
     if (offlineMeta.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId) {
       bindingCheckUserIdRef.current = sessionUser.userId;
       return;
@@ -3269,12 +3324,17 @@ export function TimeArchive() {
         setAuthDialogOpen(false);
         setThinkingView(null);
         setActiveSpaceId(null);
+        thinkingViewCacheRef.current = {};
+        setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
+        setThinkingStore(EMPTY_THINKING_STORE);
+        await clearOfflineState();
         updateOfflineMeta((current) => ({
           ...current,
           ownerMode: "guest",
           boundUserId: null,
           syncState: {
-            ...current.syncState,
+            lastSyncedAt: null,
+            hasLocalChanges: false,
             bindingRequired: false
           }
         }));
@@ -4034,6 +4094,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
     </div>
   );
 }
+
 
 
 
