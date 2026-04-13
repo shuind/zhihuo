@@ -3480,7 +3480,7 @@ export function TimeArchive() {
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
-            <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
+            <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab || isSettingsTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="flex items-center gap-2">
               <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
@@ -4094,6 +4094,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
     </div>
   );
 }
+
 
 
 
