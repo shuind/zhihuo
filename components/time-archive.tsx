@@ -831,6 +831,17 @@ function sortSpacesByLatestActivity(a: ThinkingSpace, b: ThinkingSpace) {
   return new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime();
 }
 
+function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
+  return (
+    a.localProfileId === b.localProfileId &&
+    a.ownerMode === b.ownerMode &&
+    a.boundUserId === b.boundUserId &&
+    a.syncState.lastSyncedAt === b.syncState.lastSyncedAt &&
+    a.syncState.hasLocalChanges === b.syncState.hasLocalChanges &&
+    a.syncState.bindingRequired === b.syncState.bindingRequired
+  );
+}
+
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
@@ -931,7 +942,9 @@ export function TimeArchive() {
   const updateOfflineMeta = useCallback((updater: (current: OfflineSnapshotMeta) => OfflineSnapshotMeta) => {
     setOfflineMeta((current) => {
       const fallback = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId());
-      return updater(current ?? fallback);
+      const base = current ?? fallback;
+      const next = updater(base);
+      return areOfflineMetaEqual(base, next) ? base : next;
     });
   }, []);
 
