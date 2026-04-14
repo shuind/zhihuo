@@ -5,12 +5,16 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
+    "build:mobile": "node scripts/build-mobile.mjs",
+    "build:android:debug": "node scripts/build-android-debug.mjs",
     "start": "next start",
     "lint": "next lint",
     "test:api-routes": "node scripts/test-api-routes.mjs",
     "test:ui-smoke": "node scripts/test-ui-smoke.mjs"
   },
   "dependencies": {
+    "@capacitor/android": "^8.3.0",
+    "@capacitor/core": "^8.3.0",
     "@radix-ui/react-slot": "^1.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
@@ -24,6 +28,7 @@
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
+    "@capacitor/cli": "^8.3.0",
     "@types/node": "^20.16.5",
     "@types/nodemailer": "^7.0.11",
     "@types/pg": "^8.15.5",

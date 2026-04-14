@@ -1,5 +1,9 @@
 import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
 
+import type { NextRequest } from "next/server";
+
+import { isAllowedCrossOriginRequest } from "@/lib/server/cors";
+
 const AUTH_COOKIE = "zhihuo_session";
 const DEFAULT_AUTH_SECRET = "zhihuo_dev_only_change_me";
 const SESSION_TTL_DAYS = 30;
@@ -39,6 +43,17 @@ function sign(payloadBase64: string) {
 
 export function getAuthCookieName() {
   return AUTH_COOKIE;
+}
+
+export function getAuthCookieOptions(request: NextRequest, maxAge: number) {
+  const crossOrigin = isAllowedCrossOriginRequest(request);
+  return {
+    httpOnly: true,
+    sameSite: crossOrigin ? ("none" as const) : ("lax" as const),
+    secure: crossOrigin ? true : process.env.NODE_ENV === "production",
+    path: "/",
+    maxAge
+  };
 }
 
 export function createSessionToken(userId: string) {

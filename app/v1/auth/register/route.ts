@@ -1,6 +1,12 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 
-import { createSessionToken, getAuthCookieName, hashPassword, verifyEmailVerificationCode } from "@/lib/server/auth";
+import {
+  createSessionToken,
+  getAuthCookieName,
+  getAuthCookieOptions,
+  hashPassword,
+  verifyEmailVerificationCode
+} from "@/lib/server/auth";
 import { updateDb } from "@/lib/server/db";
 import { errorJson, parseJsonBody } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
@@ -68,13 +74,7 @@ export const POST = withApiRoute(
     if (!createdUserId) return errorJson(verifyError === "邮箱已存在" ? 409 : 400, verifyError || "注册失败");
     const token = createSessionToken(createdUserId);
     const response = NextResponse.json({ ok: true, user_id: createdUserId });
-    response.cookies.set(getAuthCookieName(), token, {
-      httpOnly: true,
-      sameSite: "lax",
-      secure: process.env.NODE_ENV === "production",
-      path: "/",
-      maxAge: 60 * 60 * 24 * 30
-    });
+    response.cookies.set(getAuthCookieName(), token, getAuthCookieOptions(request, 60 * 60 * 24 * 30));
     return response;
   },
   { rateLimit: { bucket: "auth-register", max: 8, windowMs: 10 * 60 * 1000 } }

@@ -7,7 +7,7 @@ const DB_NAME = "zhihuo_offline_v1";
 const DB_VERSION = 1;
 const SNAPSHOT_STORE = "snapshot";
 const QUEUE_STORE = "mutation_queue";
-const SNAPSHOT_KEY = "main";
+const LEGACY_SNAPSHOT_KEY = "main";
 const PIN_STORAGE_KEY = "zhihuo_pin_v1";
 const LOCAL_PROFILE_STORAGE_KEY = "zhihuo_local_profile_v1";
 
@@ -49,8 +49,22 @@ export type OfflineSnapshotMeta = {
   syncState: OfflineSyncState;
 };
 
+export type OfflineOwnerRef =
+  | {
+      mode: "guest";
+      localProfileId: string;
+    }
+  | {
+      mode: "user";
+      userId: string;
+      localProfileId?: string | null;
+    };
+
+export type OfflineOwnerKey = `guest:${string}` | `user:${string}`;
+
 export type QueuedMutation = {
   id: string;
+  ownerKey: OfflineOwnerKey;
   route: string;
   method: "POST" | "PUT" | "DELETE";
   body: Record<string, unknown> | null;
@@ -65,6 +79,12 @@ export type QueuedMutation = {
 type SnapshotRecord = {
   key: string;
   value: OfflineSnapshot;
+};
+
+export type OfflineSnapshotRecord = {
+  ownerKey: OfflineOwnerKey;
+  savedAt: string;
+  meta: OfflineSnapshotMeta;
 };
 
 function createLocalId() {
@@ -99,6 +119,18 @@ export function createOfflineSnapshotMeta(localProfileId: string, options?: Part
   };
 }
 
+export function getGuestOwnerKey(localProfileId: string): OfflineOwnerKey {
+  return `guest:${localProfileId}`;
+}
+
+export function getUserOwnerKey(userId: string): OfflineOwnerKey {
+  return `user:${userId}`;
+}
+
+export function ownerKeyFromRef(owner: OfflineOwnerRef): OfflineOwnerKey {
+  return owner.mode === "guest" ? getGuestOwnerKey(owner.localProfileId) : getUserOwnerKey(owner.userId);
+}
+
 function normalizeOfflineSnapshot(raw: OfflineSnapshot): OfflineSnapshot {
   const localProfileId = getOrCreateLocalProfileId();
   return {
@@ -108,6 +140,13 @@ function normalizeOfflineSnapshot(raw: OfflineSnapshot): OfflineSnapshot {
     thinkingViews: cloneValue(raw.thinkingViews ?? {}),
     savedAt: typeof raw.savedAt === "string" ? raw.savedAt : new Date().toISOString(),
     meta: createOfflineSnapshotMeta(localProfileId, raw.meta)
+  };
+}
+
+function normalizeQueuedMutation(raw: QueuedMutation, fallbackOwnerKey: OfflineOwnerKey): QueuedMutation {
+  return {
+    ...cloneValue(raw),
+    ownerKey: typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey
   };
 }
 
@@ -299,32 +338,109 @@ export function clearPinStatus() {
   window.localStorage.removeItem(PIN_STORAGE_KEY);
 }
 
-export async function loadOfflineSnapshot(): Promise<OfflineSnapshot | null> {
+async function loadSnapshotRow(key: string): Promise<SnapshotRecord | null> {
   const db = await openDb();
   if (!db) return null;
   return new Promise((resolve) => {
     const tx = db.transaction(SNAPSHOT_STORE, "readonly");
     const store = tx.objectStore(SNAPSHOT_STORE);
-    const req = store.get(SNAPSHOT_KEY);
+    const req = store.get(key);
     req.onerror = () => resolve(null);
-    req.onsuccess = () => {
-      const row = req.result as SnapshotRecord | undefined;
-      resolve(row?.value ? normalizeOfflineSnapshot(row.value) : null);
-    };
+    req.onsuccess = () => resolve((req.result as SnapshotRecord | undefined) ?? null);
   });
 }
 
-export async function saveOfflineSnapshot(snapshot: OfflineSnapshot): Promise<void> {
+async function saveSnapshotRow(key: string, snapshot: OfflineSnapshot): Promise<void> {
   const db = await openDb();
   if (!db) return;
   const normalized = normalizeOfflineSnapshot(snapshot);
   await new Promise<void>((resolve) => {
     const tx = db.transaction(SNAPSHOT_STORE, "readwrite");
     const store = tx.objectStore(SNAPSHOT_STORE);
-    store.put({ key: SNAPSHOT_KEY, value: cloneValue(normalized) } satisfies SnapshotRecord);
+    store.put({ key, value: cloneValue(normalized) } satisfies SnapshotRecord);
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
+  });
+}
+
+async function deleteSnapshotRow(key: string): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(SNAPSHOT_STORE, "readwrite");
+    tx.objectStore(SNAPSHOT_STORE).delete(key);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+async function ensureLegacySnapshotMigrated(): Promise<void> {
+  const legacy = await loadSnapshotRow(LEGACY_SNAPSHOT_KEY);
+  if (!legacy?.value) return;
+  const normalized = normalizeOfflineSnapshot(legacy.value);
+  const fallbackOwnerKey =
+    normalized.meta.ownerMode === "user" && normalized.meta.boundUserId
+      ? getUserOwnerKey(normalized.meta.boundUserId)
+      : getGuestOwnerKey(normalized.meta.localProfileId);
+  const existing = await loadSnapshotRow(fallbackOwnerKey);
+  if (!existing?.value) {
+    await saveSnapshotRow(fallbackOwnerKey, normalized);
+  }
+  await deleteSnapshotRow(LEGACY_SNAPSHOT_KEY);
+}
+
+export async function loadOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineSnapshot | null> {
+  await ensureLegacySnapshotMigrated();
+  const row = await loadSnapshotRow(ownerKey);
+  return row?.value ? normalizeOfflineSnapshot(row.value) : null;
+}
+
+export async function loadOfflineSnapshot(): Promise<OfflineSnapshot | null> {
+  await ensureLegacySnapshotMigrated();
+  const localProfileId = getOrCreateLocalProfileId();
+  return loadOfflineSnapshotByOwner(getGuestOwnerKey(localProfileId));
+}
+
+export async function saveOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey, snapshot: OfflineSnapshot): Promise<void> {
+  await saveSnapshotRow(ownerKey, snapshot);
+}
+
+export async function saveOfflineSnapshot(snapshot: OfflineSnapshot): Promise<void> {
+  await ensureLegacySnapshotMigrated();
+  const inferredOwnerKey =
+    snapshot.meta.ownerMode === "user" && snapshot.meta.boundUserId
+      ? getUserOwnerKey(snapshot.meta.boundUserId)
+      : getGuestOwnerKey(snapshot.meta.localProfileId);
+  await saveSnapshotRow(inferredOwnerKey, snapshot);
+}
+
+export async function listOfflineSnapshotRecords(): Promise<OfflineSnapshotRecord[]> {
+  await ensureLegacySnapshotMigrated();
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(SNAPSHOT_STORE, "readonly");
+    const store = tx.objectStore(SNAPSHOT_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as SnapshotRecord[] | undefined) ?? [];
+      resolve(
+        rows
+          .filter((row) => row.key !== LEGACY_SNAPSHOT_KEY && row.value)
+          .map((row) => {
+            const snapshot = normalizeOfflineSnapshot(row.value);
+            return {
+              ownerKey: row.key as OfflineOwnerKey,
+              savedAt: snapshot.savedAt,
+              meta: snapshot.meta
+            } satisfies OfflineSnapshotRecord;
+          })
+          .sort((a, b) => new Date(b.savedAt).getTime() - new Date(a.savedAt).getTime())
+      );
+    };
   });
 }
 
@@ -338,6 +454,28 @@ export async function enqueueOfflineMutation(mutation: QueuedMutation): Promise<
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
+  });
+}
+
+export async function listOfflineMutationsByOwner(ownerKey: OfflineOwnerKey, now = Date.now()): Promise<QueuedMutation[]> {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(QUEUE_STORE, "readonly");
+    const store = tx.objectStore(QUEUE_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as QueuedMutation[] | undefined) ?? [];
+      const fallbackOwnerKey = ownerKey;
+      resolve(
+        rows
+          .map((item) => normalizeQueuedMutation(item, fallbackOwnerKey))
+          .filter((item) => item.ownerKey === ownerKey)
+          .filter((item) => Number.isFinite(item.nextRetryAt) && item.nextRetryAt <= now)
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      );
+    };
   });
 }
 
@@ -418,4 +556,32 @@ export async function clearOfflineState(): Promise<void> {
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
   });
+}
+
+export async function clearOfflineMutationsByOwner(ownerKey: OfflineOwnerKey): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(QUEUE_STORE, "readwrite");
+    const store = tx.objectStore(QUEUE_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const rows = (req.result as QueuedMutation[] | undefined) ?? [];
+      for (const row of rows) {
+        if (row.ownerKey === ownerKey) store.delete(row.id);
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+export async function clearOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey): Promise<void> {
+  await deleteSnapshotRow(ownerKey);
+}
+
+export async function clearOfflineOwnerState(ownerKey: OfflineOwnerKey): Promise<void> {
+  await Promise.all([clearOfflineSnapshotByOwner(ownerKey), clearOfflineMutationsByOwner(ownerKey)]);
 }

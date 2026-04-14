@@ -39,6 +39,7 @@ export function LifeLayer(props: {
   onCreateDoubt: (rawText: string) => Promise<boolean>;
   onSaveDoubtNote: (doubtId: string, noteText: string) => Promise<boolean>;
   onDeleteDoubt: (doubtId: string) => Promise<boolean>;
+  editable?: boolean;
   showNotice: (message: string) => void;
 }) {
   const [inputValue, setInputValue] = useState("");
@@ -145,6 +146,10 @@ export function LifeLayer(props: {
   );
 
   const saveDoubt = useCallback(async () => {
+    if (props.editable === false) {
+      props.showNotice("当前正在同步，稍后再写");
+      return;
+    }
     const text = collapseWhitespace(inputValue);
     if (!text) return;
     const ok = await props.onCreateDoubt(text);
@@ -243,6 +248,7 @@ export function LifeLayer(props: {
                         data-zh-input="multiline"
                         autoResize
                         maxAutoHeight={220}
+                        disabled={props.editable === false}
                         className={cn(
                           "min-h-[2.6rem] max-h-[220px] w-full border-0 bg-transparent px-0 py-0 text-[0.95rem] font-light leading-[1.95] tracking-[0.03em] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-500 focus-visible:ring-0",
                           fieldFocused
@@ -262,7 +268,13 @@ export function LifeLayer(props: {
                         <p className={cn("transition-opacity duration-700", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
                         <div className="flex items-center gap-3">
                           <span className={cn("transition-opacity duration-700", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
-                          <Button type="button" variant="ghost" className="time-subtle-button life-compose-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]" onClick={() => void saveDoubt()}>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            disabled={props.editable === false}
+                            className="time-subtle-button life-compose-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]"
+                            onClick={() => void saveDoubt()}
+                          >
                             {"\u5B58\u5165\u6B64\u523B"}
                           </Button>
                         </div>

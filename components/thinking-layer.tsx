@@ -191,6 +191,7 @@ export function ThinkingLayer(props: {
   onViewModeChange?: (mode: "spaces" | "detail") => void;
   reentryTarget: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null } | null;
   onReentryHandled: () => void;
+  writeEnabled?: boolean;
   showNotice: (message: string) => void;
 }) {
   const [newSpaceInput, setNewSpaceInput] = useState("");
@@ -254,6 +255,7 @@ export function ThinkingLayer(props: {
   const spaceFinderInputRef = useRef<HTMLInputElement | null>(null);
   const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const [moreMenuStyle, setMoreMenuStyle] = useState<{ top: number; left: number } | null>(null);
+  const writeEnabled = props.writeEnabled !== false;
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -705,7 +707,7 @@ export function ThinkingLayer(props: {
             if (!targetTrackId) return;
             rememberTrackPosition(spaceId, targetTrackId, {
               scrollTop: latestContainer.scrollTop,
-              focusNodeId: nodeId
+              focusNodeId: null
             });
           }, 220);
           return;
@@ -780,6 +782,10 @@ export function ThinkingLayer(props: {
   }, [activeSpace, isApplyingOrganize, organizeNodeMap, organizeSelectedNodeIds, organizeTargetTrackId, props]);
 
   const createSpace = useCallback(() => {
+    if (!writeEnabled) {
+      props.showNotice("当前正在同步，稍后再写");
+      return;
+    }
     const rawInput = newSpaceInput.trim();
     if (!rawInput) {
       setCreateSpaceHint("请先写下这段思考现在围着什么转");
@@ -813,9 +819,13 @@ export function ThinkingLayer(props: {
         setIsCreatingSpace(false);
       }
     })();
-  }, [isCreatingSpace, newSpaceInput, props]);
+  }, [isCreatingSpace, newSpaceInput, props, writeEnabled]);
 
   const createScratch = useCallback(async () => {
+    if (!writeEnabled) {
+      props.showNotice("当前正在同步，稍后再写");
+      return;
+    }
     const rawInput = scratchInput.trim();
     if (!rawInput || isCreatingScratch) return;
     setIsCreatingScratch(true);
@@ -830,7 +840,7 @@ export function ThinkingLayer(props: {
     } finally {
       setIsCreatingScratch(false);
     }
-  }, [isCreatingScratch, props, scratchInput]);
+  }, [isCreatingScratch, props, scratchInput, writeEnabled]);
 
   const turnScratchIntoSpace = useCallback(
     async (scratchId: string) => {
@@ -850,6 +860,10 @@ export function ThinkingLayer(props: {
 
   const addQuestion = useCallback(
     (rawInput: string, fromSuggestion = false, targetTrackId?: string | null) => {
+      if (!writeEnabled) {
+        props.showNotice("当前正在同步，稍后再写");
+        return;
+      }
       if (!activeSpace) return;
       if (activeSpace.status !== "active") {
         setInputHint("这个空间已写入时间");
@@ -882,12 +896,15 @@ export function ThinkingLayer(props: {
           setFocusMenuNodeId(null);
           if (result.trackId !== activeTrackId) setLocalPendingTrackId(result.trackId);
           centerAddedNodeWithRetry(result.nodeId, activeSpace.id, result.trackId);
+          window.requestAnimationFrame(() => {
+            questionInputRef.current?.focus();
+          });
         } finally {
           setIsAddingQuestion(false);
         }
       })();
     },
-    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props]
+    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props, writeEnabled]
   );
 
   const saveBackground = useCallback(() => {
@@ -1237,12 +1254,12 @@ export function ThinkingLayer(props: {
                     style={moreMenuStyle ?? undefined}
                     className="fixed z-[90] w-44 rounded-xl border border-black/10 bg-white/98 p-1.5 shadow-[0_14px_30px_rgba(16,20,24,0.16)] backdrop-blur-sm"
                   >
-                    <MenuItem label="写入时间" disabled={!activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
+                    <MenuItem label="写入时间" disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
                     <MenuItem label="导出" disabled={!activeSpace} onClick={() => (setMoreOpen(false), openExport())} />
-                    <MenuItem label="整理一下" disabled={!activeSpace || activeSpace.status !== "active"} onClick={openOrganizePanel} />
+                    <MenuItem label="整理一下" disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"} onClick={openOrganizePanel} />
                     <MenuItem
                       label="重命名空间"
-                      disabled={!activeSpace}
+                      disabled={!writeEnabled || !activeSpace}
                       onClick={() => {
                         if (!activeSpace) return;
                         setRenameSpaceDraft(activeSpace.rootQuestionText);
@@ -1253,7 +1270,7 @@ export function ThinkingLayer(props: {
                     />
                     <MenuItem
                       label="背景说明"
-                      disabled={!activeSpace || activeSpace.status !== "active"}
+                      disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"}
                       onClick={() => {
                         setMoreOpen(false);
                         setBackgroundOpen(true);
@@ -1261,7 +1278,7 @@ export function ThinkingLayer(props: {
                     />
                     <MenuItem
                       label="删除空间"
-                      disabled={!activeSpace}
+                      disabled={!writeEnabled || !activeSpace}
                       onClick={() => {
                         setMoreOpen(false);
                         setDeleteSpaceOpen(true);
@@ -1673,7 +1690,7 @@ export function ThinkingLayer(props: {
                       maxAutoHeight={180}
                       data-zh-input="multiline"
                       rows={1}
-                      disabled={activeSpace.status !== "active"}
+                      disabled={!writeEnabled || activeSpace.status !== "active"}
                       placeholder={activeSpace.status === "active" ? "继续这条思路…" : "这个空间已写入时间"}
                       className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/80 disabled:text-slate-500 focus-visible:ring-0"
                       onChange={(event) => setQuestionInput(event.target.value)}
@@ -1691,7 +1708,7 @@ export function ThinkingLayer(props: {
                       type="button"
                       aria-label="继续"
                       className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/58 text-slate-500 transition-colors hover:bg-white/72 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
-                      disabled={activeSpace.status !== "active" || isAddingQuestion || !composerCanSubmit}
+                      disabled={!writeEnabled || activeSpace.status !== "active" || isAddingQuestion || !composerCanSubmit}
                       onClick={() => addQuestion(questionInput, false)}
                     >
                       <span aria-hidden="true" className="text-base leading-none">↗</span>
@@ -1706,6 +1723,7 @@ export function ThinkingLayer(props: {
                           key={suggestion}
                           type="button"
                           className="rounded-full border border-black/[0.06] bg-white/62 px-3 py-1 text-[11px] text-slate-600 transition-colors hover:bg-white/78"
+                          disabled={!writeEnabled}
                           onClick={() => addQuestion(suggestion, true)}
                         >
                           {suggestion}
@@ -1747,6 +1765,7 @@ export function ThinkingLayer(props: {
                     maxAutoHeight={160}
                     data-zh-input="multiline"
                     rows={1}
+                    disabled={!writeEnabled}
                     className="min-h-[2.45rem] max-h-[160px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/85 focus-visible:ring-0"
                     placeholder="随手记下一句…"
                     onChange={(event) => setScratchInput(event.target.value)}
@@ -1760,7 +1779,7 @@ export function ThinkingLayer(props: {
                     type="button"
                     aria-label="保存随记"
                     className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/70 text-slate-500 transition-colors hover:bg-white hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
-                    disabled={!scratchInput.trim() || isCreatingScratch}
+                    disabled={!writeEnabled || !scratchInput.trim() || isCreatingScratch}
                     onClick={() => void createScratch()}
                   >
                     <span aria-hidden="true" className="text-base leading-none">↗</span>
@@ -1865,6 +1884,7 @@ export function ThinkingLayer(props: {
                 maxAutoHeight={120}
                 data-zh-input="multiline"
                 rows={1}
+                disabled={!writeEnabled}
                 className="min-h-[2.55rem] max-h-[120px] rounded-2xl border border-black/12 bg-white px-4 py-2 text-sm leading-[1.65] text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
                 onChange={(event) => setNewSpaceInput(event.target.value)}
                 onKeyDown={(event) => {
@@ -1876,7 +1896,7 @@ export function ThinkingLayer(props: {
               />
               <Button
                 type="button"
-                disabled={isCreatingSpace}
+                disabled={!writeEnabled || isCreatingSpace}
                 className="h-10 rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={createSpace}
               >
@@ -1890,6 +1910,7 @@ export function ThinkingLayer(props: {
                       key={suggestion}
                       type="button"
                       className="rounded-full border border-black/10 bg-white/85 px-3 py-1 text-xs text-slate-700 transition-colors hover:bg-white"
+                      disabled={!writeEnabled}
                       onClick={() => {
                         setNewSpaceInput(suggestion);
                         void (async () => {

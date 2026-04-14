@@ -11,25 +11,31 @@ import { SettingsLayer } from "@/components/settings-layer";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
   changePin,
+  clearOfflineOwnerState,
+  clearOfflineSnapshotByOwner,
   clearOfflineState,
   clearPinStatus,
   createOfflineSnapshotMeta,
   disablePin,
   enablePin,
   enqueueOfflineMutation,
+  getGuestOwnerKey,
   getPinStatus,
   getOrCreateLocalProfileId,
+  getUserOwnerKey,
   isOfflineNetworkError,
-  listOfflineMutations,
-  loadOfflineSnapshot,
+  listOfflineMutationsByOwner,
+  loadOfflineSnapshotByOwner,
   removeOfflineMutation,
-  saveOfflineSnapshot,
+  saveOfflineSnapshotByOwner,
   updateOfflineMutation,
   verifyPin,
+  type OfflineOwnerKey,
   type OfflineSnapshotMeta,
   type QueuedMutation
 } from "@/components/offline-store";
 import { canAccessGuestMode, canUseCloudSync } from "@/lib/capabilities";
+import { apiFetch } from "@/lib/api-client";
 import {
   type LayerTab,
   type LifeDoubt,
@@ -250,6 +256,15 @@ type BindingDialogState = {
   cloudPayload: UserExportPayload;
   submitting: boolean;
 };
+
+type OfflineRuntimeState =
+  | "guest_ready"
+  | "user_bootstrapping"
+  | "user_syncing"
+  | "user_sync_ready"
+  | "user_offline_ready"
+  | "binding_required"
+  | "switching_account";
 
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
 const OFFLINE_RETRY_BASE_MS = 1200;
@@ -834,6 +849,9 @@ export function TimeArchive() {
   const [pinUnlocked, setPinUnlocked] = useState(false);
   const [, setOfflineSnapshotExists] = useState(false);
   const [offlineMeta, setOfflineMeta] = useState<OfflineSnapshotMeta | null>(null);
+  const [offlineRuntimeState, setOfflineRuntimeState] = useState<OfflineRuntimeState>("guest_ready");
+  const [activeOwnerKey, setActiveOwnerKey] = useState<OfflineOwnerKey | null>(null);
+  const [isOnline, setIsOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
   const [pinTick, setPinTick] = useState(0);
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
@@ -844,6 +862,7 @@ export function TimeArchive() {
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
   const offlineSyncingRef = useRef(false);
+  const userBootstrapRef = useRef<string | null>(null);
   const localProfileIdRef = useRef("");
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
@@ -895,11 +914,19 @@ export function TimeArchive() {
 
   const guestModeEnabled = canAccessGuestMode();
   const cloudSyncEnabled = canUseCloudSync(sessionUser);
+  const guestOwnerKey = getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
+  const currentUserOwnerKey = sessionUser ? getUserOwnerKey(sessionUser.userId) : null;
   const cloudSyncReady =
     cloudSyncEnabled &&
+    offlineRuntimeState === "user_sync_ready" &&
     offlineMeta?.ownerMode === "user" &&
     offlineMeta.boundUserId === sessionUser?.userId &&
-    offlineMeta.syncState.bindingRequired !== true;
+    activeOwnerKey === currentUserOwnerKey;
+  const editingLocked =
+    offlineRuntimeState === "user_bootstrapping" ||
+    offlineRuntimeState === "user_syncing" ||
+    offlineRuntimeState === "binding_required" ||
+    offlineRuntimeState === "switching_account";
 
   const updateOfflineMeta = useCallback((updater: (current: OfflineSnapshotMeta) => OfflineSnapshotMeta) => {
     setOfflineMeta((current) => {
@@ -933,6 +960,70 @@ export function TimeArchive() {
       }));
     },
     [updateOfflineMeta]
+  );
+
+  const applySnapshotToState = useCallback(
+    (snapshot: {
+      lifeStore: typeof EMPTY_LIFE_STORE;
+      thinkingStore: ThinkingStore;
+      activeSpaceId: string | null;
+      thinkingViews?: Record<string, ThinkingSpaceView>;
+      meta: OfflineSnapshotMeta;
+    }) => {
+      const initialSpaceId = snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces);
+      const cachedInitialView = initialSpaceId ? snapshot.thinkingViews?.[initialSpaceId] ?? null : null;
+      const initialView = isSpaceViewConsistentWithStore(snapshot.thinkingStore, initialSpaceId ?? "", cachedInitialView)
+        ? cachedInitialView
+        : initialSpaceId
+          ? buildSpaceViewFromStore(snapshot.thinkingStore, initialSpaceId)
+          : null;
+      setLifeStore(snapshot.lifeStore);
+      setThinkingStore(snapshot.thinkingStore);
+      setActiveSpaceId(initialSpaceId);
+      thinkingViewCacheRef.current = snapshot.thinkingViews ?? {};
+      if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
+      setThinkingView(initialView);
+      setOfflineMeta(snapshot.meta);
+      setOfflineSnapshotExists(
+        hasMeaningfulLocalData(snapshot.lifeStore, snapshot.thinkingStore) ||
+          Object.keys(snapshot.thinkingViews ?? {}).length > 0
+      );
+    },
+    []
+  );
+
+  const resetArchiveState = useCallback(
+    (ownerMeta: OfflineSnapshotMeta) => {
+      thinkingViewCacheRef.current = {};
+      setThinkingView(null);
+      setActiveSpaceId(null);
+      setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
+      setThinkingStore((prev) => ({
+        ...EMPTY_THINKING_STORE,
+        timezone: prev.timezone,
+        fixedTopSpacesEnabled: prev.fixedTopSpacesEnabled,
+        fixedTopSpaceIds: []
+      }));
+      setOfflineMeta(ownerMeta);
+      setOfflineSnapshotExists(false);
+    },
+    []
+  );
+
+  const loadOwnerSnapshot = useCallback(
+    async (ownerKey: OfflineOwnerKey, fallbackMeta: OfflineSnapshotMeta) => {
+      const snapshot = await loadOfflineSnapshotByOwner(ownerKey);
+      if (snapshot) {
+        applySnapshotToState({
+          ...snapshot,
+          meta: snapshot.meta ?? fallbackMeta
+        });
+        return snapshot;
+      }
+      resetArchiveState(fallbackMeta);
+      return null;
+    },
+    [applySnapshotToState, resetArchiveState]
   );
 
   const buildLocalExportPayload = useCallback(
@@ -1050,7 +1141,7 @@ export function TimeArchive() {
 
   const syncAuth = useCallback(async () => {
     try {
-      const response = await fetch("/v1/auth/me", { method: "GET", cache: "no-store" });
+      const response = await apiFetch("/v1/auth/me", { method: "GET", cache: "no-store" });
       if (!response.ok) {
         setSessionUser(null);
         setAuthReady(true);
@@ -1086,7 +1177,7 @@ export function TimeArchive() {
   const syncLifeFromApi = useCallback(
     async (silent = false) => {
       try {
-        const response = await fetch("/v1/doubts?range=all&include_notes=true", {
+        const response = await apiFetch("/v1/doubts?range=all&include_notes=true", {
           method: "GET",
           cache: "no-store"
         });
@@ -1115,7 +1206,7 @@ export function TimeArchive() {
   const syncThinkingSpacesFromApi = useCallback(
     async (silent = false) => {
       try {
-        const response = await fetch("/v1/thinking/spaces", { method: "GET", cache: "no-store" });
+        const response = await apiFetch("/v1/thinking/spaces", { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return [];
         if (!response.ok) {
           if (!silent) showNotice("思考空间同步失败");
@@ -1144,7 +1235,7 @@ export function TimeArchive() {
   const syncThinkingScratchFromApi = useCallback(
     async (silent = false) => {
       try {
-        const response = await fetch("/v1/thinking/scratch", { method: "GET", cache: "no-store" });
+        const response = await apiFetch("/v1/thinking/scratch", { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return [];
         if (!response.ok) {
           if (!silent) showNotice("随记同步失败");
@@ -1168,7 +1259,7 @@ export function TimeArchive() {
   const loadThinkingViewFromApi = useCallback(
     async (spaceId: string, silent = false) => {
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}`, { method: "GET", cache: "no-store" });
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}`, { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) {
           if (response.status === 404 && activeSpaceIdRef.current === spaceId) setThinkingView(null);
@@ -1232,7 +1323,7 @@ export function TimeArchive() {
   );
 
   const fetchCloudExport = useCallback(async () => {
-    const response = await fetch("/v1/system/export", { method: "GET", cache: "no-store" });
+    const response = await apiFetch("/v1/system/export", { method: "GET", cache: "no-store" });
     if (handleUnauthorized(response) || !response.ok) return null;
     const payload = (await response.json().catch(() => null)) as { payload?: UserExportPayload; checksum?: string } | null;
     if (!payload?.payload || typeof payload.checksum !== "string") return null;
@@ -1240,7 +1331,7 @@ export function TimeArchive() {
   }, [handleUnauthorized]);
 
   const refreshFromCloud = useCallback(
-    async (preferredSpaceId?: string | null) => {
+    async (preferredSpaceId?: string | null, userId?: string | null) => {
       thinkingViewCacheRef.current = {};
       setThinkingView(null);
       setActiveSpaceId(null);
@@ -1264,15 +1355,18 @@ export function TimeArchive() {
       setActiveSpaceId(nextActive);
       if (nextActive) await loadThinkingViewFromApi(nextActive, true);
       else setThinkingView(null);
+      const targetUserId = userId ?? sessionUser?.userId ?? null;
       if (lifeOk || spaces.length || scratch.length || !hasMeaningfulLocalData(lifeStore, thinkingStore)) {
-        markCloudSynced(sessionUser?.userId ?? null);
+        markCloudSynced(targetUserId);
+      }
+      if (targetUserId) {
+        setOfflineRuntimeState("user_sync_ready");
       }
     },
     [
       lifeStore,
       loadThinkingViewFromApi,
       markCloudSynced,
-      sessionUser?.userId,
       syncLifeFromApi,
       syncThinkingScratchFromApi,
       syncThinkingSpacesFromApi,
@@ -1284,7 +1378,7 @@ export function TimeArchive() {
     async (user: SessionUser) => {
       const payload = buildLocalExportPayload(user);
       const checksum = await sha256Hex(stableStringify(payload));
-      const response = await fetch("/v1/system/import", {
+      const response = await apiFetch("/v1/system/import", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payload, checksum, mode: "replace" })
@@ -1306,12 +1400,13 @@ export function TimeArchive() {
     [buildLocalExportPayload, handleUnauthorized, refreshFromCloud, updateOfflineMeta]
   );
 
-  const syncQueuedMutations = useCallback(async () => {
+  const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
+    if (!ownerKey || !ownerKey.startsWith("user:")) return;
     if (offlineSyncingRef.current) return;
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     offlineSyncingRef.current = true;
     try {
-      const pending = await listOfflineMutations();
+      const pending = await listOfflineMutationsByOwner(ownerKey);
       if (!pending.length) return;
       let touched = false;
       for (const item of pending) {
@@ -1321,7 +1416,7 @@ export function TimeArchive() {
           client_updated_at: item.clientUpdatedAt
         };
         try {
-          const response = await fetch(item.route, {
+          const response = await apiFetch(item.route, {
             method: item.method,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -1350,21 +1445,14 @@ export function TimeArchive() {
         }
       }
       if (!touched) return;
-      await syncLifeFromApi(true);
-      const spaces = await syncThinkingSpacesFromApi(true);
-      await syncThinkingScratchFromApi(true);
-      const nextActive =
-        (activeSpaceId && spaces.some((space) => space.id === activeSpaceId) ? activeSpaceId : null) ?? pickDefaultSpaceId(spaces);
-      setActiveSpaceId(nextActive);
-      if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-      else setThinkingView(null);
+      await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5));
     } finally {
       offlineSyncingRef.current = false;
     }
   }, [
-    activeSpaceId,
     handleUnauthorized,
     loadThinkingViewFromApi,
+    refreshFromCloud,
     syncLifeFromApi,
     syncThinkingScratchFromApi,
     syncThinkingSpacesFromApi
@@ -1372,13 +1460,17 @@ export function TimeArchive() {
 
   const queueMutation = useCallback(
     async (route: string, body: Record<string, unknown> | null = null) => {
-      if (!cloudSyncReady || !sessionUser) {
+      if (!activeOwnerKey || !sessionUser || !activeOwnerKey.startsWith("user:")) {
         markLocalChange();
+        return null;
+      }
+      if (offlineRuntimeState !== "user_offline_ready" && offlineRuntimeState !== "user_sync_ready") {
         return null;
       }
       const now = new Date().toISOString();
       const queued: QueuedMutation = {
         id: createId(),
+        ownerKey: activeOwnerKey,
         route,
         method: "POST",
         body,
@@ -1393,7 +1485,7 @@ export function TimeArchive() {
       markLocalChange();
       return queued;
     },
-    [cloudSyncReady, markLocalChange, sessionUser]
+    [activeOwnerKey, markLocalChange, offlineRuntimeState, sessionUser]
   );
 
   const createLifeDoubt = useCallback(
@@ -1408,7 +1500,7 @@ export function TimeArchive() {
       };
       if (cloudSyncReady) {
         try {
-          const response = await fetch("/v1/doubts", {
+          const response = await apiFetch("/v1/doubts", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -1475,7 +1567,7 @@ export function TimeArchive() {
       const payload = { note_text: noteText, client_updated_at: now };
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/doubts/${doubtId}/note`, {
+          const response = await apiFetch(`/v1/doubts/${doubtId}/note`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -1545,7 +1637,7 @@ export function TimeArchive() {
     async (doubtId: string) => {
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/doubts/${doubtId}/delete`, { method: "POST" });
+          const response = await apiFetch(`/v1/doubts/${doubtId}/delete`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) {
             showNotice("删除失败，请稍后再试");
@@ -1603,7 +1695,7 @@ export function TimeArchive() {
       };
       if (cloudSyncReady) {
         try {
-          const response = await fetch("/v1/thinking/spaces", {
+          const response = await apiFetch("/v1/thinking/spaces", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(basePayload)
@@ -1733,29 +1825,23 @@ export function TimeArchive() {
     void (async () => {
       const localProfileId = getOrCreateLocalProfileId();
       localProfileIdRef.current = localProfileId;
-      const snapshot = await loadOfflineSnapshot();
+      const initialOwnerKey = getGuestOwnerKey(localProfileId);
+      const snapshot = await loadOfflineSnapshotByOwner(initialOwnerKey);
       if (cancelled) return;
       if (snapshot) {
-        const initialSpaceId = snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces);
-        const cachedInitialView = initialSpaceId ? snapshot.thinkingViews?.[initialSpaceId] ?? null : null;
-        const initialView = isSpaceViewConsistentWithStore(snapshot.thinkingStore, initialSpaceId ?? "", cachedInitialView)
-          ? cachedInitialView
-          : initialSpaceId
-            ? buildSpaceViewFromStore(snapshot.thinkingStore, initialSpaceId)
-            : null;
-        setLifeStore(snapshot.lifeStore);
-        setThinkingStore(snapshot.thinkingStore);
-        setActiveSpaceId(initialSpaceId);
-        thinkingViewCacheRef.current = snapshot.thinkingViews ?? {};
-        if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
-        setThinkingView(initialView);
-        setOfflineSnapshotExists(true);
-        setOfflineMeta(snapshot.meta ?? createOfflineSnapshotMeta(localProfileId));
+        applySnapshotToState({
+          ...snapshot,
+          meta: snapshot.meta ?? createOfflineSnapshotMeta(localProfileId)
+        });
+        setActiveOwnerKey(initialOwnerKey);
+        setOfflineRuntimeState("guest_ready");
         setHydrated(true);
         return;
       }
       setOfflineSnapshotExists(false);
+      setActiveOwnerKey(initialOwnerKey);
       setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
+      setOfflineRuntimeState("guest_ready");
       const loadedLife = loadLifeStore();
       const loadedThinking = loadThinkingStore();
       const initialSpaceId = pickDefaultSpaceId(loadedThinking.spaces);
@@ -1770,7 +1856,7 @@ export function TimeArchive() {
     return () => {
       cancelled = true;
     };
-  }, [pinEnabled, pinReady, pinUnlocked]);
+  }, [applySnapshotToState, pinEnabled, pinReady, pinUnlocked]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -1784,104 +1870,64 @@ export function TimeArchive() {
   }, [thinkingFocusMode]);
 
   useEffect(() => {
+    if (typeof window === "undefined") return;
+    const update = () => setIsOnline(window.navigator.onLine !== false);
+    update();
+    window.addEventListener("online", update);
+    window.addEventListener("offline", update);
+    return () => {
+      window.removeEventListener("online", update);
+      window.removeEventListener("offline", update);
+    };
+  }, []);
+
+  useEffect(() => {
     activeSpaceIdRef.current = activeSpaceId;
   }, [activeSpaceId]);
 
   useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
-    void syncLifeFromApi(true);
-  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncLifeFromApi]);
-
-  useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
-    void syncThinkingScratchFromApi(true);
-  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncThinkingScratchFromApi]);
-
-  useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser || !offlineMeta) return;
-    if (offlineMeta.ownerMode !== "user") return;
-    if (!offlineMeta.boundUserId || offlineMeta.boundUserId === sessionUser.userId) return;
+    if (!hydrated || !authReady || !offlineMeta) return;
 
     let cancelled = false;
     void (async () => {
-      bindingCheckUserIdRef.current = sessionUser.userId;
-      setBindingDialog(null);
-      thinkingViewCacheRef.current = {};
-      setThinkingView(null);
-      setActiveSpaceId(null);
-      setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
-      setThinkingStore((prev) => ({
-        ...EMPTY_THINKING_STORE,
-        timezone: prev.timezone,
-        fixedTopSpacesEnabled: prev.fixedTopSpacesEnabled,
-        fixedTopSpaceIds: []
-      }));
-      if (typeof window !== "undefined") {
-        window.localStorage.removeItem(LIFE_STORAGE_KEY);
-        window.localStorage.removeItem(THINKING_STORAGE_KEY);
-      }
-      await clearOfflineState();
-      updateOfflineMeta((current) => ({
-        ...current,
-        ownerMode: "user",
-        boundUserId: sessionUser.userId,
-        syncState: {
-          lastSyncedAt: null,
-          hasLocalChanges: false,
-          bindingRequired: false
+      const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
+      const nextGuestOwnerKey = getGuestOwnerKey(localProfileId);
+      const guestMeta = createOfflineSnapshotMeta(localProfileId);
+
+      if (!sessionUser) {
+        userBootstrapRef.current = null;
+        bindingCheckUserIdRef.current = null;
+        setBindingDialog(null);
+        if (activeOwnerKey !== nextGuestOwnerKey) {
+          setOfflineRuntimeState("switching_account");
+          setActiveOwnerKey(nextGuestOwnerKey);
+          await loadOwnerSnapshot(nextGuestOwnerKey, guestMeta);
+          if (cancelled) return;
         }
-      }));
-      await refreshFromCloud(null);
-      if (!cancelled) showNotice("已切换账号数据");
-    })();
+        setOfflineRuntimeState("guest_ready");
+        return;
+      }
 
-    return () => {
-      cancelled = true;
-    };
-  }, [authReady, hydrated, offlineMeta, refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
+      const nextUserOwnerKey = getUserOwnerKey(sessionUser.userId);
+      const userMeta = createOfflineSnapshotMeta(localProfileId, {
+        ownerMode: "user",
+        boundUserId: sessionUser.userId
+      });
+      const guestHasData = activeOwnerKey === nextGuestOwnerKey && hasMeaningfulLocalData(lifeStore, thinkingStore);
 
-  useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
-    void syncQueuedMutations();
-  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncQueuedMutations]);
+      if (guestHasData) {
+        setOfflineRuntimeState(bindingDialog || offlineMeta.syncState.bindingRequired ? "binding_required" : "guest_ready");
+        return;
+      }
 
-  useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
-    const onOnline = () => {
-      void syncQueuedMutations();
-    };
-    window.addEventListener("online", onOnline);
-    const timer = window.setInterval(() => {
-      void syncQueuedMutations();
-    }, 15000);
-    return () => {
-      window.removeEventListener("online", onOnline);
-      window.clearInterval(timer);
-    };
-  }, [authReady, cloudSyncReady, hydrated, sessionUser, syncQueuedMutations]);
+      if (activeOwnerKey !== nextUserOwnerKey) {
+        userBootstrapRef.current = null;
+        setOfflineRuntimeState("switching_account");
+        setActiveOwnerKey(nextUserOwnerKey);
+        await loadOwnerSnapshot(nextUserOwnerKey, userMeta);
+        if (cancelled) return;
+      }
 
-  useEffect(() => {
-    if (!hydrated || !authReady || !cloudSyncReady || !sessionUser) return;
-    void (async () => {
-      const spaces = await syncThinkingSpacesFromApi(true);
-      const initial = pickDefaultSpaceId(spaces);
-      setActiveSpaceId((prev) => (prev && spaces.some((space) => space.id === prev) ? prev : initial));
-      if (initial) await loadThinkingViewFromApi(initial, true);
-      else setThinkingView(null);
-    })();
-  }, [authReady, cloudSyncReady, hydrated, loadThinkingViewFromApi, sessionUser, syncThinkingSpacesFromApi]);
-
-  useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser || !offlineMeta) return;
-    if (bindingCheckUserIdRef.current === sessionUser.userId) return;
-    if (offlineMeta.ownerMode === "user" && offlineMeta.boundUserId && offlineMeta.boundUserId !== sessionUser.userId) return;
-    if (offlineMeta.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId) {
-      bindingCheckUserIdRef.current = sessionUser.userId;
-      return;
-    }
-
-    const localHasData = hasMeaningfulLocalData(lifeStore, thinkingStore);
-    if (!localHasData) {
       updateOfflineMeta((current) => ({
         ...current,
         ownerMode: "user",
@@ -1891,23 +1937,80 @@ export function TimeArchive() {
           bindingRequired: false
         }
       }));
-      bindingCheckUserIdRef.current = sessionUser.userId;
-      return;
-    }
+
+      if (!isOnline) {
+        userBootstrapRef.current = null;
+        setOfflineRuntimeState("user_offline_ready");
+        return;
+      }
+
+      if (userBootstrapRef.current === sessionUser.userId) {
+        if (offlineRuntimeState !== "user_sync_ready") {
+          setOfflineRuntimeState("user_syncing");
+        }
+        return;
+      }
+
+      userBootstrapRef.current = sessionUser.userId;
+      setOfflineRuntimeState("user_bootstrapping");
+      await refreshFromCloud(activeSpaceIdRef.current, sessionUser.userId);
+      if (cancelled) return;
+      await syncQueuedMutations(nextUserOwnerKey);
+      if (cancelled) return;
+      setOfflineRuntimeState("user_sync_ready");
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    activeOwnerKey,
+    authReady,
+    bindingDialog,
+    hydrated,
+    isOnline,
+    lifeStore,
+    loadOwnerSnapshot,
+    offlineMeta,
+    offlineRuntimeState,
+    refreshFromCloud,
+    sessionUser,
+    syncQueuedMutations,
+    thinkingStore,
+    updateOfflineMeta
+  ]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser || !offlineMeta || !isOnline) return;
+    if (activeOwnerKey !== guestOwnerKey) return;
+    if (bindingCheckUserIdRef.current === sessionUser.userId) return;
+
+    const localHasData = hasMeaningfulLocalData(lifeStore, thinkingStore);
+    if (!localHasData) return;
 
     let cancelled = false;
+    const frozenLocalPayload = buildLocalExportPayload(sessionUser);
+    bindingCheckUserIdRef.current = sessionUser.userId;
     void (async () => {
       const cloud = await fetchCloudExport();
-      if (cancelled || !cloud?.payload) return;
-      const localPayload = buildLocalExportPayload(sessionUser);
+      if (cancelled) return;
+      if (!cloud?.payload) {
+        bindingCheckUserIdRef.current = null;
+        return;
+      }
       if (isCloudPayloadEmpty(cloud.payload)) {
         const imported = await importLocalPayloadToCloud(sessionUser);
-        if (cancelled || !imported) return;
-        bindingCheckUserIdRef.current = sessionUser.userId;
+        if (cancelled) return;
+        if (!imported) {
+          bindingCheckUserIdRef.current = null;
+          return;
+        }
+        await clearOfflineSnapshotByOwner(guestOwnerKey);
+        setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
         showNotice("本地数据已绑定到当前账号");
         return;
       }
-      if (arePayloadsEquivalent(localPayload, cloud.payload)) {
+      if (arePayloadsEquivalent(frozenLocalPayload, cloud.payload)) {
         updateOfflineMeta((current) => ({
           ...current,
           ownerMode: "user",
@@ -1918,7 +2021,9 @@ export function TimeArchive() {
             bindingRequired: false
           }
         }));
-        bindingCheckUserIdRef.current = sessionUser.userId;
+        await clearOfflineSnapshotByOwner(guestOwnerKey);
+        setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
+        setOfflineRuntimeState("user_bootstrapping");
         showNotice("本地与云端数据一致，已自动完成绑定");
         return;
       }
@@ -1929,6 +2034,7 @@ export function TimeArchive() {
           bindingRequired: true
         }
       }));
+      setOfflineRuntimeState("binding_required");
       setBindingDialog({ cloudPayload: cloud.payload, submitting: false });
     })();
 
@@ -1936,11 +2042,14 @@ export function TimeArchive() {
       cancelled = true;
     };
   }, [
+    activeOwnerKey,
     authReady,
     buildLocalExportPayload,
     fetchCloudExport,
+    guestOwnerKey,
     hydrated,
     importLocalPayloadToCloud,
+    isOnline,
     lifeStore,
     offlineMeta,
     sessionUser,
@@ -1948,6 +2057,22 @@ export function TimeArchive() {
     thinkingStore,
     updateOfflineMeta
   ]);
+
+  useEffect(() => {
+    if (!hydrated || !authReady || !sessionUser || !currentUserOwnerKey || !isOnline) return;
+    if (offlineRuntimeState !== "user_sync_ready") return;
+    const onOnline = () => {
+      void syncQueuedMutations(currentUserOwnerKey);
+    };
+    window.addEventListener("online", onOnline);
+    const timer = window.setInterval(() => {
+      void syncQueuedMutations(currentUserOwnerKey);
+    }, 15000);
+    return () => {
+      window.removeEventListener("online", onOnline);
+      window.clearInterval(timer);
+    };
+  }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, sessionUser, syncQueuedMutations]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1960,11 +2085,11 @@ export function TimeArchive() {
   }, [hydrated, thinkingStore]);
 
   useEffect(() => {
-    if (!hydrated || !offlineMeta) return;
+    if (!hydrated || !offlineMeta || !activeOwnerKey) return;
     if (thinkingView) {
       thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
     }
-    void saveOfflineSnapshot({
+    void saveOfflineSnapshotByOwner(activeOwnerKey, {
       lifeStore,
       thinkingStore,
       activeSpaceId,
@@ -1972,7 +2097,7 @@ export function TimeArchive() {
       savedAt: new Date().toISOString(),
       meta: offlineMeta
     });
-  }, [activeSpaceId, hydrated, lifeStore, offlineMeta, thinkingStore, thinkingView]);
+  }, [activeOwnerKey, activeSpaceId, hydrated, lifeStore, offlineMeta, thinkingStore, thinkingView]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2043,7 +2168,7 @@ export function TimeArchive() {
   const hideLifeDoubtFromTimeline = useCallback(
     async (doubtId: string) => {
       try {
-        const response = await fetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
+        const response = await apiFetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         void syncLifeFromApi(true);
@@ -2059,7 +2184,7 @@ export function TimeArchive() {
     (doubt: { id: string; rawText: string }) => {
       void (async () => {
         try {
-          const response = await fetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
+          const response = await apiFetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
           if (handleUnauthorized(response)) return;
           if (response.status === 409) {
             showNotice(RESTORE_OVER_LIMIT_NOTICE);
@@ -2117,7 +2242,7 @@ export function TimeArchive() {
       };
       if (cloudSyncReady) {
         try {
-          const response = await fetch("/v1/thinking/scratch", {
+          const response = await apiFetch("/v1/thinking/scratch", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -2158,7 +2283,7 @@ export function TimeArchive() {
     async (scratchId: string) => {
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
+          const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
           await syncLifeFromApi(true);
@@ -2201,7 +2326,7 @@ export function TimeArchive() {
     async (scratchId: string) => {
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
+          const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
           await syncThinkingScratchFromApi(true);
@@ -2236,7 +2361,7 @@ export function TimeArchive() {
         return { ok: true as const, spaceId: created.spaceId };
       }
       try {
-        const response = await fetch(`/v1/thinking/scratch/${scratchId}/to-space`, { method: "POST" });
+        const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/to-space`, { method: "POST" });
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         const body = (await response.json().catch(() => ({}))) as { space_id?: string };
         if (response.status === 409) return { ok: false as const, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
@@ -2267,7 +2392,7 @@ export function TimeArchive() {
       const localNodeId = createId();
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/spaces/${spaceId}/questions`, {
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/questions`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
@@ -2442,7 +2567,7 @@ export function TimeArchive() {
     async (spaceId: string) => {
       if (!cloudSyncReady) return [];
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-preview`, { method: "POST" });
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/organize-preview`, { method: "POST" });
         if (handleUnauthorized(response)) return [];
         if (!response.ok) return [];
         const body = (await response.json().catch(() => ({}))) as {
@@ -2508,7 +2633,7 @@ export function TimeArchive() {
         return { ok: true as const, movedCount: movedNodes.length };
       }
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/organize-apply`, {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/organize-apply`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
@@ -2568,7 +2693,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/link`, {
+        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/link`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ target_node_id: targetNodeId })
@@ -2608,7 +2733,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/move`, {
+        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/move`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ target_track_id: targetTrackId })
@@ -2654,7 +2779,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/delete`, { method: "POST" });
+        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/delete`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
@@ -2673,7 +2798,7 @@ export function TimeArchive() {
       const payload = { raw_question_text: rawQuestionText, client_updated_at: now };
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/nodes/${nodeId}/update`, {
+          const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/update`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -2743,7 +2868,7 @@ export function TimeArchive() {
         return nextNodeId;
       }
       try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/copy`, {
+        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/copy`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(targetTrackId ? { target_track_id: targetTrackId } : {})
@@ -2767,7 +2892,7 @@ export function TimeArchive() {
       const payload = { answer_text: answerText, client_updated_at: now };
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/nodes/${nodeId}/answer`, {
+          const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/answer`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -2846,7 +2971,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/nodes/${nodeId}/misplaced`, { method: "POST" });
+        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/misplaced`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
         if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
@@ -2875,7 +3000,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/active-track`, {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/active-track`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ track_id: trackId })
@@ -2924,7 +3049,7 @@ export function TimeArchive() {
         return trackId;
       }
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/tracks`, {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/tracks`, {
           method: "POST",
           headers: { "Content-Type": "application/json" }
         });
@@ -2968,7 +3093,7 @@ export function TimeArchive() {
         return true;
       }
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/track-direction`, {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/track-direction`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ track_id: trackId, direction_hint: directionHint })
@@ -3015,7 +3140,7 @@ export function TimeArchive() {
         return { ok: true as const, version: nextVersion };
       }
       try {
-        const response = await fetch(`/v1/thinking/spaces/${spaceId}/background`, {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/background`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ background_text: backgroundText })
@@ -3048,7 +3173,7 @@ export function TimeArchive() {
       const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
             method: "POST",
             headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
             body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote, client_updated_at: now }) : JSON.stringify({ client_updated_at: now })
@@ -3169,7 +3294,7 @@ export function TimeArchive() {
     async (spaceId: string) => {
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/spaces/${spaceId}/delete`, { method: "POST" });
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/delete`, { method: "POST" });
           if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
           if (!response.ok) {
             const payload = (await response.json().catch(() => ({}))) as { error?: string };
@@ -3205,7 +3330,7 @@ export function TimeArchive() {
 
   const handleThinkingExport = useCallback(async (spaceId: string) => {
     try {
-      const response = await fetch(`/v1/thinking/spaces/${spaceId}/export`, { method: "GET", cache: "no-store" });
+      const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/export`, { method: "GET", cache: "no-store" });
       if (handleUnauthorized(response)) return null;
       if (!response.ok) return null;
       const payload = (await response.json()) as { markdown?: string };
@@ -3221,7 +3346,7 @@ export function TimeArchive() {
       const payload = { root_question_text: rootQuestionText, client_updated_at: now };
       if (cloudSyncReady) {
         try {
-          const response = await fetch(`/v1/thinking/spaces/${spaceId}/rename`, {
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/rename`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
@@ -3267,7 +3392,7 @@ export function TimeArchive() {
           include_life: String(options.includeLife),
           include_thinking: String(options.includeThinking)
         });
-        const response = await fetch(`/v1/system/export?${params.toString()}`, { method: "GET", cache: "no-store" });
+        const response = await apiFetch(`/v1/system/export?${params.toString()}`, { method: "GET", cache: "no-store" });
         if (handleUnauthorized(response)) return null;
         if (!response.ok) return null;
         const payload = (await response.json().catch(() => ({}))) as { markdown?: string };
@@ -3283,6 +3408,7 @@ export function TimeArchive() {
     if (!sessionUser) return;
     setBindingDialog((current) => (current ? { ...current, submitting: true } : current));
     thinkingViewCacheRef.current = {};
+    setOfflineRuntimeState("user_bootstrapping");
     updateOfflineMeta((current) => ({
       ...current,
       ownerMode: "user",
@@ -3293,11 +3419,12 @@ export function TimeArchive() {
         hasLocalChanges: false
       }
     }));
-    await refreshFromCloud(null);
-    bindingCheckUserIdRef.current = sessionUser.userId;
+    await clearOfflineSnapshotByOwner(guestOwnerKey);
+    setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
+    await refreshFromCloud(null, sessionUser.userId);
     setBindingDialog(null);
     showNotice("已保留云端数据");
-  }, [refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
+  }, [guestOwnerKey, refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
 
   const uploadLocalData = useCallback(async () => {
     if (!sessionUser) return;
@@ -3308,40 +3435,30 @@ export function TimeArchive() {
       showNotice("本地数据绑定失败，请稍后再试");
       return;
     }
-    bindingCheckUserIdRef.current = sessionUser.userId;
+    await clearOfflineSnapshotByOwner(guestOwnerKey);
+    setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
+    setOfflineRuntimeState("user_bootstrapping");
     setBindingDialog(null);
     showNotice("本地数据已上传并覆盖云端");
-  }, [importLocalPayloadToCloud, sessionUser, showNotice]);
+  }, [guestOwnerKey, importLocalPayloadToCloud, sessionUser, showNotice]);
 
   const logout = useCallback(() => {
     void (async () => {
       try {
-        await fetch("/v1/auth/logout", { method: "POST" });
+        await apiFetch("/v1/auth/logout", { method: "POST" });
       } finally {
         bindingCheckUserIdRef.current = null;
+        userBootstrapRef.current = null;
         setSessionUser(null);
         setBindingDialog(null);
         setAuthDialogOpen(false);
-        setThinkingView(null);
-        setActiveSpaceId(null);
-        thinkingViewCacheRef.current = {};
-        setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
-        setThinkingStore(EMPTY_THINKING_STORE);
-        await clearOfflineState();
-        updateOfflineMeta((current) => ({
-          ...current,
-          ownerMode: "guest",
-          boundUserId: null,
-          syncState: {
-            lastSyncedAt: null,
-            hasLocalChanges: false,
-            bindingRequired: false
-          }
-        }));
+        setActiveOwnerKey(guestOwnerKey);
+        await loadOwnerSnapshot(guestOwnerKey, createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
+        setOfflineRuntimeState("guest_ready");
         showNotice("已退出登录");
       }
     })();
-  }, [showNotice, updateOfflineMeta]);
+  }, [guestOwnerKey, loadOwnerSnapshot, showNotice]);
 
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
@@ -3354,7 +3471,9 @@ export function TimeArchive() {
       window.localStorage.removeItem(LIFE_STORAGE_KEY);
       window.localStorage.removeItem(THINKING_STORAGE_KEY);
     }
-    void clearOfflineState();
+    if (activeOwnerKey) {
+      void clearOfflineOwnerState(activeOwnerKey);
+    }
     updateOfflineMeta((current) => ({
       ...current,
       ownerMode: sessionUser ? "user" : "guest",
@@ -3365,12 +3484,12 @@ export function TimeArchive() {
         bindingRequired: false
       }
     }));
-    if (cloudSyncEnabled) {
-      void syncLifeFromApi(true);
-      void syncThinkingSpacesFromApi(true);
+    if (cloudSyncEnabled && sessionUser && isOnline) {
+      userBootstrapRef.current = null;
+      setOfflineRuntimeState("user_bootstrapping");
     }
     showNotice("本地缓存已清理");
-  }, [cloudSyncEnabled, sessionUser, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, updateOfflineMeta]);
+  }, [activeOwnerKey, cloudSyncEnabled, isOnline, sessionUser, showNotice, updateOfflineMeta]);
 
   const handlePinVerified = useCallback(() => {
     setPinUnlocked(true);
@@ -3414,6 +3533,8 @@ export function TimeArchive() {
     setSessionUser(null);
     setThinkingView(null);
     setActiveSpaceId(null);
+    setActiveOwnerKey(getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId()));
+    setOfflineRuntimeState("guest_ready");
     setOfflineMeta(createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
     refreshPinState();
   }, [refreshPinState]);
@@ -3512,6 +3633,7 @@ export function TimeArchive() {
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
+                editable={!editingLocked}
                 onImportToThinking={handleImportToThinking}
                 onCreateDoubt={createLifeDoubt}
                 onSaveDoubtNote={saveLifeDoubtNote}
@@ -3536,6 +3658,7 @@ export function TimeArchive() {
                 activeSpaceId={activeSpaceId}
                 setActiveSpaceId={setActiveSpaceId}
                 spaceView={thinkingView}
+                writeEnabled={!editingLocked}
                 onCreateSpace={handleCreateThinkingFromInput}
                 onAddQuestion={handleThinkingAddQuestion}
                 onOrganizePreview={handleThinkingOrganizePreview}
@@ -3915,7 +4038,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
             : mode === "register"
               ? { email, password, code }
               : { email, code, newPassword: password };
-        const response = await fetch(endpoint, {
+        const response = await apiFetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(body)
@@ -3955,7 +4078,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
     void (async () => {
       try {
         const endpoint = mode === "forgot" ? "/v1/auth/password/send-reset-code" : "/v1/auth/register/send-code";
-        const response = await fetch(endpoint, {
+        const response = await apiFetch(endpoint, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email })

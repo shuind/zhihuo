@@ -3,6 +3,8 @@ import { isIP } from "node:net";
 
 import { NextRequest, NextResponse } from "next/server";
 
+import { applyCorsHeaders } from "@/lib/server/cors";
+
 type JsonLike = string | number | boolean | null | JsonLike[] | { [k: string]: JsonLike };
 
 type RateLimitPolicy = {
@@ -206,6 +208,7 @@ export function withApiRoute<Context extends WrappedContext>(
         const response = NextResponse.json({ error: "too many requests", request_id: meta.requestId }, { status: 429 });
         response.headers.set("x-request-id", meta.requestId);
         response.headers.set("retry-after", String(retryAfterSeconds));
+        applyCorsHeaders(response, request);
         void recordTraffic(meta.path, response.status, responseBytes(response));
         return response;
       }
@@ -214,6 +217,7 @@ export function withApiRoute<Context extends WrappedContext>(
     try {
       const response = await handler(request, context, meta);
       response.headers.set("x-request-id", meta.requestId);
+      applyCorsHeaders(response, request);
       const durationMs = Date.now() - startedAt;
       logInfo("api.request", {
         requestId: meta.requestId,
@@ -242,6 +246,7 @@ export function withApiRoute<Context extends WrappedContext>(
         { status: 500 }
       );
       response.headers.set("x-request-id", meta.requestId);
+      applyCorsHeaders(response, request);
       void recordTraffic(meta.path, response.status, responseBytes(response));
       return response;
     }
