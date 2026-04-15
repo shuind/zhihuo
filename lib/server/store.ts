@@ -1092,12 +1092,19 @@ export function addQuestionToSpace(
   };
 }
 
-export function writeSpaceToTime(db: DbState, userId: string, spaceId: string, freezeNote?: string | null) {
+export function writeSpaceToTime(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  freezeNote?: string | null,
+  options?: { preserveOriginalTime?: boolean }
+) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
   if (space.status !== "active") return { kind: "readonly" as const };
 
-  const writtenAt = nowIso();
+  const preserveOriginalTime = options?.preserveOriginalTime !== false;
+  const writtenAt = preserveOriginalTime ? space.created_at : nowIso();
   const edgePreview = deriveTrackEdgePreview(getSpaceNodes(db, spaceId));
   let doubt: DoubtRecord | null = null;
   if (space.source_time_doubt_id) {

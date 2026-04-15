@@ -177,7 +177,11 @@ export function ThinkingLayer(props: {
   onCreateTrack: (spaceId: string) => Promise<string | null>;
   onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
   onSaveBackground: (spaceId: string, backgroundText: string | null) => Promise<{ ok: true; version: number } | { ok: false; message: string }>;
-  onWriteSpaceToTime: (spaceId: string, freezeNote?: string) => Promise<{ ok: true } | { ok: false; message: string }>;
+  onWriteSpaceToTime: (
+    spaceId: string,
+    freezeNote?: string,
+    options?: { preserveOriginalTime?: boolean }
+  ) => Promise<{ ok: true } | { ok: false; message: string }>;
   onDeleteSpace: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onRenameSpace: (spaceId: string, rootQuestionText: string) => Promise<{ ok: true; rootQuestionText: string } | { ok: false; message: string }>;
   onExportSpace: (spaceId: string) => Promise<string | null>;
@@ -243,6 +247,7 @@ export function ThinkingLayer(props: {
   const [writeToTimeOpen, setWriteToTimeOpen] = useState(false);
   const [writeToTimeDraft, setWriteToTimeDraft] = useState("");
   const [writeToTimeHint, setWriteToTimeHint] = useState("");
+  const [writeToTimePreserveOriginal, setWriteToTimePreserveOriginal] = useState(true);
   const [isWritingToTime, setIsWritingToTime] = useState(false);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
@@ -427,6 +432,7 @@ export function ThinkingLayer(props: {
     setWriteToTimeOpen(false);
     setWriteToTimeDraft("");
     setWriteToTimeHint("");
+    setWriteToTimePreserveOriginal(true);
     setIsWritingToTime(false);
   }, [props.activeSpaceId, props.spaceView?.backgroundText]);
 
@@ -938,6 +944,7 @@ export function ThinkingLayer(props: {
     setMoreOpen(false);
     setWriteToTimeDraft(activeSpaceFreezeNote.slice(0, 48));
     setWriteToTimeHint("");
+    setWriteToTimePreserveOriginal(true);
     setWriteToTimeOpen(true);
   }, [activeSpace, activeSpaceFreezeNote]);
 
@@ -950,7 +957,9 @@ export function ThinkingLayer(props: {
     }
     setIsWritingToTime(true);
     void (async () => {
-      const result = await props.onWriteSpaceToTime(activeSpace.id, normalizedNote || undefined);
+      const result = await props.onWriteSpaceToTime(activeSpace.id, normalizedNote || undefined, {
+        preserveOriginalTime: writeToTimePreserveOriginal
+      });
       setIsWritingToTime(false);
       if (!result.ok) {
         setWriteToTimeHint(result.message);
@@ -964,7 +973,7 @@ export function ThinkingLayer(props: {
       setDetailSpaceId(null);
       props.showNotice("已写入时间");
     })();
-  }, [activeSpace, isWritingToTime, props, writeToTimeDraft]);
+  }, [activeSpace, isWritingToTime, props, writeToTimeDraft, writeToTimePreserveOriginal]);
 
   const openExport = useCallback(() => {
     if (!activeSpace) return;
@@ -1834,6 +1843,15 @@ export function ThinkingLayer(props: {
               <span>留空将保留原批注</span>
               <span>{writeToTimeDraft.trim().length}/48</span>
             </div>
+            <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-black/20 accent-slate-900"
+                checked={writeToTimePreserveOriginal}
+                onChange={(event) => setWriteToTimePreserveOriginal(event.target.checked)}
+              />
+              <span>按原时间写入</span>
+            </label>
             <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", writeToTimeHint ? "opacity-100" : "opacity-0")}>{writeToTimeHint}</p>
             <div className="mt-4 flex justify-end gap-2">
               <Button
@@ -1846,6 +1864,7 @@ export function ThinkingLayer(props: {
                   setWriteToTimeOpen(false);
                   setWriteToTimeDraft("");
                   setWriteToTimeHint("");
+                  setWriteToTimePreserveOriginal(true);
                 }}
               >
                 取消

@@ -3195,15 +3195,21 @@ export function TimeArchive() {
   );
 
   const handleThinkingWriteToTime = useCallback(
-    async (spaceId: string, freezeNote?: string) => {
+    async (spaceId: string, freezeNote?: string, options?: { preserveOriginalTime?: boolean }) => {
       const now = new Date().toISOString();
       const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
+      const preserveOriginalTime = options?.preserveOriginalTime !== false;
       if (cloudSyncReady) {
         try {
+          const requestBody: Record<string, unknown> = {
+            client_updated_at: now,
+            preserve_original_time: preserveOriginalTime
+          };
+          if (normalizedNote) requestBody.freeze_note = normalizedNote;
           const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
             method: "POST",
-            headers: normalizedNote ? { "Content-Type": "application/json" } : undefined,
-            body: normalizedNote ? JSON.stringify({ freeze_note: normalizedNote, client_updated_at: now }) : JSON.stringify({ client_updated_at: now })
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(requestBody)
           });
           if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
           if (!response.ok) {
@@ -3234,8 +3240,12 @@ export function TimeArchive() {
       const firstPreview = sortedNodes[0]?.questionText?.trim() || null;
       const lastPreview = sortedNodes[sortedNodes.length - 1]?.questionText?.trim() || firstPreview;
       const doubtId = currentSpace.sourceTimeDoubtId ?? createId();
+      const writtenAt = preserveOriginalTime ? currentSpace.createdAt : now;
 
-      await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, normalizedNote ? { freeze_note: normalizedNote } : null);
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
+        ...(normalizedNote ? { freeze_note: normalizedNote } : {}),
+        preserve_original_time: preserveOriginalTime
+      });
 
       setLifeStore((prev) => {
         const nextDoubt: LifeDoubt = {
@@ -3243,7 +3253,7 @@ export function TimeArchive() {
           rawText: currentSpace.rootQuestionText,
           firstNodePreview: firstPreview,
           lastNodePreview: lastPreview,
-          createdAt: now,
+          createdAt: writtenAt,
           archivedAt: null,
           deletedAt: null
         };
@@ -3257,7 +3267,7 @@ export function TimeArchive() {
             ? {
                 ...space,
                 status: "hidden" as const,
-                frozenAt: now,
+                frozenAt: writtenAt,
                 sourceTimeDoubtId: doubtId,
                 lastActivityAt: now
               }
