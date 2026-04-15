@@ -1929,8 +1929,22 @@ export function TimeArchive() {
       const guestHasData = activeOwnerKey === nextGuestOwnerKey && hasMeaningfulLocalData(lifeStore, thinkingStore);
 
       if (guestHasData) {
+        const existingUserSnapshot = await loadOfflineSnapshotByOwner(nextUserOwnerKey);
+        if (cancelled) return;
+        if (existingUserSnapshot && offlineMeta.syncState.hasLocalChanges !== true) {
+          await clearOfflineSnapshotByOwner(nextGuestOwnerKey);
+          if (cancelled) return;
+          userBootstrapRef.current = null;
+          setOfflineRuntimeState("switching_account");
+          setActiveOwnerKey(nextUserOwnerKey);
+          applySnapshotToState({
+            ...existingUserSnapshot,
+            meta: existingUserSnapshot.meta ?? userMeta
+          });
+        } else {
         setOfflineRuntimeState(bindingDialog || offlineMeta.syncState.bindingRequired ? "binding_required" : "guest_ready");
         return;
+        }
       }
 
       if (activeOwnerKey !== nextUserOwnerKey) {
