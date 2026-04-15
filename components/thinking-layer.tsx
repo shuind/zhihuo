@@ -1,6 +1,6 @@
-﻿"use client";
+"use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -256,10 +256,14 @@ export function ThinkingLayer(props: {
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
   const lastRestoredSpaceIdRef = useRef<string | null>(null);
+  const lastRestoredTrackKeyRef = useRef<string | null>(null);
+  const suppressTrackPersistUntilRef = useRef(0);
+  const suppressQuestionFocusUntilRef = useRef(0);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const spaceFinderInputRef = useRef<HTMLInputElement | null>(null);
   const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
   const [moreMenuStyle, setMoreMenuStyle] = useState<{ top: number; left: number } | null>(null);
+  const [mobileDetailViewportHeight, setMobileDetailViewportHeight] = useState<number | null>(null);
   const writeEnabled = props.writeEnabled !== false;
 
   useEffect(() => {
@@ -329,10 +333,6 @@ export function ThinkingLayer(props: {
     const meta = props.store.spaceMeta.find((item) => item.spaceId === activeSpace.id);
     return (meta?.userFreezeNote ?? "").trim();
   }, [activeSpace, props.spaceView, props.store.spaceMeta]);
-  const activeTrackNodeSignature = useMemo(
-    () => (activeTrack ? activeTrack.nodes.map((node) => `${node.id}:${node.answerText ?? ""}`).join("|") : ""),
-    [activeTrack]
-  );
   const pendingTrackId = props.spaceView?.pendingTrackId ?? null;
   const otherTracks = useMemo(
     () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
@@ -561,6 +561,7 @@ export function ThinkingLayer(props: {
   useEffect(() => {
     if (props.activeSpaceId) return;
     lastRestoredSpaceIdRef.current = null;
+    lastRestoredTrackKeyRef.current = null;
   }, [props.activeSpaceId]);
 
   useEffect(() => {
@@ -569,10 +570,14 @@ export function ThinkingLayer(props: {
     const saved = trackPositionsRef.current[key];
     const isMobileViewport = window.matchMedia("(max-width: 767px)").matches;
     const isEnteringSpace = lastRestoredSpaceIdRef.current !== activeSpace.id;
+    const isSwitchingTrack = lastRestoredTrackKeyRef.current !== key;
     lastRestoredSpaceIdRef.current = activeSpace.id;
+    lastRestoredTrackKeyRef.current = key;
+    if (!isEnteringSpace && !isSwitchingTrack) return;
     const frame = window.requestAnimationFrame(() => {
       const container = trackScrollRef.current;
       if (!container) return;
+      suppressTrackPersistUntilRef.current = Date.now() + 240;
       if (isMobileViewport && isEnteringSpace) {
         container.scrollTop = 0;
         return;
@@ -585,7 +590,40 @@ export function ThinkingLayer(props: {
       }
     });
     return () => window.cancelAnimationFrame(frame);
-  }, [activeSpace, activeTrack, activeTrackNodeSignature]);
+  }, [activeSpace, activeTrack]);
+
+  useEffect(() => {
+    if (!detailOpen) {
+      setMobileDetailViewportHeight(null);
+      return;
+    }
+    if (typeof window === "undefined") return;
+    const isMobileViewport = window.matchMedia("(max-width: 767px)").matches;
+    if (!isMobileViewport) {
+      setMobileDetailViewportHeight(null);
+      return;
+    }
+    const viewport = window.visualViewport;
+    if (!viewport) {
+      setMobileDetailViewportHeight(window.innerHeight);
+      return;
+    }
+
+    const updateViewport = () => {
+      suppressTrackPersistUntilRef.current = Date.now() + 320;
+      setMobileDetailViewportHeight(Math.round(viewport.height));
+    };
+
+    updateViewport();
+    viewport.addEventListener("resize", updateViewport);
+    viewport.addEventListener("scroll", updateViewport);
+    window.addEventListener("orientationchange", updateViewport);
+    return () => {
+      viewport.removeEventListener("resize", updateViewport);
+      viewport.removeEventListener("scroll", updateViewport);
+      window.removeEventListener("orientationchange", updateViewport);
+    };
+  }, [detailOpen]);
 
   const clearAddedFlagLater = useCallback(() => {
     if (clearAddedTimerRef.current) window.clearTimeout(clearAddedTimerRef.current);
@@ -653,13 +691,17 @@ export function ThinkingLayer(props: {
         const container = trackScrollRef.current;
         if (!container) {
           props.onReentryHandled();
-          questionInputRef.current?.focus();
+          if (Date.now() >= suppressQuestionFocusUntilRef.current) {
+            questionInputRef.current?.focus();
+          }
           return;
         }
 
         if (target.mode === "root" || !target.nodeId) {
           container.scrollTo({ top: 0, behavior: "smooth" });
-          questionInputRef.current?.focus();
+          if (Date.now() >= suppressQuestionFocusUntilRef.current) {
+            questionInputRef.current?.focus();
+          }
           if (targetTrackId) {
             rememberTrackPosition(activeSpace.id, targetTrackId, {
               scrollTop: 0,
@@ -703,14 +745,34 @@ export function ThinkingLayer(props: {
             timerId = window.setTimeout(run, 40);
             return;
           }
+          const containerRect = container.getBoundingClientRect();
+          const targetRect = target.getBoundingClientRect();
+          const targetTop = targetRect.top - containerRect.top + container.scrollTop;
+          const targetBottom = targetTop + targetRect.height;
+          const visibleTop = container.scrollTop;
+          const visibleBottom = container.scrollTop + container.clientHeight;
+          const edgePadding = 12;
+          let nextTop = container.scrollTop;
+
+          if (targetBottom > visibleBottom - edgePadding) {
+            nextTop = targetBottom - container.clientHeight + edgePadding;
+          } else if (targetTop < visibleTop + edgePadding) {
+            nextTop = targetTop - edgePadding;
+          }
+
           const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
-          container.scrollTo({ top: maxTop, behavior: tries > 0 ? "smooth" : "auto" });
+          nextTop = Math.max(0, Math.min(nextTop, maxTop));
+          suppressTrackPersistUntilRef.current = Date.now() + 320;
+          if (Math.abs(nextTop - container.scrollTop) > 1) {
+            container.scrollTo({ top: nextTop, behavior: tries > 0 ? "smooth" : "auto" });
+          }
           settleId = window.setTimeout(() => {
             if (cancelled) return;
             const latestContainer = trackScrollRef.current;
             if (!latestContainer) return;
             const targetTrackId = trackId ?? activeTrackId;
             if (!targetTrackId) return;
+            suppressTrackPersistUntilRef.current = Date.now() + 120;
             rememberTrackPosition(spaceId, targetTrackId, {
               scrollTop: latestContainer.scrollTop,
               focusNodeId: null
@@ -732,6 +794,7 @@ export function ThinkingLayer(props: {
           if (!container) return;
           const targetTrackId = trackId ?? activeTrackId;
           if (!targetTrackId) return;
+          suppressTrackPersistUntilRef.current = Date.now() + 120;
           rememberTrackPosition(spaceId, targetTrackId, {
             scrollTop: container.scrollTop,
             focusNodeId: nodeId
@@ -903,7 +966,9 @@ export function ThinkingLayer(props: {
           if (result.trackId !== activeTrackId) setLocalPendingTrackId(result.trackId);
           centerAddedNodeWithRetry(result.nodeId, activeSpace.id, result.trackId);
           window.requestAnimationFrame(() => {
-            questionInputRef.current?.focus();
+            if (Date.now() >= suppressQuestionFocusUntilRef.current) {
+              questionInputRef.current?.focus();
+            }
           });
         } finally {
           setIsAddingQuestion(false);
@@ -1120,6 +1185,8 @@ export function ThinkingLayer(props: {
   );
 
   const startEditingNode = useCallback((node: ThinkingTrackNodeView) => {
+    suppressQuestionFocusUntilRef.current = Date.now() + 600;
+    setFocusMenuNodeId(null);
     setExpandedNodeId((current) => (current === node.id ? null : current));
     setEditingNodeId(node.id);
     setEditingQuestionDraft(node.questionText);
@@ -1209,10 +1276,13 @@ export function ThinkingLayer(props: {
     activeSpace?.status === "active" &&
     !(pendingTrackId && activeTrackId === pendingTrackId);
   const mobileSpacesCardHeightClass = !detailOpen ? "h-[72dvh] md:h-full" : "h-full";
+  const detailViewportStyle =
+    detailOpen && mobileDetailViewportHeight ? { height: `${mobileDetailViewportHeight}px` } : undefined;
 
   return (
     <div className={cn("h-full overflow-hidden", detailOpen ? "px-0 pb-0 pt-0" : "px-3 pb-4 pt-3 md:px-6")}>
       <div
+        style={detailViewportStyle}
         className={cn(
           "mx-auto flex w-full flex-col overflow-hidden bg-[#f7f4ef]/95",
           mobileSpacesCardHeightClass,
@@ -1446,6 +1516,7 @@ export function ThinkingLayer(props: {
                         className="mt-4 min-h-0 flex-1 overflow-y-auto overflow-x-hidden pr-3 overscroll-contain"
                         onScroll={(event) => {
                           if (!activeSpace || !activeTrack) return;
+                          if (Date.now() < suppressTrackPersistUntilRef.current) return;
                           const container = event.currentTarget;
                           const prev = trackPositionsRef.current[`${activeSpace.id}:${activeTrack.id}`];
                           rememberTrackPosition(activeSpace.id, activeTrack.id, {
@@ -1474,9 +1545,14 @@ export function ThinkingLayer(props: {
                                   justAddedNodeId === node.id ? "bg-[rgba(255,255,255,0.42)] shadow-[0_8px_18px_rgba(43,38,33,0.04)]" : ""
                                 )}
                                 style={justAddedNodeId === node.id ? { animation: "zhTrackNodeIn 360ms ease-out 1" } : undefined}
-                                onDoubleClick={() => props.focusMode && setFocusMenuNodeId(node.id)}
+                                onDoubleClick={() => {
+                                  if (activeSpace.status !== "active") return;
+                                  startEditingNode(node);
+                                }}
                                 onFocus={() => {
                                   if (!activeSpace || !activeTrack) return;
+                                  if (isEditing) return;
+                                  if (Date.now() < suppressQuestionFocusUntilRef.current) return;
                                   const container = trackScrollRef.current;
                                   rememberTrackPosition(activeSpace.id, activeTrack.id, {
                                     scrollTop: container?.scrollTop ?? 0,
@@ -1488,8 +1564,18 @@ export function ThinkingLayer(props: {
                                   role="button"
                                   tabIndex={0}
                                   className="block w-full cursor-pointer text-left"
-                                  onClick={() => toggleNodeAnswer(node)}
+                                  onClick={() => {
+                                    if (isEditing) return;
+                                    toggleNodeAnswer(node);
+                                  }}
+                                  onDoubleClick={(event) => {
+                                    event.preventDefault();
+                                    event.stopPropagation();
+                                    if (activeSpace.status !== "active") return;
+                                    startEditingNode(node);
+                                  }}
                                   onKeyDown={(event) => {
+                                    if (isEditing) return;
                                     if (event.key === "Enter" || event.key === " ") {
                                       event.preventDefault();
                                       toggleNodeAnswer(node);
@@ -1542,6 +1628,9 @@ export function ThinkingLayer(props: {
                                         rows={1}
                                         className="min-h-[1.8rem] w-full border-0 bg-transparent px-0 py-0 text-left text-[15px] leading-[1.82] text-slate-900 outline-none shadow-none ring-0 [overflow-wrap:anywhere] focus-visible:ring-0"
                                         onClick={(event) => event.stopPropagation()}
+                                        onFocus={() => {
+                                          suppressQuestionFocusUntilRef.current = Date.now() + 600;
+                                        }}
                                         onChange={(event) => setEditingQuestionDraft(event.target.value)}
                                         onBlur={() => void saveNodeQuestion(node, editingQuestionDraft)}
                                         onKeyDown={(event) => {
@@ -2389,7 +2478,9 @@ function NodeMenu(props: {
     };
   }, [open]);
 
-  const runAction = (fn: () => void) => {
+  const runAction = (event: ReactMouseEvent<HTMLButtonElement>, fn: () => void) => {
+    event.preventDefault();
+    event.stopPropagation();
     fn();
     setOpen(false);
   };
@@ -2410,7 +2501,7 @@ function NodeMenu(props: {
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onEdit)}
+        onClick={(event) => runAction(event, props.onEdit)}
       >
         修改
       </button>
@@ -2419,7 +2510,7 @@ function NodeMenu(props: {
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onCopy)}
+        onClick={(event) => runAction(event, props.onCopy)}
       >
         复制
       </button>
@@ -2429,7 +2520,7 @@ function NodeMenu(props: {
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onDelete)}
+        onClick={(event) => runAction(event, props.onDelete)}
       >
         删除
       </button>
