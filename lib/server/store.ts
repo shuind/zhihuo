@@ -1104,12 +1104,12 @@ export function writeSpaceToTime(
   if (space.status !== "active") return { kind: "readonly" as const };
 
   const preserveOriginalTime = options?.preserveOriginalTime !== false;
-  const writtenAt = preserveOriginalTime ? space.created_at : nowIso();
   const edgePreview = deriveTrackEdgePreview(getSpaceNodes(db, spaceId));
   let doubt: DoubtRecord | null = null;
   if (space.source_time_doubt_id) {
     doubt = requireDoubt(db, userId, space.source_time_doubt_id);
   }
+  const writtenAt = preserveOriginalTime ? doubt?.created_at ?? space.created_at : nowIso();
   if (doubt) {
     doubt.raw_text = space.root_question_text;
     doubt.first_node_preview = edgePreview.firstNode;

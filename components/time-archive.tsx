@@ -3240,7 +3240,10 @@ export function TimeArchive() {
       const firstPreview = sortedNodes[0]?.questionText?.trim() || null;
       const lastPreview = sortedNodes[sortedNodes.length - 1]?.questionText?.trim() || firstPreview;
       const doubtId = currentSpace.sourceTimeDoubtId ?? createId();
-      const writtenAt = preserveOriginalTime ? currentSpace.createdAt : now;
+      const sourceTimeDoubt = currentSpace.sourceTimeDoubtId
+        ? lifeStore.doubts.find((item) => item.id === currentSpace.sourceTimeDoubtId) ?? null
+        : null;
+      const writtenAt = preserveOriginalTime ? sourceTimeDoubt?.createdAt ?? currentSpace.createdAt : now;
 
       await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
         ...(normalizedNote ? { freeze_note: normalizedNote } : {}),

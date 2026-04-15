@@ -96,11 +96,17 @@ function shouldRecordTraffic(path: string) {
   return path.startsWith("/v1/") && path !== "/v1/health";
 }
 
-function responseBytes(response: Response) {
+async function responseBytes(response: Response) {
   const header = response.headers.get("content-length");
   if (header) {
     const parsed = Number(header);
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  try {
+    const buffer = await response.clone().arrayBuffer();
+    if (buffer.byteLength > 0) return buffer.byteLength;
+  } catch {
+    // fall through to default estimate
   }
   return DEFAULT_RESPONSE_BYTES;
 }
@@ -209,7 +215,7 @@ export function withApiRoute<Context extends WrappedContext>(
         response.headers.set("x-request-id", meta.requestId);
         response.headers.set("retry-after", String(retryAfterSeconds));
         applyCorsHeaders(response, request);
-        void recordTraffic(meta.path, response.status, responseBytes(response));
+        void responseBytes(response).then((bytes) => recordTraffic(meta.path, response.status, bytes));
         return response;
       }
     }
@@ -228,7 +234,7 @@ export function withApiRoute<Context extends WrappedContext>(
         status: response.status,
         durationMs
       });
-      void recordTraffic(meta.path, response.status, responseBytes(response));
+      void responseBytes(response).then((bytes) => recordTraffic(meta.path, response.status, bytes));
       return response;
     } catch (error) {
       const durationMs = Date.now() - startedAt;
@@ -247,7 +253,7 @@ export function withApiRoute<Context extends WrappedContext>(
       );
       response.headers.set("x-request-id", meta.requestId);
       applyCorsHeaders(response, request);
-      void recordTraffic(meta.path, response.status, responseBytes(response));
+      void responseBytes(response).then((bytes) => recordTraffic(meta.path, response.status, bytes));
       return response;
     }
   };
