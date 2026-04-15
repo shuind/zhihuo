@@ -1219,12 +1219,10 @@ export async function readMonitorTrafficMetrics(): Promise<MonitorTrafficMetrics
     }
 
     const minuteQps = samples.map((item) => item.count / 60);
+    const minuteBandwidthMbps = samples.map((item) => (item.bytes * 8) / 60 / 1_000_000);
     const peakQps = Math.max(...minuteQps, 0);
     const p95Qps = percentile(minuteQps, 95);
-    const totalCount = samples.reduce((sum, item) => sum + item.count, 0);
-    const totalBytes = samples.reduce((sum, item) => sum + item.bytes, 0);
-    const avgResponseBytes = totalCount > 0 ? totalBytes / totalCount : DEFAULT_MONITOR_RESPONSE_BYTES;
-    const peakBandwidthMbps = (peakQps * avgResponseBytes * 8) / 1_000_000;
+    const peakBandwidthMbps = Math.max(...minuteBandwidthMbps, 0);
 
     return {
       date,

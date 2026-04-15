@@ -94,7 +94,7 @@ export default function OpsMonitorPage() {
           <div>
             <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Ops Monitor</p>
             <h1 className="mt-2 text-2xl font-medium tracking-[0.04em] text-slate-100">运营监控面板</h1>
-            <p className="mt-2 text-sm text-slate-400">全站聚合视角（隐藏入口）</p>
+            <p className="mt-2 text-sm text-slate-400">全站综合视角（隐藏入口）</p>
           </div>
           <button
             type="button"
