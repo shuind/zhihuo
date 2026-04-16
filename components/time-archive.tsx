@@ -24,6 +24,7 @@ import {
   getOrCreateLocalProfileId,
   getUserOwnerKey,
   isOfflineNetworkError,
+  listDeadLetterMutationsByOwner,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
   removeOfflineMutation,
@@ -255,6 +256,73 @@ type UserExportPayload = {
 type BindingDialogState = {
   cloudPayload: UserExportPayload;
   submitting: boolean;
+};
+
+type SyncSnapshotResponse = {
+  revision?: number;
+  life?: {
+    doubts?: ApiLifeDoubt[];
+    notes?: ApiLifeNote[];
+  };
+  thinking?: {
+    spaces?: Array<{
+      id?: string;
+      userId?: string;
+      rootQuestionText?: string;
+      status?: "active" | "hidden";
+      createdAt?: string;
+      frozenAt?: string | null;
+      sourceTimeDoubtId?: string | null;
+    }>;
+    nodes?: Array<{
+      id?: string;
+      spaceId?: string;
+      parentNodeId?: string | null;
+      rawQuestionText?: string;
+      createdAt?: string;
+      orderIndex?: number;
+      isSuggested?: boolean;
+      state?: "normal" | "hidden";
+      dimension?: string;
+    }>;
+    spaceMeta?: Array<{
+      spaceId?: string;
+      userFreezeNote?: string | null;
+      exportVersion?: number;
+      backgroundText?: string | null;
+      backgroundVersion?: number;
+      suggestionDecay?: number;
+      lastTrackId?: string | null;
+      lastOrganizedOrder?: number;
+      parkingTrackId?: string | null;
+      pendingTrackId?: string | null;
+      emptyTrackIds?: string[];
+      milestoneNodeIds?: string[];
+      trackDirectionHints?: Record<string, TrackDirectionHint | null>;
+    }>;
+    nodeLinks?: Array<{
+      id?: string;
+      spaceId?: string;
+      sourceNodeId?: string;
+      targetNodeId?: string;
+      linkType?: "related";
+      score?: number;
+      createdAt?: string;
+    }>;
+    inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
+    scratch?: Array<{
+      id?: string;
+      userId?: string;
+      rawText?: string;
+      createdAt?: string;
+      updatedAt?: string;
+      archivedAt?: string | null;
+      deletedAt?: string | null;
+      derivedSpaceId?: string | null;
+      fedTimeDoubtId?: string | null;
+    }>;
+  };
+  thinking_views?: Record<string, ApiThinkingSpaceView>;
 };
 
 type OfflineRuntimeState =
@@ -827,6 +895,113 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
   };
 }
 
+function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): ThinkingStore {
+  return {
+    ...EMPTY_THINKING_STORE,
+    spaces: Array.isArray(payload?.spaces)
+      ? payload.spaces
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            userId: typeof item.userId === "string" ? item.userId : "",
+            rootQuestionText: typeof item.rootQuestionText === "string" ? item.rootQuestionText : "",
+            status: item.status === "hidden" ? "hidden" : "active",
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+            frozenAt: typeof item.frozenAt === "string" ? item.frozenAt : null,
+            sourceTimeDoubtId: typeof item.sourceTimeDoubtId === "string" ? item.sourceTimeDoubtId : null
+          }))
+      : [],
+    nodes: Array.isArray(payload?.nodes)
+      ? payload.nodes
+          .filter((item) => item && typeof item.id === "string" && typeof item.spaceId === "string")
+          .map((item) => ({
+            id: item.id as string,
+            spaceId: item.spaceId as string,
+            parentNodeId: typeof item.parentNodeId === "string" ? item.parentNodeId : null,
+            rawQuestionText: typeof item.rawQuestionText === "string" ? item.rawQuestionText : "",
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+            orderIndex: Number.isFinite(item.orderIndex) ? Number(item.orderIndex) : 0,
+            isSuggested: item.isSuggested === true,
+            state: item.state === "hidden" ? "hidden" : "normal",
+            dimension:
+              item.dimension === "resource" ||
+              item.dimension === "risk" ||
+              item.dimension === "value" ||
+              item.dimension === "path" ||
+              item.dimension === "evidence"
+                ? item.dimension
+                : "definition"
+          }))
+      : [],
+    spaceMeta: Array.isArray(payload?.spaceMeta)
+      ? payload.spaceMeta
+          .filter((item) => item && typeof item.spaceId === "string")
+          .map((item) => ({
+            spaceId: item.spaceId as string,
+            userFreezeNote: typeof item.userFreezeNote === "string" ? item.userFreezeNote : null,
+            exportVersion: Number.isFinite(item.exportVersion) ? Number(item.exportVersion) : 1,
+            backgroundText: typeof item.backgroundText === "string" ? item.backgroundText : null,
+            backgroundVersion: Number.isFinite(item.backgroundVersion) ? Number(item.backgroundVersion) : 0,
+            suggestionDecay: Number.isFinite(item.suggestionDecay) ? Number(item.suggestionDecay) : 0,
+            lastTrackId: typeof item.lastTrackId === "string" ? item.lastTrackId : null,
+            lastOrganizedOrder: Number.isFinite(item.lastOrganizedOrder) ? Number(item.lastOrganizedOrder) : -1,
+            parkingTrackId: typeof item.parkingTrackId === "string" ? item.parkingTrackId : null,
+            pendingTrackId: typeof item.pendingTrackId === "string" ? item.pendingTrackId : null,
+            emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : [],
+            milestoneNodeIds: Array.isArray(item.milestoneNodeIds)
+              ? item.milestoneNodeIds.filter((value) => typeof value === "string")
+              : [],
+            trackDirectionHints:
+              item.trackDirectionHints && typeof item.trackDirectionHints === "object" ? item.trackDirectionHints : {}
+          }))
+      : [],
+    nodeLinks: Array.isArray(payload?.nodeLinks)
+      ? payload.nodeLinks
+          .filter((item) => item && typeof item.id === "string" && typeof item.spaceId === "string")
+          .map((item) => ({
+            id: item.id as string,
+            spaceId: item.spaceId as string,
+            sourceNodeId: typeof item.sourceNodeId === "string" ? item.sourceNodeId : "",
+            targetNodeId: typeof item.targetNodeId === "string" ? item.targetNodeId : "",
+            linkType: "related" as const,
+            score: Number.isFinite(item.score) ? Number(item.score) : 0,
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+          }))
+      : [],
+    inbox:
+      payload?.inbox && typeof payload.inbox === "object"
+        ? Object.fromEntries(
+            Object.entries(payload.inbox).map(([spaceId, list]) => [
+              spaceId,
+              Array.isArray(list)
+                ? list
+                    .filter((item) => item && typeof item.id === "string")
+                    .map((item) => ({
+                      id: item.id as string,
+                      rawText: typeof item.rawText === "string" ? item.rawText : "",
+                      createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+                    }))
+                : []
+            ])
+          )
+        : {},
+    scratch: Array.isArray(payload?.scratch)
+      ? payload.scratch
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            rawText: typeof item.rawText === "string" ? item.rawText : "",
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+            updatedAt: typeof item.updatedAt === "string" ? item.updatedAt : new Date().toISOString(),
+            archivedAt: typeof item.archivedAt === "string" ? item.archivedAt : null,
+            deletedAt: typeof item.deletedAt === "string" ? item.deletedAt : null,
+            derivedSpaceId: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
+            fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
+          }))
+      : []
+  };
+}
+
 function sortSpacesByLatestActivity(a: ThinkingSpace, b: ThinkingSpace) {
   return new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime();
 }
@@ -836,6 +1011,9 @@ function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
     a.localProfileId === b.localProfileId &&
     a.ownerMode === b.ownerMode &&
     a.boundUserId === b.boundUserId &&
+    a.revision === b.revision &&
+    a.completeness === b.completeness &&
+    a.lastAppliedLogId === b.lastAppliedLogId &&
     a.syncState.lastSyncedAt === b.syncState.lastSyncedAt &&
     a.syncState.hasLocalChanges === b.syncState.hasLocalChanges &&
     a.syncState.bindingRequired === b.syncState.bindingRequired
@@ -879,6 +1057,7 @@ export function TimeArchive() {
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
   const [bindingDialog, setBindingDialog] = useState<BindingDialogState | null>(null);
+  const [deadLetterMutations, setDeadLetterMutations] = useState<QueuedMutation[]>([]);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -887,6 +1066,7 @@ export function TimeArchive() {
   const localProfileIdRef = useRef("");
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
+  const latestRevisionRef = useRef<number | null>(null);
   const [stars] = useState(() => createStars(36));
   const freezeNoteByDoubtId = useMemo(() => {
     const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
@@ -958,6 +1138,12 @@ export function TimeArchive() {
     });
   }, []);
 
+  useEffect(() => {
+    if (typeof offlineMeta?.revision === "number" && Number.isFinite(offlineMeta.revision)) {
+      latestRevisionRef.current = offlineMeta.revision;
+    }
+  }, [offlineMeta?.revision]);
+
   const markLocalChange = useCallback(() => {
     updateOfflineMeta((current) => ({
       ...current,
@@ -968,18 +1154,80 @@ export function TimeArchive() {
     }));
   }, [updateOfflineMeta]);
 
+  const refreshDeadLetterMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
+    if (!ownerKey) {
+      setDeadLetterMutations([]);
+      return;
+    }
+    const items = await listDeadLetterMutationsByOwner(ownerKey);
+    setDeadLetterMutations(items);
+  }, []);
+
+  const syncRevisionFromServer = useCallback(
+    async (userId?: string | null) => {
+      if (!userId) return null;
+      try {
+        const response = await apiFetch("/v1/sync/state", { method: "GET", cache: "no-store" });
+        if (!response.ok) return null;
+        const payload = (await response.json()) as { revision?: number };
+        const revision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
+        if (revision === null) return null;
+        updateOfflineMeta((current) => ({
+          ...current,
+          ownerMode: "user",
+          boundUserId: userId,
+          revision,
+          completeness: current.completeness === "complete" ? "complete" : current.completeness
+        }));
+        return revision;
+      } catch {
+        return null;
+      }
+    },
+    [updateOfflineMeta]
+  );
+
   const markCloudSynced = useCallback(
-    (userId?: string | null) => {
+    (userId?: string | null, revision?: number | null) => {
+      const nextRevision =
+        typeof revision === "number" && Number.isFinite(revision)
+          ? revision
+          : userId
+            ? Math.max(0, latestRevisionRef.current ?? 0) + 1
+            : latestRevisionRef.current;
+      if (typeof nextRevision === "number" && Number.isFinite(nextRevision)) {
+        latestRevisionRef.current = nextRevision;
+      }
       updateOfflineMeta((current) => ({
         ...current,
         ownerMode: userId ? "user" : current.ownerMode,
         boundUserId: userId ?? current.boundUserId,
+        revision: typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : current.revision,
+        completeness: "complete",
         syncState: {
           ...current.syncState,
           lastSyncedAt: new Date().toISOString(),
           hasLocalChanges: false,
           bindingRequired: false
         }
+      }));
+      if (userId && (typeof revision !== "number" || !Number.isFinite(revision))) {
+        void syncRevisionFromServer(userId);
+      }
+    },
+    [syncRevisionFromServer, updateOfflineMeta]
+  );
+
+  const setRevisionBaseline = useCallback(
+    (userId: string, revision: number) => {
+      if (!Number.isFinite(revision)) return;
+      latestRevisionRef.current = revision;
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: "user",
+        boundUserId: userId,
+        revision,
+        completeness: current.syncState.hasLocalChanges ? "partial" : current.completeness
       }));
     },
     [updateOfflineMeta]
@@ -1353,52 +1601,93 @@ export function TimeArchive() {
     return payload;
   }, [handleUnauthorized]);
 
+  const fetchSyncSnapshot = useCallback(async () => {
+    const response = await apiFetch("/v1/sync/snapshot", { method: "GET", cache: "no-store" });
+    if (handleUnauthorized(response) || !response.ok) return null;
+    const payload = (await response.json().catch(() => null)) as SyncSnapshotResponse | null;
+    if (!payload) return null;
+    return payload;
+  }, [handleUnauthorized]);
+
   const refreshFromCloud = useCallback(
     async (preferredSpaceId?: string | null, userId?: string | null) => {
-      thinkingViewCacheRef.current = {};
-      setThinkingView(null);
-      setActiveSpaceId(null);
-      setThinkingStore((prev) => ({
-        ...prev,
-        spaces: [],
-        nodes: [],
-        spaceMeta: [],
-        nodeLinks: [],
-        scratch: [],
-        inbox: {}
-      }));
-      const [lifeOk, spaces, scratch] = await Promise.all([
-        syncLifeFromApi(true),
-        syncThinkingSpacesFromApi(true),
-        syncThinkingScratchFromApi(true)
-      ]);
-      const nextActive =
-        (preferredSpaceId && spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
-        pickDefaultSpaceId(spaces);
-      setActiveSpaceId(nextActive);
-      if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-      else setThinkingView(null);
       const targetUserId = userId ?? sessionUser?.userId ?? null;
-      if (lifeOk || spaces.length || scratch.length || !hasMeaningfulLocalData(lifeStore, thinkingStore)) {
-        markCloudSynced(targetUserId);
+      updateOfflineMeta((current) => ({
+        ...current,
+        ownerMode: targetUserId ? "user" : current.ownerMode,
+        boundUserId: targetUserId ?? current.boundUserId,
+        completeness: "syncing"
+      }));
+      const payload = await fetchSyncSnapshot();
+      if (!payload) {
+        updateOfflineMeta((current) => ({
+          ...current,
+          completeness: current.syncState.hasLocalChanges ? "partial" : "stale"
+        }));
+        return;
       }
+      const nextLifeStore = {
+        ...EMPTY_LIFE_STORE,
+        doubts: Array.isArray(payload.life?.doubts) ? payload.life.doubts.map(mapApiLifeDoubt) : [],
+        notes: Array.isArray(payload.life?.notes) ? payload.life.notes.map(mapApiLifeNote) : [],
+        meta: lifeStore.meta
+      };
+      const nextThinkingStore = {
+        ...mapSyncSnapshotThinking(payload.thinking),
+        timezone: thinkingStore.timezone,
+        fixedTopSpacesEnabled: thinkingStore.fixedTopSpacesEnabled,
+        fixedTopSpaceIds: thinkingStore.fixedTopSpaceIds
+      };
+      const nextThinkingViews = Object.fromEntries(
+        Object.entries(payload.thinking_views ?? {}).map(([spaceId, view]) => [spaceId, mapApiThinkingView(view)])
+      );
+      const nextActive =
+        (preferredSpaceId && nextThinkingStore.spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
+        pickDefaultSpaceId(nextThinkingStore.spaces);
+      applySnapshotToState({
+        lifeStore: nextLifeStore,
+        thinkingStore: nextThinkingStore,
+        activeSpaceId: nextActive,
+        thinkingViews: nextThinkingViews,
+        meta: createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+          ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
+          boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
+          revision: Number.isFinite(payload.revision) ? Number(payload.revision) : offlineMeta?.revision ?? null,
+          completeness: "complete",
+          lastAppliedLogId: offlineMeta?.lastAppliedLogId ?? null,
+          syncState: {
+            lastSyncedAt: new Date().toISOString(),
+            hasLocalChanges: false,
+            bindingRequired: false
+          }
+        })
+      });
+      markCloudSynced(targetUserId, Number.isFinite(payload.revision) ? Number(payload.revision) : null);
       if (targetUserId) {
         setOfflineRuntimeState("user_sync_ready");
       }
     },
     [
+      applySnapshotToState,
+      fetchSyncSnapshot,
       lifeStore,
-      loadThinkingViewFromApi,
       markCloudSynced,
-      syncLifeFromApi,
-      syncThinkingScratchFromApi,
-      syncThinkingSpacesFromApi,
-      thinkingStore
+      offlineMeta?.boundUserId,
+      offlineMeta?.lastAppliedLogId,
+      offlineMeta?.ownerMode,
+      offlineMeta?.revision,
+      thinkingStore,
+      updateOfflineMeta,
+      sessionUser?.userId
     ]
   );
 
   const importLocalPayloadToCloud = useCallback(
     async (user: SessionUser) => {
+      if (offlineMeta?.completeness !== "complete") {
+        showNotice("本地快照未完整同步，已阻止覆盖云端");
+        return false;
+      }
       const incompleteSpaceIds = getIncompleteSpaceIdsForExport(thinkingStore, thinkingViewCacheRef.current);
       if (incompleteSpaceIds.length > 0) {
         showNotice("本地思路内容未完整加载，已阻止覆盖云端");
@@ -1412,15 +1701,17 @@ export function TimeArchive() {
         body: JSON.stringify({ payload, checksum, mode: "replace" })
       });
       if (handleUnauthorized(response)) return false;
+      const responseBody = (await response.json().catch(() => ({}))) as { error?: string; revision?: number };
       if (!response.ok) {
-        const payload = (await response.json().catch(() => ({}))) as { error?: string };
-        showNotice(typeof payload.error === "string" ? payload.error : "本地数据绑定失败，请稍后再试");
+        showNotice(typeof responseBody.error === "string" ? responseBody.error : "本地数据绑定失败，请稍后再试");
         return false;
       }
       updateOfflineMeta((current) => ({
         ...current,
         ownerMode: "user",
         boundUserId: user.userId,
+        revision: Number.isFinite(responseBody.revision) ? Number(responseBody.revision) : current.revision,
+        completeness: "complete",
         syncState: {
           lastSyncedAt: new Date().toISOString(),
           hasLocalChanges: false,
@@ -1430,7 +1721,7 @@ export function TimeArchive() {
       await refreshFromCloud(null);
       return true;
     },
-    [buildLocalExportPayload, handleUnauthorized, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
+    [buildLocalExportPayload, handleUnauthorized, offlineMeta?.completeness, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
   );
 
   const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
@@ -1441,54 +1732,152 @@ export function TimeArchive() {
     try {
       const pending = await listOfflineMutationsByOwner(ownerKey);
       if (!pending.length) return;
-      let touched = false;
-      for (const item of pending) {
-        const payload: Record<string, unknown> = {
-          ...(item.body ?? {}),
-          client_mutation_id: item.clientMutationId,
-          client_updated_at: item.clientUpdatedAt
+      const baseRevision = pending[0]?.baseRevision ?? latestRevisionRef.current ?? offlineMeta?.revision ?? 0;
+      try {
+        const response = await apiFetch("/v1/sync/mutations", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            baseRevision,
+            mutations: pending.map((item) => ({
+              clientMutationId: item.clientMutationId,
+              op: item.op,
+              payload: {
+                ...(item.body ?? {}),
+                client_mutation_id: item.clientMutationId,
+                client_updated_at: item.clientUpdatedAt
+              },
+              clientTime: item.clientUpdatedAt
+            }))
+          })
+        });
+        if (handleUnauthorized(response)) return;
+        if (response.status === 409) {
+          const conflictBody = (await response.json().catch(() => ({}))) as { error?: string };
+          const conflictRevision = (() => {
+            const match =
+              typeof conflictBody.error === "string" ? conflictBody.error.match(/^revision_conflict:(\d+)$/) : null;
+            return match ? Number(match[1]) : null;
+          })();
+          const rebasedRevision =
+            typeof conflictRevision === "number" && Number.isFinite(conflictRevision)
+              ? conflictRevision
+              : await syncRevisionFromServer(ownerKey.slice(5));
+          if (typeof rebasedRevision === "number" && Number.isFinite(rebasedRevision)) {
+            setRevisionBaseline(ownerKey.slice(5), rebasedRevision);
+            for (const item of pending) {
+              await updateOfflineMutation(item.id, {
+                baseRevision: rebasedRevision,
+                status: "pending",
+                lastError: null,
+                nextRetryAt: Date.now()
+              });
+            }
+          }
+          return;
+        }
+        if (!response.ok) {
+          const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+          for (const item of pending) {
+            await updateOfflineMutation(item.id, {
+              retryCount: item.retryCount + 1,
+              nextRetryAt: retryTime,
+              lastError: `status_${response.status}`,
+              status: "failed"
+            });
+          }
+          return;
+        }
+        const payload = (await response.json()) as {
+          applied?: Array<{ clientMutationId?: string; status?: "applied" | "skipped"; revision?: number }>;
+          rejected?: Array<{ clientMutationId?: string; status?: "rejected"; reason?: string }>;
+          newRevision?: number;
         };
-        try {
-          const response = await apiFetch(item.route, {
-            method: item.method,
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-          });
-          if (handleUnauthorized(response)) break;
-          if (response.ok || (response.status >= 400 && response.status < 500)) {
-            await removeOfflineMutation(item.id);
-            touched = true;
+        const revisions = new Map(
+          (payload.applied ?? [])
+            .filter((item) => typeof item.clientMutationId === "string")
+            .map((item) => [item.clientMutationId as string, Number.isFinite(item.revision) ? Number(item.revision) : null])
+        );
+        const rejected = new Map(
+          (payload.rejected ?? [])
+            .filter((item) => typeof item.clientMutationId === "string" && typeof item.reason === "string")
+            .map((item) => [item.clientMutationId as string, item.reason as string])
+        );
+        const nextRevision = Number.isFinite(payload.newRevision) ? Number(payload.newRevision) : null;
+        let hasMissingAcknowledgements = false;
+        let hasRejectedMutations = false;
+        if (typeof nextRevision === "number" && Number.isFinite(nextRevision)) {
+          setRevisionBaseline(ownerKey.slice(5), nextRevision);
+        }
+        for (const item of pending) {
+          if (rejected.has(item.clientMutationId)) {
+            hasRejectedMutations = true;
+            const reason = rejected.get(item.clientMutationId) ?? "mutation_rejected";
+            await updateOfflineMutation(item.id, {
+              status: "dead_letter",
+              deadLetterReason: reason,
+              lastError: reason,
+              nextRetryAt: Number.MAX_SAFE_INTEGER
+            });
             continue;
           }
-          const retryCount = item.retryCount + 1;
-          const delay = Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * 2 ** retryCount);
+          if (!revisions.has(item.clientMutationId)) {
+            hasMissingAcknowledgements = true;
+            await updateOfflineMutation(item.id, {
+              baseRevision: typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : item.baseRevision,
+              status: "pending",
+              lastError: "missing_ack",
+              deadLetterReason: null,
+              nextRetryAt: Date.now() + OFFLINE_RETRY_BASE_MS
+            });
+            continue;
+          }
           await updateOfflineMutation(item.id, {
-            retryCount,
-            nextRetryAt: Date.now() + delay,
-            lastError: `status_${response.status}`
+            status: "acked",
+            ackedRevision: revisions.get(item.clientMutationId) ?? null,
+            lastError: null,
+            deadLetterReason: null
           });
-        } catch (error) {
-          const retryCount = item.retryCount + 1;
-          const delay = Math.min(OFFLINE_RETRY_MAX_MS, OFFLINE_RETRY_BASE_MS * 2 ** retryCount);
+          await removeOfflineMutation(item.id);
+        }
+        await refreshDeadLetterMutations(ownerKey);
+        if (hasRejectedMutations) {
+          updateOfflineMeta((current) => ({
+            ...current,
+            completeness: current.completeness === "complete" ? "partial" : current.completeness,
+            syncState: {
+              ...current.syncState,
+              hasLocalChanges: true
+            }
+          }));
+          showNotice("部分离线改动未被云端接受，已移入同步异常");
+        }
+        if (!hasMissingAcknowledgements && !hasRejectedMutations) {
+          await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5));
+        }
+      } catch (error) {
+        const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+        for (const item of pending) {
           await updateOfflineMutation(item.id, {
-            retryCount,
-            nextRetryAt: Date.now() + delay,
-            lastError: error instanceof Error ? error.message : String(error)
+            retryCount: item.retryCount + 1,
+            nextRetryAt: retryTime,
+            lastError: error instanceof Error ? error.message : String(error),
+            status: "failed"
           });
         }
       }
-      if (!touched) return;
-      await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5));
     } finally {
       offlineSyncingRef.current = false;
     }
   }, [
     handleUnauthorized,
-    loadThinkingViewFromApi,
+    offlineMeta?.revision,
     refreshFromCloud,
-    syncLifeFromApi,
-    syncThinkingScratchFromApi,
-    syncThinkingSpacesFromApi
+    refreshDeadLetterMutations,
+    showNotice,
+    syncRevisionFromServer,
+    setRevisionBaseline,
+    updateOfflineMeta
   ]);
 
   const queueMutation = useCallback(
@@ -1506,9 +1895,20 @@ export function TimeArchive() {
         ownerKey: activeOwnerKey,
         route,
         method: "POST",
+        op: route,
+        entityType: route.startsWith("/v1/doubts")
+          ? "life"
+          : route.startsWith("/v1/thinking/scratch")
+            ? "scratch"
+            : route.startsWith("/v1/thinking")
+              ? "thinking"
+              : "system",
         body,
         clientMutationId: createId(),
         clientUpdatedAt: now,
+        baseRevision: latestRevisionRef.current ?? offlineMeta?.revision ?? 0,
+        status: "pending",
+        ackedRevision: null,
         createdAt: now,
         retryCount: 0,
         nextRetryAt: Date.now(),
@@ -1518,7 +1918,7 @@ export function TimeArchive() {
       markLocalChange();
       return queued;
     },
-    [activeOwnerKey, markLocalChange, offlineRuntimeState, sessionUser]
+    [activeOwnerKey, markLocalChange, offlineMeta?.revision, offlineRuntimeState, sessionUser]
   );
 
   const createLifeDoubt = useCallback(
@@ -2031,47 +2431,18 @@ export function TimeArchive() {
     if (!hydrated || !authReady || !sessionUser || !offlineMeta || !isOnline) return;
     if (activeOwnerKey !== guestOwnerKey) return;
     if (bindingCheckUserIdRef.current === sessionUser.userId) return;
+    if (offlineMeta.completeness !== "complete") return;
 
     const localHasData = hasMeaningfulLocalData(lifeStore, thinkingStore);
     if (!localHasData) return;
 
     let cancelled = false;
-    const frozenLocalPayload = buildLocalExportPayload(sessionUser);
     bindingCheckUserIdRef.current = sessionUser.userId;
     void (async () => {
       const cloud = await fetchCloudExport();
       if (cancelled) return;
       if (!cloud?.payload) {
         bindingCheckUserIdRef.current = null;
-        return;
-      }
-      if (isCloudPayloadEmpty(cloud.payload)) {
-        const imported = await importLocalPayloadToCloud(sessionUser);
-        if (cancelled) return;
-        if (!imported) {
-          bindingCheckUserIdRef.current = null;
-          return;
-        }
-        await clearOfflineSnapshotByOwner(guestOwnerKey);
-        setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
-        showNotice("本地数据已绑定到当前账号");
-        return;
-      }
-      if (arePayloadsEquivalent(frozenLocalPayload, cloud.payload)) {
-        updateOfflineMeta((current) => ({
-          ...current,
-          ownerMode: "user",
-          boundUserId: sessionUser.userId,
-          syncState: {
-            lastSyncedAt: new Date().toISOString(),
-            hasLocalChanges: false,
-            bindingRequired: false
-          }
-        }));
-        await clearOfflineSnapshotByOwner(guestOwnerKey);
-        setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
-        setOfflineRuntimeState("user_bootstrapping");
-        showNotice("本地与云端数据一致，已自动完成绑定");
         return;
       }
       updateOfflineMeta((current) => ({
@@ -2123,6 +2494,11 @@ export function TimeArchive() {
 
   useEffect(() => {
     if (!hydrated) return;
+    void refreshDeadLetterMutations(activeOwnerKey);
+  }, [activeOwnerKey, hydrated, refreshDeadLetterMutations]);
+
+  useEffect(() => {
+    if (!hydrated) return;
     persistLifeStore(lifeStore);
   }, [hydrated, lifeStore]);
 
@@ -2133,6 +2509,7 @@ export function TimeArchive() {
 
   useEffect(() => {
     if (!hydrated || !offlineMeta || !activeOwnerKey) return;
+    if (offlineMeta.completeness === "syncing" || offlineMeta.completeness === "stale") return;
     if (thinkingView) {
       thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
     }
@@ -3534,6 +3911,7 @@ export function TimeArchive() {
     if (activeOwnerKey) {
       void clearOfflineOwnerState(activeOwnerKey);
     }
+    setDeadLetterMutations([]);
     updateOfflineMeta((current) => ({
       ...current,
       ownerMode: sessionUser ? "user" : "guest",
@@ -3596,8 +3974,18 @@ export function TimeArchive() {
     setActiveOwnerKey(getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId()));
     setOfflineRuntimeState("guest_ready");
     setOfflineMeta(createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
+    setDeadLetterMutations([]);
     refreshPinState();
   }, [refreshPinState]);
+
+  const dismissDeadLetterMutation = useCallback(
+    async (mutationId: string) => {
+      await removeOfflineMutation(mutationId);
+      await refreshDeadLetterMutations(activeOwnerKey);
+      showNotice("已移除同步异常");
+    },
+    [activeOwnerKey, refreshDeadLetterMutations, showNotice]
+  );
 
   void pinTick;
 
@@ -3776,6 +4164,8 @@ export function TimeArchive() {
                 onChangePin={handleChangePin}
                 onForgotPin={handleForgotPin}
                 onOpenAuth={() => setAuthDialogOpen(true)}
+                deadLetterMutations={deadLetterMutations}
+                onDismissDeadLetter={dismissDeadLetterMutation}
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
                     const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);

@@ -5,7 +5,7 @@ import { updateDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { verifyUserExportIntegrity } from "@/lib/server/security";
-import { replaceLifeSnapshot, replaceThinkingSnapshot } from "@/lib/server/store";
+import { getUserRevision, replaceLifeSnapshot, replaceThinkingSnapshot } from "@/lib/server/store";
 import { createId, nowIso } from "@/lib/server/utils";
 
 type ImportBody = {
@@ -174,6 +174,7 @@ export const POST = withApiRoute(
     if (!refs.ok) return errorJson(400, `reference check failed: ${JSON.stringify(refs.broken)}`);
 
     let replaced: { life: number; thinking: number; scratch: number } | null = null;
+    let revision: number | null = null;
     let importError: string | null = null;
     await updateDb((db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
@@ -234,6 +235,7 @@ export const POST = withApiRoute(
         detail: `replaced full payload: life=${replaced.life}, thinking=${replaced.thinking}, scratch=${replaced.scratch}`,
         created_at: nowIso()
       });
+      revision = getUserRevision(db, userId);
     });
 
     if (importError) return errorJson(409, importError);
@@ -242,7 +244,8 @@ export const POST = withApiRoute(
     return okJson({
       ok: true,
       importedAt: nowIso(),
-      replaced
+      replaced,
+      revision
     });
   },
   { rateLimit: { bucket: "system-import", max: 8, windowMs: 60 * 1000 } }

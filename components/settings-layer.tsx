@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 
+import type { QueuedMutation } from "@/components/offline-store";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -36,6 +37,8 @@ export function SettingsLayer(props: {
   onOpenAuth: () => void;
   onClearAll: () => void;
   onLogout: () => void;
+  deadLetterMutations: QueuedMutation[];
+  onDismissDeadLetter: (mutationId: string) => Promise<void> | void;
   showNotice: (message: string) => void;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
@@ -425,6 +428,67 @@ export function SettingsLayer(props: {
               </Button>
             )}
           </CardFooter>
+        </Card>
+
+        <Card className="border-amber-400/30 bg-amber-50/90 text-amber-950">
+          <CardHeader>
+            <CardTitle>同步异常</CardTitle>
+            <CardDescription>这些离线改动未被云端接受，已从主同步队列隔离，不会继续阻塞后续同步。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {props.deadLetterMutations.length ? (
+              props.deadLetterMutations.map((item) => (
+                <div key={item.id} className="rounded-xl border border-amber-300/60 bg-white px-4 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm text-amber-950">{item.op}</p>
+                      <p className="mt-1 text-xs text-amber-800/80">{new Date(item.createdAt).toLocaleString("zh-CN")}</p>
+                      <p className="mt-2 text-xs leading-6 text-amber-900/90 [overflow-wrap:anywhere]">
+                        {item.deadLetterReason ?? item.lastError ?? "未返回详细原因"}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="rounded-full border border-amber-300/70 bg-white text-amber-900"
+                        onClick={() =>
+                          void copyText(
+                            JSON.stringify(
+                              {
+                                op: item.op,
+                                clientMutationId: item.clientMutationId,
+                                reason: item.deadLetterReason ?? item.lastError ?? null,
+                                createdAt: item.createdAt,
+                                body: item.body
+                              },
+                              null,
+                              2
+                            ),
+                            () => props.showNotice("已复制诊断信息")
+                          )
+                        }
+                      >
+                        复制诊断
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="rounded-full border border-amber-300/70 bg-white text-amber-900"
+                        onClick={() => void props.onDismissDeadLetter(item.id)}
+                      >
+                        删除
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-amber-900/75">当前没有需要人工处理的同步异常。</p>
+            )}
+          </CardContent>
         </Card>
       </div>
     </div>

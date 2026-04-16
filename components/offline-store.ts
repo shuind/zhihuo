@@ -42,10 +42,15 @@ export type OfflineSyncState = {
   bindingRequired: boolean;
 };
 
+export type OfflineSnapshotCompleteness = "complete" | "partial" | "syncing" | "stale";
+
 export type OfflineSnapshotMeta = {
   localProfileId: string;
   ownerMode: OfflineOwnerMode;
   boundUserId: string | null;
+  revision: number | null;
+  completeness: OfflineSnapshotCompleteness;
+  lastAppliedLogId: string | null;
   syncState: OfflineSyncState;
 };
 
@@ -67,9 +72,15 @@ export type QueuedMutation = {
   ownerKey: OfflineOwnerKey;
   route: string;
   method: "POST" | "PUT" | "DELETE";
+  op: string;
+  entityType: "life" | "thinking" | "scratch" | "system";
   body: Record<string, unknown> | null;
   clientMutationId: string;
   clientUpdatedAt: string;
+  baseRevision: number;
+  status: "pending" | "acked" | "failed" | "dead_letter";
+  ackedRevision: number | null;
+  deadLetterReason?: string | null;
   createdAt: string;
   retryCount: number;
   nextRetryAt: number;
@@ -108,6 +119,16 @@ export function createOfflineSnapshotMeta(localProfileId: string, options?: Part
     localProfileId,
     ownerMode: options?.ownerMode === "user" ? "user" : "guest",
     boundUserId: typeof options?.boundUserId === "string" && options.boundUserId.trim() ? options.boundUserId : null,
+    revision: typeof options?.revision === "number" && Number.isFinite(options.revision) ? options.revision : null,
+    completeness:
+      options?.completeness === "partial" ||
+      options?.completeness === "syncing" ||
+      options?.completeness === "complete" ||
+      options?.completeness === "stale"
+        ? options.completeness
+        : "complete",
+    lastAppliedLogId:
+      typeof options?.lastAppliedLogId === "string" && options.lastAppliedLogId.trim() ? options.lastAppliedLogId : null,
     syncState: {
       lastSyncedAt:
         typeof options?.syncState?.lastSyncedAt === "string" && options.syncState.lastSyncedAt.trim()
@@ -146,7 +167,22 @@ function normalizeOfflineSnapshot(raw: OfflineSnapshot): OfflineSnapshot {
 function normalizeQueuedMutation(raw: QueuedMutation, fallbackOwnerKey: OfflineOwnerKey): QueuedMutation {
   return {
     ...cloneValue(raw),
-    ownerKey: typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey
+    ownerKey: typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey,
+    op: typeof raw.op === "string" && raw.op.trim() ? raw.op : raw.route,
+    entityType:
+      raw.entityType === "life" || raw.entityType === "thinking" || raw.entityType === "scratch" || raw.entityType === "system"
+        ? raw.entityType
+        : raw.route.startsWith("/v1/doubts")
+          ? "life"
+          : raw.route.startsWith("/v1/thinking/scratch")
+            ? "scratch"
+            : raw.route.startsWith("/v1/thinking")
+              ? "thinking"
+              : "system",
+    baseRevision: Number.isFinite(raw.baseRevision) ? Number(raw.baseRevision) : 0,
+    status: raw.status === "acked" || raw.status === "failed" || raw.status === "dead_letter" ? raw.status : "pending",
+    ackedRevision: Number.isFinite(raw.ackedRevision) ? Number(raw.ackedRevision) : null,
+    deadLetterReason: typeof raw.deadLetterReason === "string" && raw.deadLetterReason.trim() ? raw.deadLetterReason : null
   };
 }
 
@@ -472,6 +508,7 @@ export async function listOfflineMutationsByOwner(ownerKey: OfflineOwnerKey, now
         rows
           .map((item) => normalizeQueuedMutation(item, fallbackOwnerKey))
           .filter((item) => item.ownerKey === ownerKey)
+          .filter((item) => item.status !== "acked" && item.status !== "dead_letter")
           .filter((item) => Number.isFinite(item.nextRetryAt) && item.nextRetryAt <= now)
           .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
       );
@@ -491,6 +528,8 @@ export async function listOfflineMutations(now = Date.now()): Promise<QueuedMuta
       const rows = (req.result as QueuedMutation[] | undefined) ?? [];
       resolve(
         rows
+          .map((item) => normalizeQueuedMutation(item, getGuestOwnerKey(getOrCreateLocalProfileId())))
+          .filter((item) => item.status !== "acked" && item.status !== "dead_letter")
           .filter((item) => Number.isFinite(item.nextRetryAt) && item.nextRetryAt <= now)
           .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
       );
@@ -512,7 +551,12 @@ export async function removeOfflineMutation(id: string): Promise<void> {
 
 export async function updateOfflineMutation(
   id: string,
-  patch: Partial<Pick<QueuedMutation, "retryCount" | "nextRetryAt" | "lastError">>
+  patch: Partial<
+    Pick<
+      QueuedMutation,
+      "retryCount" | "nextRetryAt" | "lastError" | "status" | "ackedRevision" | "baseRevision" | "deadLetterReason"
+    >
+  >
 ): Promise<void> {
   const db = await openDb();
   if (!db) return;
@@ -555,6 +599,28 @@ export async function clearOfflineState(): Promise<void> {
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
+  });
+}
+
+export async function listDeadLetterMutationsByOwner(ownerKey: OfflineOwnerKey): Promise<QueuedMutation[]> {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(QUEUE_STORE, "readonly");
+    const store = tx.objectStore(QUEUE_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as QueuedMutation[] | undefined) ?? [];
+      const fallbackOwnerKey = ownerKey;
+      resolve(
+        rows
+          .map((item) => normalizeQueuedMutation(item, fallbackOwnerKey))
+          .filter((item) => item.ownerKey === ownerKey)
+          .filter((item) => item.status === "dead_letter")
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      );
+    };
   });
 }
 

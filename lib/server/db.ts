@@ -57,7 +57,9 @@ const EMPTY_DB: DbState = {
   thinking_node_links: [],
   email_verification_codes: [],
   users: [],
-  audit_logs: []
+  audit_logs: [],
+  user_sync_state: [],
+  applied_client_mutations: []
 };
 
 let writeQueue: Promise<void> = Promise.resolve();
@@ -168,7 +170,29 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
         }))
       : [],
     users: Array.isArray(input?.users) ? input.users : [],
-    audit_logs: Array.isArray(input?.audit_logs) ? input.audit_logs : []
+    audit_logs: Array.isArray(input?.audit_logs) ? input.audit_logs : [],
+    user_sync_state: Array.isArray(input?.user_sync_state)
+      ? input.user_sync_state
+          .filter((row) => row && typeof row.user_id === "string")
+          .map((row) => ({
+            user_id: row.user_id,
+            revision: Number.isFinite(row.revision) ? Number(row.revision) : 0,
+            updated_at: typeof row.updated_at === "string" ? row.updated_at : nowIso()
+          }))
+      : [],
+    applied_client_mutations: Array.isArray(input?.applied_client_mutations)
+      ? input.applied_client_mutations
+          .filter((row) => row && typeof row.id === "string" && typeof row.user_id === "string")
+          .map((row) => ({
+            id: row.id,
+            user_id: row.user_id,
+            client_mutation_id: typeof row.client_mutation_id === "string" ? row.client_mutation_id : "",
+            op: typeof row.op === "string" ? row.op : "",
+            base_revision: Number.isFinite(row.base_revision) ? Number(row.base_revision) : 0,
+            applied_revision: Number.isFinite(row.applied_revision) ? Number(row.applied_revision) : 0,
+            created_at: typeof row.created_at === "string" ? row.created_at : nowIso()
+          }))
+      : []
   };
 }
 
@@ -319,7 +343,21 @@ async function migrateLegacyBlobIfNeeded(client: PoolClient) {
 }
 
 async function readDbFromPg(client: PoolClient): Promise<DbState> {
-  const [users, doubts, doubtNotes, spaces, nodes, inbox, scratch, spaceMeta, nodeLinks, emailVerificationCodes, auditLogs] = await Promise.all([
+  const [
+    users,
+    doubts,
+    doubtNotes,
+    spaces,
+    nodes,
+    inbox,
+    scratch,
+    spaceMeta,
+    nodeLinks,
+    emailVerificationCodes,
+    auditLogs,
+    userSyncState,
+    appliedClientMutations
+  ] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
     client.query("SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
@@ -340,7 +378,11 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     client.query(
       "SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at, last_sent_at, send_count FROM email_verification_codes"
     ),
-    client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs")
+    client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs"),
+    client.query("SELECT user_id, revision, updated_at FROM user_sync_state"),
+    client.query(
+      "SELECT id, user_id, client_mutation_id, op, base_revision, applied_revision, created_at FROM applied_client_mutations"
+    )
   ]);
 
   return normalizeDb({
@@ -405,7 +447,16 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       consumed_at: typeof row.consumed_at === "string" ? row.consumed_at : null,
       send_count: Number(row.send_count ?? 1)
     })) as DbState["email_verification_codes"],
-    audit_logs: auditLogs.rows as DbState["audit_logs"]
+    audit_logs: auditLogs.rows as DbState["audit_logs"],
+    user_sync_state: userSyncState.rows.map((row) => ({
+      ...row,
+      revision: Number(row.revision)
+    })) as DbState["user_sync_state"],
+    applied_client_mutations: appliedClientMutations.rows.map((row) => ({
+      ...row,
+      base_revision: Number(row.base_revision),
+      applied_revision: Number(row.applied_revision)
+    })) as DbState["applied_client_mutations"]
   });
 }
 
@@ -633,6 +684,28 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
       columns: ["id", "user_id", "action", "target_type", "target_id", "detail", "created_at"],
       conflictColumns: ["id"],
       rows: db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
+    },
+    {
+      table: "user_sync_state",
+      idColumn: "user_id",
+      columns: ["user_id", "revision", "updated_at"],
+      conflictColumns: ["user_id"],
+      rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.updated_at])
+    },
+    {
+      table: "applied_client_mutations",
+      idColumn: "id",
+      columns: ["id", "user_id", "client_mutation_id", "op", "base_revision", "applied_revision", "created_at"],
+      conflictColumns: ["id"],
+      rows: db.applied_client_mutations.map((row) => [
+        row.id,
+        row.user_id,
+        row.client_mutation_id,
+        row.op,
+        row.base_revision,
+        row.applied_revision,
+        row.created_at
+      ])
     }
   ];
 
@@ -644,6 +717,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_spaces",
     "thinking_scratch",
     "audit_logs",
+    "user_sync_state",
+    "applied_client_mutations",
     "email_verification_codes",
     "doubt_notes",
     "thinking_space_meta",
@@ -668,6 +743,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_scratch",
     "email_verification_codes",
     "audit_logs",
+    "applied_client_mutations",
+    "user_sync_state",
     "users"
   ];
   for (const table of deleteOrder) {
@@ -687,7 +764,9 @@ type ScopedTable =
   | "thinking_inbox"
   | "thinking_scratch"
   | "thinking_node_links"
-  | "audit_logs";
+  | "audit_logs"
+  | "user_sync_state"
+  | "applied_client_mutations";
 
 function createEmptyDbState(): DbState {
   return {
@@ -701,7 +780,9 @@ function createEmptyDbState(): DbState {
     thinking_node_links: [],
     email_verification_codes: [],
     users: [],
-    audit_logs: []
+    audit_logs: [],
+    user_sync_state: [],
+    applied_client_mutations: []
   };
 }
 
@@ -821,6 +902,25 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     if (table === "audit_logs") {
       const { rows } = await client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs");
       state.audit_logs = rows as DbState["audit_logs"];
+      continue;
+    }
+    if (table === "user_sync_state") {
+      const { rows } = await client.query("SELECT user_id, revision, updated_at FROM user_sync_state");
+      state.user_sync_state = rows.map((row) => ({
+        ...row,
+        revision: Number(row.revision)
+      })) as DbState["user_sync_state"];
+      continue;
+    }
+    if (table === "applied_client_mutations") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, client_mutation_id, op, base_revision, applied_revision, created_at FROM applied_client_mutations"
+      );
+      state.applied_client_mutations = rows.map((row) => ({
+        ...row,
+        base_revision: Number(row.base_revision),
+        applied_revision: Number(row.applied_revision)
+      })) as DbState["applied_client_mutations"];
     }
   }
   return normalizeDb(state);
@@ -1001,6 +1101,34 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
         conflictColumns: ["id"],
         rows: db.audit_logs.map((row) => [row.id, row.user_id, row.action, row.target_type, row.target_id, row.detail, row.created_at])
       });
+      continue;
+    }
+    if (item === "user_sync_state") {
+      planByScope.set(item, {
+        table: "user_sync_state",
+        idColumn: "user_id",
+        columns: ["user_id", "revision", "updated_at"],
+        conflictColumns: ["user_id"],
+        rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.updated_at])
+      });
+      continue;
+    }
+    if (item === "applied_client_mutations") {
+      planByScope.set(item, {
+        table: "applied_client_mutations",
+        idColumn: "id",
+        columns: ["id", "user_id", "client_mutation_id", "op", "base_revision", "applied_revision", "created_at"],
+        conflictColumns: ["id"],
+        rows: db.applied_client_mutations.map((row) => [
+          row.id,
+          row.user_id,
+          row.client_mutation_id,
+          row.op,
+          row.base_revision,
+          row.applied_revision,
+          row.created_at
+        ])
+      });
     }
   }
 
@@ -1009,6 +1137,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "thinking_spaces",
     "thinking_scratch",
     "audit_logs",
+    "user_sync_state",
+    "applied_client_mutations",
     "doubt_notes",
     "thinking_space_meta",
     "thinking_nodes",
@@ -1030,7 +1160,9 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "doubt_notes",
     "doubts",
     "thinking_scratch",
-    "audit_logs"
+    "audit_logs",
+    "applied_client_mutations",
+    "user_sync_state"
   ];
   for (const table of deleteOrder) {
     const plan = planByScope.get(table);
@@ -1255,7 +1387,7 @@ export async function updateDbScoped(
   }
   const pool = getPool();
   if (!pool) return { ...EMPTY_DB };
-  const normalizedScope = normalizeScope(scope);
+  const normalizedScope = normalizeScope([...scope, "user_sync_state", "applied_client_mutations"]);
   if (!normalizedScope.length) return { ...EMPTY_DB };
 
   await ensurePgReady();

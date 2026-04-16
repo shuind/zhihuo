@@ -102,6 +102,8 @@ export type DbState = {
   email_verification_codes: EmailVerificationCodeRecord[];
   users: UserRecord[];
   audit_logs: AuditLogRecord[];
+  user_sync_state: UserSyncStateRecord[];
+  applied_client_mutations: AppliedClientMutationRecord[];
 };
 
 export type UserRecord = {
@@ -131,6 +133,22 @@ export type AuditLogRecord = {
   target_type: string;
   target_id: string;
   detail: string;
+  created_at: string;
+};
+
+export type UserSyncStateRecord = {
+  user_id: string;
+  revision: number;
+  updated_at: string;
+};
+
+export type AppliedClientMutationRecord = {
+  id: string;
+  user_id: string;
+  client_mutation_id: string;
+  op: string;
+  base_revision: number;
+  applied_revision: number;
   created_at: string;
 };
 
