@@ -1591,16 +1591,7 @@ export function ThinkingLayer(props: {
                                       {node.isMilestone ? <span className="text-[13px] text-[#a96f55]">★</span> : null}
                                       {!props.focusMode || focusMenuNodeId === node.id ? (
                                         <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                                          <button
-                                            type="button"
-                                            aria-label="剪切节点"
-                                            className="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100 text-[11px] text-slate-400 hover:text-slate-700"
-                                            disabled={activeSpace.status !== "active"}
-                                            onClick={() => cutNode(node.id, activeTrack.id)}
-                                          >
-                                            ✂
-                                          </button>
-                                          <NodeMenu
+                                                                                    <NodeMenu
                                             disabled={activeSpace.status !== "active"}
                                             triggerClassName="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
                                             onEdit={() => startEditingNode(node)}

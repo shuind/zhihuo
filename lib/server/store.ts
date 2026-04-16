@@ -2025,16 +2025,9 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   );
 
   const lines: string[] = [];
-  lines.push("# 思考轨道导出");
+  lines.push(`# ${space.root_question_text}`);
   lines.push("");
-  lines.push(`- 根问题：${space.root_question_text}`);
-  lines.push(`- 状态：${space.status}`);
   lines.push(`- 创建时间：${formatDateTime(space.created_at)}`);
-  if (space.frozen_at) lines.push(`- 写入时间：${formatDateTime(space.frozen_at)}`);
-  if (meta.background_text) {
-    lines.push(`- 背景版本：v${meta.background_version ?? 0}`);
-    lines.push(`- 背景说明：${meta.background_text}`);
-  }
   lines.push("");
 
   orderedTracks.forEach(([trackId, trackNodes], index) => {
