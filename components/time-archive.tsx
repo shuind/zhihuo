@@ -842,6 +842,16 @@ function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
   );
 }
 
+function getIncompleteSpaceIdsForExport(store: ThinkingStore, thinkingViews: Record<string, ThinkingSpaceView>) {
+  return store.spaces
+    .filter((space) => {
+      const visibleNodeCount = store.nodes.filter((node) => node.spaceId === space.id && node.state !== "hidden").length;
+      if (visibleNodeCount > 0) return false;
+      return !isSpaceViewConsistentWithStore(store, space.id, thinkingViews[space.id] ?? null);
+    })
+    .map((space) => space.id);
+}
+
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
@@ -1389,6 +1399,11 @@ export function TimeArchive() {
 
   const importLocalPayloadToCloud = useCallback(
     async (user: SessionUser) => {
+      const incompleteSpaceIds = getIncompleteSpaceIdsForExport(thinkingStore, thinkingViewCacheRef.current);
+      if (incompleteSpaceIds.length > 0) {
+        showNotice("本地思路内容未完整加载，已阻止覆盖云端");
+        return false;
+      }
       const payload = buildLocalExportPayload(user);
       const checksum = await sha256Hex(stableStringify(payload));
       const response = await apiFetch("/v1/system/import", {
@@ -1396,7 +1411,12 @@ export function TimeArchive() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ payload, checksum, mode: "replace" })
       });
-      if (handleUnauthorized(response) || !response.ok) return false;
+      if (handleUnauthorized(response)) return false;
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => ({}))) as { error?: string };
+        showNotice(typeof payload.error === "string" ? payload.error : "本地数据绑定失败，请稍后再试");
+        return false;
+      }
       updateOfflineMeta((current) => ({
         ...current,
         ownerMode: "user",
@@ -1410,7 +1430,7 @@ export function TimeArchive() {
       await refreshFromCloud(null);
       return true;
     },
-    [buildLocalExportPayload, handleUnauthorized, refreshFromCloud, updateOfflineMeta]
+    [buildLocalExportPayload, handleUnauthorized, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
   );
 
   const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {

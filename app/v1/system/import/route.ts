@@ -121,6 +121,42 @@ function validateReferences(payload: UserExportPayload) {
   };
 }
 
+function detectSuspiciousThinkingReplace(
+  existing: {
+    spaceIds: Set<string>;
+    nodeCountBySpace: Map<string, number>;
+    totalNodeCount: number;
+  },
+  incoming: {
+    spaces: NonNullable<UserExportPayload["thinking"]>["spaces"];
+    nodes: NonNullable<UserExportPayload["thinking"]>["nodes"];
+  }
+) {
+  const incomingSpaces = Array.isArray(incoming.spaces) ? incoming.spaces : [];
+  const incomingNodes = Array.isArray(incoming.nodes) ? incoming.nodes : [];
+  const incomingNodeCountBySpace = new Map<string, number>();
+
+  for (const node of incomingNodes) {
+    if (typeof node.spaceId !== "string" || !node.spaceId) continue;
+    incomingNodeCountBySpace.set(node.spaceId, (incomingNodeCountBySpace.get(node.spaceId) ?? 0) + 1);
+  }
+
+  if (existing.totalNodeCount > 0 && incomingSpaces.length > 0 && incomingNodes.length === 0) {
+    return "本地快照不完整，已阻止覆盖云端数据";
+  }
+
+  for (const space of incomingSpaces) {
+    if (typeof space.id !== "string" || !space.id || !existing.spaceIds.has(space.id)) continue;
+    const existingNodeCount = existing.nodeCountBySpace.get(space.id) ?? 0;
+    const incomingNodeCount = incomingNodeCountBySpace.get(space.id) ?? 0;
+    if (existingNodeCount > 0 && incomingNodeCount === 0) {
+      return "本地思路空间未完整加载，已阻止覆盖云端数据";
+    }
+  }
+
+  return null;
+}
+
 export const POST = withApiRoute(
   "system.import",
   async (request: NextRequest) => {
@@ -138,9 +174,33 @@ export const POST = withApiRoute(
     if (!refs.ok) return errorJson(400, `reference check failed: ${JSON.stringify(refs.broken)}`);
 
     let replaced: { life: number; thinking: number; scratch: number } | null = null;
+    let importError: string | null = null;
     await updateDb((db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!canImportUserData(user)) return;
+
+      const existingSpaces = db.thinking_spaces.filter((item) => item.user_id === userId);
+      const existingSpaceIds = new Set(existingSpaces.map((item) => item.id));
+      const existingNodeCountBySpace = new Map<string, number>();
+      let existingTotalNodeCount = 0;
+      for (const node of db.thinking_nodes) {
+        if (!existingSpaceIds.has(node.space_id)) continue;
+        existingTotalNodeCount += 1;
+        existingNodeCountBySpace.set(node.space_id, (existingNodeCountBySpace.get(node.space_id) ?? 0) + 1);
+      }
+
+      importError = detectSuspiciousThinkingReplace(
+        {
+          spaceIds: existingSpaceIds,
+          nodeCountBySpace: existingNodeCountBySpace,
+          totalNodeCount: existingTotalNodeCount
+        },
+        {
+          spaces: payload.thinking?.spaces,
+          nodes: payload.thinking?.nodes
+        }
+      );
+      if (importError) return;
 
       const thinkingSnapshot: Parameters<typeof replaceThinkingSnapshot>[2] = {
         spaces: (payload.thinking?.spaces ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["spaces"],
@@ -176,6 +236,7 @@ export const POST = withApiRoute(
       });
     });
 
+    if (importError) return errorJson(409, importError);
     if (!replaced) return unauthorizedJson();
 
     return okJson({
