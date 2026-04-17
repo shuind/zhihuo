@@ -234,6 +234,7 @@ export function ThinkingLayer(props: {
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [galleryHint, setGalleryHint] = useState("");
   const [galleryBusyKey, setGalleryBusyKey] = useState<string | null>(null);
+  const [isDraggingGallery, setIsDraggingGallery] = useState(false);
   const [renameSpaceOpen, setRenameSpaceOpen] = useState(false);
   const [renameSpaceDraft, setRenameSpaceDraft] = useState("");
   const [renameSpaceHint, setRenameSpaceHint] = useState("");
@@ -1022,20 +1023,33 @@ export function ThinkingLayer(props: {
     spaceGalleryInputRef.current?.click();
   }, [activeSpace, writeEnabled]);
 
-  const handleSpaceGalleryInputChange = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const file = event.target.files?.[0];
-      const spaceId = activeSpace?.id ?? null;
-      event.target.value = "";
-      if (!file || !spaceId) return;
+  const uploadGalleryFile = useCallback(
+    (file: File) => {
+      if (!activeSpace || activeSpace.status !== "active" || !writeEnabled) return;
+      if (!file.type.startsWith("image/")) {
+        setGalleryHint("请选择图片文件");
+        return;
+      }
+      const spaceId = activeSpace.id;
       void (async () => {
         setGalleryBusyKey(`upload:${spaceId}`);
         const ok = await props.onAddSpaceGalleryImage(spaceId, file);
         setGalleryBusyKey((current) => (current === `upload:${spaceId}` ? null : current));
-        if (!ok) setGalleryHint("图集上传失败，请稍后再试");
+        if (!ok) setGalleryHint("上传失败，请稍后再试");
+        else setGalleryHint("");
       })();
     },
-    [activeSpace?.id, props]
+    [activeSpace, props, writeEnabled]
+  );
+
+  const handleSpaceGalleryInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      event.target.value = "";
+      if (!file) return;
+      uploadGalleryFile(file);
+    },
+    [uploadGalleryFile]
   );
 
   const selectSpaceBackgroundImage = useCallback(
@@ -1455,11 +1469,12 @@ export function ThinkingLayer(props: {
                       }}
                     />
                     <MenuItem
-                      label="空间图集"
+                      label="空间背景"
                       disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"}
                       onClick={() => {
                         setMoreOpen(false);
                         setGalleryHint("");
+                        setIsDraggingGallery(false);
                         setGalleryOpen(true);
                       }}
                     />
@@ -1592,13 +1607,21 @@ export function ThinkingLayer(props: {
         {detailOpen && activeSpace ? (
           <div data-thinking-detail="true" className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
             {selectedBackgroundSrc ? (
-              <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+              <div
+                key={selectedBackgroundSrc}
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 overflow-hidden"
+                style={{ animation: "zhBgFadeIn 620ms ease-out 1" }}
+              >
                 <img
                   src={selectedBackgroundSrc}
                   alt=""
-                  className="h-full w-full scale-[1.03] object-cover opacity-[0.16] blur-[2px]"
+                  className="h-full w-full scale-[1.08] object-cover opacity-[0.28] blur-[3px] saturate-[0.92]"
                 />
-                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(247,244,239,0.66)_0%,rgba(247,244,239,0.9)_32%,rgba(247,244,239,0.96)_100%)]" />
+                {/* 柔和晕影：边缘略暗，中央保留图片肌理 */}
+                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_35%,rgba(247,244,239,0.2)_0%,rgba(247,244,239,0.7)_55%,rgba(247,244,239,0.94)_100%)]" />
+                {/* 底部渐层：保证阅读区清晰 */}
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(247,244,239,0.35)_0%,rgba(247,244,239,0.76)_38%,rgba(247,244,239,0.95)_100%)]" />
               </div>
             ) : null}
             <section className="relative min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
@@ -2421,116 +2444,255 @@ export function ThinkingLayer(props: {
       ) : null}
 
       {galleryOpen && activeSpace ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[760px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">空间图集</p>
-            <div className="mt-4 max-h-[62vh] overflow-y-auto pr-1">
-              {activeSpaceGallery.length ? (
-                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-                  {activeSpaceGallery.map((asset: { assetId: string; src: string | null; selected: boolean }) => {
-                    const selectBusy = galleryBusyKey === `select:${asset.assetId}`;
-                    const removeBusy = galleryBusyKey === `remove:${asset.assetId}`;
-                    const previewDisabled = !asset.src;
-                    return (
-                      <div
-                        key={asset.assetId}
-                        className={cn(
-                          "overflow-hidden rounded-[20px] border border-black/10 bg-[#fcfaf6]",
-                          asset.selected ? "ring-1 ring-black/12" : ""
-                        )}
+        <div
+          className="absolute inset-0 z-50 grid place-items-center bg-[rgba(27,24,21,0.28)] p-4 backdrop-blur-[3px]"
+          onClick={() => setGalleryOpen(false)}
+        >
+          <div
+            role="dialog"
+            aria-label="空间背景"
+            onClick={(event) => event.stopPropagation()}
+            onDragEnter={(event) => {
+              if (!event.dataTransfer?.types?.includes("Files")) return;
+              event.preventDefault();
+              setIsDraggingGallery(true);
+            }}
+            onDragOver={(event) => {
+              if (!event.dataTransfer?.types?.includes("Files")) return;
+              event.preventDefault();
+            }}
+            onDragLeave={(event) => {
+              if (event.currentTarget.contains(event.relatedTarget as Node)) return;
+              setIsDraggingGallery(false);
+            }}
+            onDrop={(event) => {
+              event.preventDefault();
+              setIsDraggingGallery(false);
+              const file = event.dataTransfer?.files?.[0];
+              if (file) uploadGalleryFile(file);
+            }}
+            className={cn(
+              "relative flex max-h-[calc(100vh-4rem)] w-[920px] max-w-[calc(100vw-2rem)] flex-col overflow-hidden rounded-[28px] border border-black/[0.06] bg-[#fbf8f3] shadow-[0_24px_60px_rgba(43,38,33,0.24)] transition-colors",
+              isDraggingGallery ? "ring-[3px] ring-slate-900/[0.18]" : ""
+            )}
+          >
+            {/* 头部 */}
+            <div className="flex items-start justify-between gap-4 border-b border-black/[0.05] px-7 pb-4 pt-6">
+              <div className="min-w-0">
+                <p className="text-[15px] leading-tight text-slate-900">空间背景</p>
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                  点击图片即设为背景，再次点击当前背景可取消。悬停图片可预览或移除。
+                </p>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭空间背景"
+                onClick={() => setGalleryOpen(false)}
+                className="shrink-0 rounded-full p-1.5 text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-slate-700"
+              >
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                  <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
+                </svg>
+              </button>
+            </div>
+
+            {/* 主体 */}
+            <div className="flex-1 overflow-y-auto px-7 py-6">
+              <div className="grid gap-4 sm:grid-cols-2 md:grid-cols-3">
+                {/* 上传磁贴 */}
+                <button
+                  type="button"
+                  onClick={openSpaceGalleryPicker}
+                  disabled={galleryBusyKey === `upload:${activeSpace.id}`}
+                  className={cn(
+                    "group relative flex aspect-[4/3] flex-col items-center justify-center gap-2 rounded-[20px] border border-dashed transition-all",
+                    isDraggingGallery
+                      ? "border-slate-900/60 bg-white"
+                      : "border-black/[0.14] bg-white/50 hover:border-black/30 hover:bg-white"
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "grid h-10 w-10 place-items-center rounded-full bg-[#efeae1] text-slate-500 transition-colors",
+                      "group-hover:bg-slate-900 group-hover:text-white"
+                    )}
+                  >
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                      <path
+                        d="M12 16V4m0 0l-5 5m5-5l5 5M4 16v2a2 2 0 002 2h12a2 2 0 002-2v-2"
+                        stroke="currentColor"
+                        strokeWidth="1.6"
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                      />
+                    </svg>
+                  </span>
+                  <span className="text-[13px] text-slate-700">
+                    {galleryBusyKey === `upload:${activeSpace.id}`
+                      ? "上传中…"
+                      : isDraggingGallery
+                        ? "松开即可上传"
+                        : "添加图片"}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {isDraggingGallery ? "支持 PNG / JPG / WebP" : "拖拽到此处或点击选择"}
+                  </span>
+                </button>
+
+                {/* 图片磁贴 */}
+                {activeSpaceGallery.map((asset: { assetId: string; src: string | null; selected: boolean }) => {
+                  const selectBusy = galleryBusyKey === `select:${asset.assetId}`;
+                  const removeBusy = galleryBusyKey === `remove:${asset.assetId}`;
+                  const busy = selectBusy || removeBusy;
+                  const hasSrc = Boolean(asset.src);
+                  return (
+                    <div
+                      key={asset.assetId}
+                      className={cn(
+                        "group relative aspect-[4/3] overflow-hidden rounded-[20px] border transition-all duration-300",
+                        asset.selected
+                          ? "border-slate-900/70 shadow-[0_12px_28px_rgba(43,38,33,0.16)] ring-[3px] ring-slate-900/[0.08]"
+                          : "border-black/[0.06] hover:-translate-y-0.5 hover:shadow-[0_10px_24px_rgba(43,38,33,0.12)]"
+                      )}
+                    >
+                      <button
+                        type="button"
+                        className="absolute inset-0 h-full w-full bg-[#efeae1]"
+                        disabled={busy || !hasSrc}
+                        aria-label={asset.selected ? "取消当前背景" : "设为背景"}
+                        onClick={() => {
+                          if (asset.selected) {
+                            selectSpaceBackgroundImage(null);
+                          } else {
+                            selectSpaceBackgroundImage(asset.assetId);
+                          }
+                        }}
                       >
+                        {hasSrc ? (
+                          <img
+                            src={asset.src as string}
+                            alt=""
+                            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+                          />
+                        ) : (
+                          <span className="grid h-full w-full place-items-center text-xs text-slate-400">
+                            预览不可用
+                          </span>
+                        )}
+                      </button>
+
+                      {/* 悬停渐层，让图标更清晰 */}
+                      <div className="pointer-events-none absolute inset-x-0 top-0 h-16 bg-[linear-gradient(180deg,rgba(15,17,20,0.28)_0%,rgba(15,17,20,0)_100%)] opacity-0 transition-opacity duration-200 group-hover:opacity-100" />
+
+                      {/* 当前背景徽章 */}
+                      {asset.selected ? (
+                        <div className="pointer-events-none absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-slate-900/92 px-2.5 py-1 text-[11px] text-slate-50 shadow-sm backdrop-blur-sm">
+                          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path
+                              d="M5 12l4 4L19 6"
+                              stroke="currentColor"
+                              strokeWidth="2.4"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
+                          <span>当前背景</span>
+                        </div>
+                      ) : null}
+
+                      {/* 悬停动作按钮 */}
+                      <div className="pointer-events-none absolute right-3 top-3 flex gap-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
+                        {hasSrc ? (
+                          <button
+                            type="button"
+                            aria-label="查看大图"
+                            className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full bg-white/94 text-slate-700 shadow-sm transition-colors hover:bg-white"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setPreviewImage({ src: asset.src as string, alt: "空间背景候选图" });
+                            }}
+                          >
+                            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                              <path
+                                d="M15 3h6v6M21 3l-7 7M9 21H3v-6M3 21l7-7"
+                                stroke="currentColor"
+                                strokeWidth="1.7"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                              />
+                            </svg>
+                          </button>
+                        ) : null}
                         <button
                           type="button"
-                          className="relative block aspect-[4/3] w-full overflow-hidden bg-[#f2ece3]"
-                          disabled={previewDisabled}
-                          onClick={() => {
-                            if (!asset.src) return;
-                            setPreviewImage({ src: asset.src, alt: "空间图集" });
+                          aria-label="从图集移除"
+                          disabled={busy}
+                          className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full bg-white/94 text-slate-600 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            removeSpaceGalleryImage(asset.assetId);
                           }}
                         >
-                          {asset.src ? (
-                            <img src={asset.src} alt="" className="h-full w-full object-cover" />
-                          ) : (
-                            <span className="grid h-full w-full place-items-center text-xs text-slate-400">预览不可用</span>
-                          )}
-                          {asset.selected ? (
-                            <span className="absolute left-3 top-3 rounded-full bg-white/92 px-2 py-1 text-[11px] text-slate-700 shadow-sm">
-                              当前背景
-                            </span>
-                          ) : null}
+                          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+                            <path
+                              d="M4 7h16M9 7V4h6v3M7 7l1 13h8l1-13M10 11v6M14 11v6"
+                              stroke="currentColor"
+                              strokeWidth="1.6"
+                              strokeLinecap="round"
+                              strokeLinejoin="round"
+                            />
+                          </svg>
                         </button>
-                        <div className="space-y-2 px-3 pb-3 pt-3">
-                          <p className="line-clamp-1 text-xs text-slate-500">{asset.assetId}</p>
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant={asset.selected ? "ghost" : "default"}
-                              className={cn(
-                                "rounded-full",
-                                asset.selected
-                                  ? "border border-black/12 text-slate-700"
-                                  : "bg-slate-900 text-slate-50 hover:bg-slate-800"
-                              )}
-                              disabled={selectBusy || removeBusy || asset.selected}
-                              onClick={() => selectSpaceBackgroundImage(asset.assetId)}
-                            >
-                              {selectBusy ? "设置中..." : asset.selected ? "已选为背景" : "设为背景"}
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="rounded-full border border-black/12 text-slate-700"
-                              disabled={previewDisabled}
-                              onClick={() => {
-                                if (!asset.src) return;
-                                setPreviewImage({ src: asset.src, alt: "空间图集" });
-                              }}
-                            >
-                              查看
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="ghost"
-                              className="rounded-full border border-black/12 text-slate-700"
-                              disabled={selectBusy || removeBusy}
-                              onClick={() => removeSpaceGalleryImage(asset.assetId)}
-                            >
-                              {removeBusy ? "移除中..." : "移出图集"}
-                            </Button>
-                          </div>
-                        </div>
                       </div>
-                    );
-                  })}
-                </div>
-              ) : (
-                <div className="rounded-[20px] border border-dashed border-black/10 bg-[#fcfaf6] px-4 py-12 text-center text-sm text-slate-500">
-                  这个空间还没有图片，可以先上传几张作为图集。
-                </div>
-              )}
+
+                      {/* 操作中遮罩 */}
+                      {busy ? (
+                        <div className="pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(15,17,20,0.28)] text-[11px] text-white backdrop-blur-[1px]">
+                          {selectBusy ? "应用中…" : "移除中…"}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+
+              {activeSpaceGallery.length === 0 ? (
+                <p className="mt-5 text-center text-xs text-slate-500">
+                  还没有图片。从上方磁贴上传，或直接拖拽到窗口中。
+                </p>
+              ) : null}
             </div>
-            <p className="mt-1 text-xs text-slate-500">可以从图集里随时切换背景，旧的背景说明文本已不再使用。</p>
-            <p className={cn("mt-3 min-h-[1.2em] text-xs text-slate-500", galleryHint ? "opacity-100" : "opacity-0")}>{galleryHint || "."}</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="rounded-full border border-black/12 text-slate-700"
-                disabled={galleryBusyKey === `select:none` || !activeSpaceView?.backgroundSelectedAssetId}
-                onClick={() => selectSpaceBackgroundImage(null)}
+
+            {/* 底部 */}
+            <div className="flex items-center justify-between gap-3 border-t border-black/[0.05] px-7 py-4">
+              <p
+                className={cn(
+                  "min-h-[1.2em] flex-1 text-xs transition-opacity",
+                  galleryHint ? "text-slate-600 opacity-100" : "text-slate-400 opacity-0"
+                )}
               >
-                清空背景
-              </Button>
-              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setGalleryOpen(false)}>
-                关闭
-              </Button>
-              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={openSpaceGalleryPicker}>
-                {galleryBusyKey === `upload:${activeSpace.id}` ? "上传中..." : "添加图片"}
-              </Button>
+                {galleryHint || "."}
+              </p>
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full text-slate-600 hover:bg-black/[0.04] disabled:opacity-40"
+                  disabled={galleryBusyKey === `select:none` || !activeSpaceView?.backgroundSelectedAssetId}
+                  onClick={() => selectSpaceBackgroundImage(null)}
+                >
+                  清空背景
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800"
+                  onClick={() => setGalleryOpen(false)}
+                >
+                  完成
+                </Button>
+              </div>
             </div>
           </div>
         </div>
@@ -2661,6 +2823,16 @@ export function ThinkingLayer(props: {
           100% {
             opacity: 1;
             transform: translateY(0);
+          }
+        }
+        @keyframes zhBgFadeIn {
+          0% {
+            opacity: 0;
+            transform: scale(1.02);
+          }
+          100% {
+            opacity: 1;
+            transform: scale(1);
           }
         }
       `}</style>
