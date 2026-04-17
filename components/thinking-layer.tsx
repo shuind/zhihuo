@@ -1423,14 +1423,14 @@ export function ThinkingLayer(props: {
             <img
               src={selectedBackgroundSrc}
               alt=""
-              className="h-full w-full scale-[1.04] object-cover opacity-[0.42] saturate-[0.96]"
+              className="h-full w-full scale-[1.04] object-cover opacity-[0.36] saturate-[0.96]"
             />
             {/* 柔和晕影：中央保留图片肌理，边缘略淡化 */}
             <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_42%,rgba(247,244,239,0.04)_0%,rgba(247,244,239,0.46)_58%,rgba(247,244,239,0.78)_100%)]" />
             {/* 顶部轻渐层：与导航栏毛玻璃融合 */}
             <div className="absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(247,244,239,0.55)_0%,rgba(247,244,239,0)_100%)]" />
-            {/* 底部渐层：保证输入区可读性 */}
-            <div className="absolute inset-x-0 bottom-0 h-48 bg-[linear-gradient(180deg,rgba(247,244,239,0)_0%,rgba(247,244,239,0.72)_100%)]" />
+            {/* 底部渐层：柔和过渡到输入区，不形成硬边 */}
+            <div className="absolute inset-x-0 bottom-0 h-56 bg-[linear-gradient(180deg,rgba(247,244,239,0)_0%,rgba(247,244,239,0.18)_45%,rgba(247,244,239,0.5)_100%)]" />
           </div>
         ) : null}
 
@@ -1925,10 +1925,22 @@ export function ThinkingLayer(props: {
 
               <footer
                 data-composer="true"
-                className="border-t border-black/[0.05] bg-[#f5f2ee]/66 px-4 pb-[14px] pt-3 backdrop-blur-md md:px-8 md:pb-5 md:pt-3"
+                className={cn(
+                  "px-4 pb-[14px] pt-3 md:px-8 md:pb-5 md:pt-3",
+                  selectedBackgroundSrc
+                    ? "bg-transparent"
+                    : "border-t border-black/[0.05] bg-[#f5f2ee]/66 backdrop-blur-md"
+                )}
               >
               <div className="ml-auto mr-0 max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
-                <div className="w-full max-w-[760px] rounded-[20px] border border-black/[0.05] bg-[rgba(255,255,255,0.36)] px-4 py-2.5">
+                <div
+                  className={cn(
+                    "w-full max-w-[760px] rounded-[20px] border px-4 py-2.5",
+                    selectedBackgroundSrc
+                      ? "border-white/40 bg-white/55 shadow-[0_8px_24px_rgba(43,38,33,0.08)] backdrop-blur-md"
+                      : "border-black/[0.05] bg-[rgba(255,255,255,0.36)]"
+                  )}
+                >
                   <div className="flex items-end gap-3">
                     {canPasteClipboardNode ? (
                       <button
