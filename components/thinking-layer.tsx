@@ -1425,12 +1425,8 @@ export function ThinkingLayer(props: {
               alt=""
               className="h-full w-full scale-[1.04] object-cover opacity-[0.36] saturate-[0.96]"
             />
-            {/* 柔和晕影：中央保留图片肌理，边缘略淡化 */}
-            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_42%,rgba(247,244,239,0.04)_0%,rgba(247,244,239,0.46)_58%,rgba(247,244,239,0.78)_100%)]" />
-            {/* 顶部轻渐层：与导航栏毛玻璃融合 */}
-            <div className="absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(247,244,239,0.55)_0%,rgba(247,244,239,0)_100%)]" />
-            {/* 底部渐层：柔和过渡到输入区，不形成硬边 */}
-            <div className="absolute inset-x-0 bottom-0 h-56 bg-[linear-gradient(180deg,rgba(247,244,239,0)_0%,rgba(247,244,239,0.18)_45%,rgba(247,244,239,0.5)_100%)]" />
+            {/* 均匀柔光：整体叠一层极淡的米白，让图片不至于过于浓烈，但不再有顶部/底部的硬渐层 */}
+            <div className="absolute inset-0 bg-[rgba(247,244,239,0.18)]" />
           </div>
         ) : null}
 
@@ -2554,7 +2550,7 @@ export function ThinkingLayer(props: {
                         : "添加图片"}
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    {isDraggingGallery ? "支持 PNG / JPG / WebP" : "拖拽到此处或点击选择"}
+                    {isDraggingGallery ? "支��� PNG / JPG / WebP" : "拖拽到此处或点击选择"}
                   </span>
                 </button>
 
@@ -2619,7 +2615,7 @@ export function ThinkingLayer(props: {
                         </div>
                       ) : null}
 
-                      {/* 悬停动作按钮 */}
+                      {/* ���停动作按钮 */}
                       <div className="pointer-events-none absolute right-3 top-3 flex gap-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                         {hasSrc ? (
                           <button
