@@ -1425,8 +1425,12 @@ export function ThinkingLayer(props: {
               alt=""
               className="h-full w-full scale-[1.04] object-cover opacity-[0.36] saturate-[0.96]"
             />
-            {/* 均匀柔光：整体叠一层极淡的米白，让图片不至于过于浓烈，但不再有顶部/底部的硬渐层 */}
-            <div className="absolute inset-0 bg-[rgba(247,244,239,0.18)]" />
+            {/* 柔和晕影：中央保留图片肌理，边缘略淡化 */}
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_42%,rgba(247,244,239,0.04)_0%,rgba(247,244,239,0.46)_58%,rgba(247,244,239,0.78)_100%)]" />
+            {/* 顶部轻渐层：与导航栏毛玻璃融合 */}
+            <div className="absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(247,244,239,0.55)_0%,rgba(247,244,239,0)_100%)]" />
+            {/* 底部渐层：柔和过渡到输入区，不形成硬边 */}
+            <div className="absolute inset-x-0 bottom-0 h-56 bg-[linear-gradient(180deg,rgba(247,244,239,0)_0%,rgba(247,244,239,0.18)_45%,rgba(247,244,239,0.5)_100%)]" />
           </div>
         ) : null}
 
@@ -1434,9 +1438,7 @@ export function ThinkingLayer(props: {
           className={cn(
             "relative z-10",
             detailOpen
-              ? selectedBackgroundSrc
-                ? "bg-transparent px-4 md:px-8"
-                : "border-b border-black/[0.05] bg-[#f5f2ee]/72 px-4 backdrop-blur-md md:px-8"
+              ? "border-b border-black/[0.05] bg-[#f5f2ee]/72 px-4 backdrop-blur-md md:px-8"
               : "border-b border-black/10 px-3 py-3 md:px-5"
           )}
         >
@@ -1933,9 +1935,9 @@ export function ThinkingLayer(props: {
               <div className="ml-auto mr-0 max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
                 <div
                   className={cn(
-                    "w-full max-w-[760px] rounded-[20px] border px-4 py-2.5 transition-colors",
+                    "w-full max-w-[760px] rounded-[20px] border px-4 py-2.5",
                     selectedBackgroundSrc
-                      ? "border-white/25 bg-white/14 hover:bg-white/20 focus-within:bg-white/28 focus-within:border-white/40"
+                      ? "border-white/40 bg-white/55 shadow-[0_8px_24px_rgba(43,38,33,0.08)] backdrop-blur-md"
                       : "border-black/[0.05] bg-[rgba(255,255,255,0.36)]"
                   )}
                 >
@@ -2550,7 +2552,7 @@ export function ThinkingLayer(props: {
                         : "添加图片"}
                   </span>
                   <span className="text-[11px] text-slate-400">
-                    {isDraggingGallery ? "支��� PNG / JPG / WebP" : "拖拽到此处或点击选择"}
+                    {isDraggingGallery ? "支持 PNG / JPG / WebP" : "拖拽到此处或点击选择"}
                   </span>
                 </button>
 
@@ -2615,7 +2617,7 @@ export function ThinkingLayer(props: {
                         </div>
                       ) : null}
 
-                      {/* ���停动作按钮 */}
+                      {/* 悬停动作按钮 */}
                       <div className="pointer-events-none absolute right-3 top-3 flex gap-1.5 opacity-0 transition-opacity duration-200 group-hover:opacity-100 group-focus-within:opacity-100">
                         {hasSrc ? (
                           <button
