@@ -602,6 +602,13 @@ function DetailBody(props: {
   const shouldShowTrackEdgeSummary = Boolean(firstTrackNode);
 
   const handlePrimaryAction = () => {
+    props.onClose();
+    if (typeof window !== "undefined") {
+      window.requestAnimationFrame(() => {
+        props.onImport();
+      });
+      return;
+    }
     props.onImport();
   };
 

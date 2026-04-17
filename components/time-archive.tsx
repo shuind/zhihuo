@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -25,6 +25,7 @@ import {
   getUserOwnerKey,
   isOfflineNetworkError,
   listDeadLetterMutationsByOwner,
+  listOfflineSnapshotRecords,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
   listOfflineMediaAssetsByOwner,
@@ -41,8 +42,8 @@ import {
   type OfflineSnapshotMeta,
   type QueuedMutation
 } from "@/components/offline-store";
-import { canAccessGuestMode, canUseCloudSync } from "@/lib/capabilities";
-import { apiFetch, buildApiUrl } from "@/lib/api-client";
+import { canAccessGuestMode, canUseCloudSync, isNativeAppRuntime } from "@/lib/capabilities";
+import { API_CONNECTIVITY_EVENT, apiFetch, buildApiUrl } from "@/lib/api-client";
 import {
   type LayerTab,
   type LifeDoubt,
@@ -1247,6 +1248,8 @@ function getIncompleteSpaceIdsForExport(store: ThinkingStore, thinkingViews: Rec
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
+  const [runtimeReady, setRuntimeReady] = useState(false);
+  const [isNativeApp, setIsNativeApp] = useState(false);
   const [lifeStore, setLifeStore] = useState(EMPTY_LIFE_STORE);
   const [thinkingStore, setThinkingStore] = useState(EMPTY_THINKING_STORE);
   const [thinkingView, setThinkingView] = useState<ThinkingSpaceView | null>(null);
@@ -1256,6 +1259,7 @@ export function TimeArchive() {
   const [notice, setNotice] = useState("");
   const [authReady, setAuthReady] = useState(false);
   const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
+  const [cloudSessionEnabled, setCloudSessionEnabled] = useState(true);
   const [pinReady, setPinReady] = useState(false);
   const [pinEnabled, setPinEnabled] = useState(false);
   const [pinLockedUntil, setPinLockedUntil] = useState(0);
@@ -1323,6 +1327,10 @@ export function TimeArchive() {
     }, duration);
   }, []);
 
+  const applyOnlineState = useCallback((online: boolean) => {
+    setIsOnline((current) => (current === online ? current : online));
+  }, []);
+
   const handleUnauthorized = useCallback(
     (response: Response) => {
       if (response.status !== 401) return false;
@@ -1341,8 +1349,15 @@ export function TimeArchive() {
     return status;
   }, []);
 
+  useEffect(() => {
+    const nativeApp = isNativeAppRuntime();
+    setIsNativeApp(nativeApp);
+    setCloudSessionEnabled(!nativeApp);
+    setRuntimeReady(true);
+  }, []);
+
   const guestModeEnabled = canAccessGuestMode();
-  const cloudSyncEnabled = canUseCloudSync(sessionUser);
+  const cloudSyncEnabled = cloudSessionEnabled && canUseCloudSync(sessionUser);
   const guestOwnerKey = getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
   const currentUserOwnerKey = sessionUser ? getUserOwnerKey(sessionUser.userId) : null;
   const cloudSyncReady =
@@ -1860,6 +1875,15 @@ export function TimeArchive() {
     }
   }, []);
 
+  useEffect(() => {
+    if (!runtimeReady || cloudSessionEnabled) return;
+    userBootstrapRef.current = null;
+    bindingCheckUserIdRef.current = null;
+    setBindingDialog(null);
+    setSessionUser(null);
+    setAuthReady(true);
+  }, [cloudSessionEnabled, runtimeReady]);
+
   const syncLifeFromApi = useCallback(
     async (silent = false) => {
       try {
@@ -2143,7 +2167,7 @@ export function TimeArchive() {
   const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
     if (!ownerKey || !ownerKey.startsWith("user:")) return;
     if (offlineSyncingRef.current) return;
-    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    if (!isOnline) return;
     offlineSyncingRef.current = true;
     try {
       const mediaReady = await syncPendingOfflineMediaAssets(ownerKey);
@@ -2296,7 +2320,8 @@ export function TimeArchive() {
     syncPendingOfflineMediaAssets,
     syncRevisionFromServer,
     setRevisionBaseline,
-    updateOfflineMeta
+    updateOfflineMeta,
+    isOnline
   ]);
 
   const queueMutation = useCallback(
@@ -2535,6 +2560,38 @@ export function TimeArchive() {
         }
       | { ok: false; message: string; suggestedQuestions?: string[] }
     > => {
+      if (sourceTimeDoubtId) {
+        const existing = [...thinkingStore.spaces]
+          .filter((space) => space.sourceTimeDoubtId === sourceTimeDoubtId)
+          .sort(
+            (a, b) =>
+              new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime()
+          )[0];
+        if (existing) {
+          if (existing.status === "hidden") {
+            const activeCount = thinkingStore.spaces.filter((space) => space.status === "active").length;
+            if (activeCount >= MAX_ACTIVE_SPACES) {
+              return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
+            }
+            setThinkingStore((prev) => ({
+              ...prev,
+              spaces: prev.spaces.map((space) => (space.id === existing.id ? { ...space, status: "active" as const } : space))
+            }));
+            markLocalChange();
+          }
+          const existingView = getLocalSpaceView(existing.id);
+          setActiveSpaceId(existing.id);
+          if (existingView) setThinkingView(existingView);
+          return {
+            ok: true,
+            spaceId: existing.id,
+            converted: false,
+            createdAsStatement: false,
+            suggestedQuestions: [],
+            questionSuggestion: null
+          };
+        }
+      }
       const now = new Date().toISOString();
       const localSpaceId = createId();
       const localParkingTrackId = createId();
@@ -2659,7 +2716,7 @@ export function TimeArchive() {
         questionSuggestion: null
       }
     },
-    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
+    [cloudSyncReady, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi, thinkingStore.spaces]
   );
 
   useEffect(() => {
@@ -2669,17 +2726,26 @@ export function TimeArchive() {
   }, [refreshPinState]);
 
   useEffect(() => {
-    if (!pinReady || (pinEnabled && !pinUnlocked)) return;
+    if (!runtimeReady || !pinReady || (pinEnabled && !pinUnlocked) || !cloudSessionEnabled) return;
     void syncAuth();
-  }, [pinEnabled, pinReady, pinUnlocked, syncAuth]);
+  }, [cloudSessionEnabled, pinEnabled, pinReady, pinUnlocked, runtimeReady, syncAuth]);
 
   useEffect(() => {
-    if (!pinReady || (pinEnabled && !pinUnlocked)) return;
+    if (!runtimeReady || !pinReady || (pinEnabled && !pinUnlocked)) return;
     let cancelled = false;
     void (async () => {
       const localProfileId = getOrCreateLocalProfileId();
       localProfileIdRef.current = localProfileId;
-      const initialOwnerKey = getGuestOwnerKey(localProfileId);
+      const guestOwner = getGuestOwnerKey(localProfileId);
+      let initialOwnerKey = guestOwner;
+      if (isNativeApp && !cloudSessionEnabled) {
+        const records = await listOfflineSnapshotRecords();
+        if (cancelled) return;
+        const preferredRecord = records.find((item) => item.meta.localProfileId === localProfileId);
+        if (preferredRecord?.ownerKey) {
+          initialOwnerKey = preferredRecord.ownerKey;
+        }
+      }
       const snapshot = await loadOfflineSnapshotByOwner(initialOwnerKey);
       if (cancelled) return;
       if (snapshot) {
@@ -2710,7 +2776,7 @@ export function TimeArchive() {
     return () => {
       cancelled = true;
     };
-  }, [applySnapshotToState, pinEnabled, pinReady, pinUnlocked]);
+  }, [applySnapshotToState, cloudSessionEnabled, isNativeApp, pinEnabled, pinReady, pinUnlocked, runtimeReady]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -2719,21 +2785,35 @@ export function TimeArchive() {
   }, []);
 
   useEffect(() => {
+    if (sessionUser && authDialogOpen) {
+      setAuthDialogOpen(false);
+    }
+  }, [authDialogOpen, sessionUser]);
+
+  useEffect(() => {
     if (typeof window === "undefined") return;
     window.localStorage.setItem("zhihuo_thinking_focus_mode", thinkingFocusMode ? "1" : "0");
   }, [thinkingFocusMode]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const update = () => setIsOnline(window.navigator.onLine !== false);
-    update();
-    window.addEventListener("online", update);
-    window.addEventListener("offline", update);
-    return () => {
-      window.removeEventListener("online", update);
-      window.removeEventListener("offline", update);
+    const updateFromNavigator = () => applyOnlineState(window.navigator.onLine !== false);
+    const handleConnectivity = (event: Event) => {
+      const detail = event instanceof CustomEvent ? (event as CustomEvent<{ online?: boolean }>).detail : null;
+      if (typeof detail?.online === "boolean") {
+        applyOnlineState(detail.online);
+      }
     };
-  }, []);
+    updateFromNavigator();
+    window.addEventListener("online", updateFromNavigator);
+    window.addEventListener("offline", updateFromNavigator);
+    window.addEventListener(API_CONNECTIVITY_EVENT, handleConnectivity);
+    return () => {
+      window.removeEventListener("online", updateFromNavigator);
+      window.removeEventListener("offline", updateFromNavigator);
+      window.removeEventListener(API_CONNECTIVITY_EVENT, handleConnectivity);
+    };
+  }, [applyOnlineState]);
 
   useEffect(() => {
     activeSpaceIdRef.current = activeSpaceId;
@@ -2752,6 +2832,16 @@ export function TimeArchive() {
         userBootstrapRef.current = null;
         bindingCheckUserIdRef.current = null;
         setBindingDialog(null);
+        if (isNativeApp && !cloudSessionEnabled) {
+          if (!activeOwnerKey) {
+            setOfflineRuntimeState("switching_account");
+            setActiveOwnerKey(nextGuestOwnerKey);
+            await loadOwnerSnapshot(nextGuestOwnerKey, guestMeta);
+            if (cancelled) return;
+          }
+          setOfflineRuntimeState(activeOwnerKey?.startsWith("user:") ? "user_offline_ready" : "guest_ready");
+          return;
+        }
         if (activeOwnerKey !== nextGuestOwnerKey) {
           setOfflineRuntimeState("switching_account");
           setActiveOwnerKey(nextGuestOwnerKey);
@@ -2835,7 +2925,9 @@ export function TimeArchive() {
     activeOwnerKey,
     authReady,
     bindingDialog,
+    cloudSessionEnabled,
     hydrated,
+    isNativeApp,
     isOnline,
     lifeStore,
     loadOwnerSnapshot,
@@ -2914,6 +3006,18 @@ export function TimeArchive() {
   }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, sessionUser, syncQueuedMutations]);
 
   useEffect(() => {
+    if (typeof window === "undefined" || !hydrated || isOnline) return;
+    const probe = () => {
+      void apiFetch("/v1/health", { method: "GET", cache: "no-store" }).catch(() => null);
+    };
+    probe();
+    const timer = window.setInterval(probe, 15000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [hydrated, isOnline]);
+
+  useEffect(() => {
     if (!hydrated) return;
     void refreshDeadLetterMutations(activeOwnerKey);
   }, [activeOwnerKey, hydrated, refreshDeadLetterMutations]);
@@ -2984,9 +3088,9 @@ export function TimeArchive() {
     const cached = getLocalSpaceView(activeSpaceId);
     setThinkingView(cached);
     if (!authReady || !cloudSyncReady || !sessionUser) return;
-    if (typeof navigator !== "undefined" && navigator.onLine === false) return;
+    if (!isOnline) return;
     void loadThinkingViewFromApi(activeSpaceId, true);
-  }, [activeSpaceId, authReady, cloudSyncReady, getLocalSpaceView, hydrated, loadThinkingViewFromApi, sessionUser]);
+  }, [activeSpaceId, authReady, cloudSyncReady, getLocalSpaceView, hydrated, isOnline, loadThinkingViewFromApi, sessionUser]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -3012,52 +3116,100 @@ export function TimeArchive() {
 
   const hideLifeDoubtFromTimeline = useCallback(
     async (doubtId: string) => {
-      try {
-        const response = await apiFetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        void syncLifeFromApi(true);
-        return true;
-      } catch {
-        return false;
+      if (cloudSyncReady) {
+        try {
+          const response = await apiFetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          void syncLifeFromApi(true);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
       }
+      await queueMutation(`/v1/doubts/${doubtId}/archive`);
+      const archivedAt = new Date().toISOString();
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: prev.doubts.map((item) => (item.id === doubtId ? { ...item, archivedAt } : item))
+      }));
+      markLocalChange();
+      return true;
     },
-    [handleUnauthorized, syncLifeFromApi]
+    [cloudSyncReady, handleUnauthorized, markLocalChange, queueMutation, syncLifeFromApi]
   );
 
   const handleImportToThinking = useCallback(
     (doubt: { id: string; rawText: string }) => {
       void (async () => {
         try {
-          const response = await apiFetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
-          if (handleUnauthorized(response)) return;
-          if (response.status === 409) {
-            showNotice(RESTORE_OVER_LIMIT_NOTICE);
+          if (cloudSyncReady) {
+            const response = await apiFetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
+            if (handleUnauthorized(response)) return;
+            if (response.status === 409) {
+              showNotice(RESTORE_OVER_LIMIT_NOTICE);
+              return;
+            }
+            if (!response.ok) {
+              showNotice("恢复思考失败");
+              return;
+            }
+            const payload = (await response.json().catch(() => ({}))) as { space_id?: string; created?: boolean };
+            const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
+            if (!spaceId) {
+              showNotice("恢复思考失败");
+              return;
+            }
+            const spaces = await syncThinkingSpacesFromApi(true);
+            setActiveSpaceId(spaceId);
+            if (spaces.some((space) => space.id === spaceId)) {
+              await loadThinkingViewFromApi(spaceId, true);
+            }
+            const hidden = await hideLifeDoubtFromTimeline(doubt.id);
+            if (!hidden) {
+              showNotice("已进入思路，但时间卡片隐藏失败");
+              return;
+            }
+            setTab("thinking");
+            setThinkingJumpTarget({ spaceId, mode: "root" });
+            showNotice(payload.created ? "已进入思路" : "已恢复原空间");
             return;
           }
-          if (!response.ok) {
-            showNotice("创建思考空间失败");
+          const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
+          if (!created.ok) {
+            showNotice(created.message === `活跃空间上限为 ${MAX_ACTIVE_SPACES}` ? RESTORE_OVER_LIMIT_NOTICE : created.message);
             return;
           }
-          const payload = (await response.json()) as { space_id?: string; created?: boolean };
-          const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
-          if (!spaceId) {
-            showNotice("恢复思考失败");
+          const hidden = await hideLifeDoubtFromTimeline(doubt.id);
+          if (!hidden) {
+            showNotice("已进入思路，但时间卡片隐藏失败");
             return;
           }
-          await syncThinkingSpacesFromApi(true);
-          setActiveSpaceId(spaceId);
-          await loadThinkingViewFromApi(spaceId, true);
-          void hideLifeDoubtFromTimeline(doubt.id);
           setTab("thinking");
-          setThinkingJumpTarget({ spaceId, mode: "root" });
-          showNotice(payload.created ? "已进入思路" : "已恢复原空间");
-        } catch {
+          setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
+          showNotice("已进入思路");
+        } catch (error) {
+          if (isOfflineNetworkError(error)) {
+            const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
+            if (!created.ok) {
+              showNotice(created.message === `活跃空间上限为 ${MAX_ACTIVE_SPACES}` ? RESTORE_OVER_LIMIT_NOTICE : created.message);
+              return;
+            }
+            const hidden = await hideLifeDoubtFromTimeline(doubt.id);
+            if (!hidden) {
+              showNotice("已进入思路，但时间卡片隐藏失败");
+              return;
+            }
+            setTab("thinking");
+            setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
+            showNotice("已进入思路");
+            return;
+          }
           showNotice("网络异常，请稍后再试");
         }
       })();
     },
-    [handleUnauthorized, hideLifeDoubtFromTimeline, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
+    [cloudSyncReady, createThinkingSpaceApi, handleUnauthorized, hideLifeDoubtFromTimeline, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -3124,6 +3276,75 @@ export function TimeArchive() {
     [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingScratchFromApi]
   );
 
+  const feedThinkingScratchToTimeLocal = useCallback(
+    async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch || scratch.derivedSpaceId) return false;
+      const doubtId = scratch.fedTimeDoubtId ?? createId();
+      const existingDoubt = scratch.fedTimeDoubtId ? lifeStore.doubts.find((item) => item.id === scratch.fedTimeDoubtId) ?? null : null;
+      const createdAt = existingDoubt?.createdAt ?? scratch.createdAt;
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: [
+          {
+            id: doubtId,
+            rawText: scratch.rawText,
+            firstNodePreview: existingDoubt?.firstNodePreview ?? null,
+            lastNodePreview: existingDoubt?.lastNodePreview ?? null,
+            createdAt,
+            archivedAt: null,
+            deletedAt: null
+          },
+          ...prev.doubts.filter((item) => item.id !== doubtId)
+        ]
+      }));
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.filter((item) => item.id !== scratchId)
+      }));
+      markLocalChange();
+      return true;
+    },
+    [lifeStore.doubts, markLocalChange, thinkingStore.scratch]
+  );
+
+  const convertScratchToSpaceLocal = useCallback(
+    async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch) return { ok: false as const, message: "随记不存在" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+
+      if (scratch.derivedSpaceId) {
+        const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
+        if (existing) {
+          const existingView = getLocalSpaceView(existing.id);
+          setActiveSpaceId(existing.id);
+          if (existingView) setThinkingView(existingView);
+          return { ok: true as const, spaceId: existing.id };
+        }
+      }
+
+      const created = await createThinkingSpaceApi(scratch.rawText, null);
+      if (!created.ok) return { ok: false as const, message: created.message };
+      const now = new Date().toISOString();
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.map((item) =>
+          item.id === scratchId
+            ? {
+                ...item,
+                derivedSpaceId: created.spaceId,
+                updatedAt: now
+              }
+            : item
+        )
+      }));
+      markLocalChange();
+      return { ok: true as const, spaceId: created.spaceId };
+    },
+    [createThinkingSpaceApi, getLocalSpaceView, markLocalChange, thinkingStore.spaces, thinkingStore.scratch]
+  );
+
   const handleFeedThinkingScratchToTime = useCallback(
     async (scratchId: string) => {
       if (cloudSyncReady) {
@@ -3135,36 +3356,23 @@ export function TimeArchive() {
           await syncThinkingScratchFromApi(true);
           markCloudSynced(sessionUser?.userId ?? null);
           return true;
-        } catch {
-          return false;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+          await queueMutation(`/v1/thinking/scratch/${scratchId}/feed-to-time`);
         }
       }
-      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
-      if (!scratch) return false;
-      const createdAt = new Date().toISOString();
-      setLifeStore((prev) => ({
-        ...prev,
-        doubts: [
-          {
-            id: scratch.fedTimeDoubtId ?? createId(),
-            rawText: scratch.rawText,
-            firstNodePreview: null,
-            lastNodePreview: null,
-            createdAt,
-            archivedAt: null,
-            deletedAt: null
-          },
-          ...prev.doubts
-        ]
-      }));
-      setThinkingStore((prev) => ({
-        ...prev,
-        scratch: prev.scratch.filter((item) => item.id !== scratchId)
-      }));
-      markLocalChange();
-      return true;
+      return feedThinkingScratchToTimeLocal(scratchId);
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, sessionUser?.userId, syncLifeFromApi, syncThinkingScratchFromApi, thinkingStore.scratch]
+    [
+      cloudSyncReady,
+      feedThinkingScratchToTimeLocal,
+      handleUnauthorized,
+      markCloudSynced,
+      queueMutation,
+      sessionUser?.userId,
+      syncLifeFromApi,
+      syncThinkingScratchFromApi
+    ]
   );
 
   const handleDeleteThinkingScratch = useCallback(
@@ -3177,8 +3385,9 @@ export function TimeArchive() {
           await syncThinkingScratchFromApi(true);
           markCloudSynced(sessionUser?.userId ?? null);
           return true;
-        } catch {
-          return false;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+          await queueMutation(`/v1/thinking/scratch/${scratchId}/delete`);
         }
       }
       setThinkingStore((prev) => ({
@@ -3188,22 +3397,13 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingScratchFromApi]
+    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, syncThinkingScratchFromApi]
   );
 
   const handleScratchToSpace = useCallback(
     async (scratchId: string) => {
       if (!cloudSyncReady) {
-        const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
-        if (!scratch) return { ok: false as const, message: "随记不存在" };
-        const created = await createThinkingSpaceApi(scratch.rawText, null);
-        if (!created.ok) return { ok: false as const, message: created.message };
-        setThinkingStore((prev) => ({
-          ...prev,
-          scratch: prev.scratch.filter((item) => item.id !== scratchId)
-        }));
-        markLocalChange();
-        return { ok: true as const, spaceId: created.spaceId };
+        return convertScratchToSpaceLocal(scratchId);
       }
       try {
         const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/to-space`, { method: "POST" });
@@ -3221,11 +3421,25 @@ export function TimeArchive() {
         }
         markCloudSynced(sessionUser?.userId ?? null);
         return { ok: true as const, spaceId };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
+      } catch (error) {
+        if (!isOfflineNetworkError(error)) {
+          return { ok: false as const, message: "网络异常，请稍后再试" };
+        }
+        await queueMutation(`/v1/thinking/scratch/${scratchId}/to-space`);
+        return convertScratchToSpaceLocal(scratchId);
       }
     },
-    [cloudSyncReady, createThinkingSpaceApi, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingScratchFromApi, syncThinkingSpacesFromApi, thinkingStore.scratch]
+    [
+      cloudSyncReady,
+      convertScratchToSpaceLocal,
+      handleUnauthorized,
+      loadThinkingViewFromApi,
+      markCloudSynced,
+      queueMutation,
+      sessionUser?.userId,
+      syncThinkingScratchFromApi,
+      syncThinkingSpacesFromApi
+    ]
   );
 
   const handleThinkingAddQuestion = useCallback(
@@ -4742,13 +4956,31 @@ export function TimeArchive() {
         setSessionUser(null);
         setBindingDialog(null);
         setAuthDialogOpen(false);
+        if (isNativeApp) {
+          setCloudSessionEnabled(false);
+          setOfflineRuntimeState(activeOwnerKey?.startsWith("user:") ? "user_offline_ready" : "guest_ready");
+          showNotice("已断开云端连接");
+          return;
+        }
         setActiveOwnerKey(guestOwnerKey);
         await loadOwnerSnapshot(guestOwnerKey, createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
         setOfflineRuntimeState("guest_ready");
         showNotice("已退出登录");
       }
     })();
-  }, [guestOwnerKey, loadOwnerSnapshot, showNotice]);
+  }, [activeOwnerKey, guestOwnerKey, isNativeApp, loadOwnerSnapshot, showNotice]);
+
+  const openAuthDialog = useCallback(() => {
+    setCloudSessionEnabled(true);
+    setAuthDialogOpen(true);
+  }, []);
+
+  const closeAuthDialog = useCallback(() => {
+    setAuthDialogOpen(false);
+    if (isNativeApp && !sessionUser) {
+      setCloudSessionEnabled(false);
+    }
+  }, [isNativeApp, sessionUser]);
 
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
@@ -4983,7 +5215,7 @@ export function TimeArchive() {
                 onRenameSpace={handleThinkingRenameSpace}
                 onExportSpace={handleThinkingExport}
                 onUpdateTrackDirection={handleThinkingTrackDirection}
-                scratchItems={thinkingStore.scratch}
+                scratchItems={thinkingStore.scratch.filter((item) => !item.derivedSpaceId && !item.fedTimeDoubtId)}
                 onCreateScratch={handleCreateThinkingScratch}
                 onFeedScratchToTime={handleFeedThinkingScratchToTime}
                 onDeleteScratch={handleDeleteThinkingScratch}
@@ -5021,7 +5253,7 @@ export function TimeArchive() {
                 onDisablePin={handleDisablePin}
                 onChangePin={handleChangePin}
                 onForgotPin={handleForgotPin}
-                onOpenAuth={() => setAuthDialogOpen(true)}
+                onOpenAuth={openAuthDialog}
                 deadLetterMutations={deadLetterMutations}
                 onDismissDeadLetter={dismissDeadLetterMutation}
                 setFixedTopSpacesEnabled={(enabled) =>
@@ -5076,7 +5308,7 @@ export function TimeArchive() {
         {notice}
       </p>
 
-      {authDialogOpen ? <AuthDialog onClose={() => setAuthDialogOpen(false)} onAuthed={() => void syncAuth()} /> : null}
+      {authDialogOpen ? <AuthDialog onClose={closeAuthDialog} onAuthed={() => void syncAuth()} /> : null}
       {bindingDialog ? (
         <BindingDialog
           submitting={bindingDialog.submitting}

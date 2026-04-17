@@ -11,6 +11,14 @@ export function canAccessGuestMode() {
   return true;
 }
 
+export function isNativeAppRuntime() {
+  if (typeof window === "undefined") return false;
+  const runtime = (window as Window & {
+    Capacitor?: { isNativePlatform?: () => boolean };
+  }).Capacitor;
+  return typeof runtime?.isNativePlatform === "function" ? runtime.isNativePlatform() : false;
+}
+
 export function canUseCloudSync(session: SessionLike) {
   return typeof session?.userId === "string" && session.userId.trim().length > 0;
 }
