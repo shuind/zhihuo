@@ -1937,9 +1937,9 @@ export function ThinkingLayer(props: {
               <div className="ml-auto mr-0 max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
                 <div
                   className={cn(
-                    "w-full max-w-[760px] rounded-[20px] border px-4 py-2.5",
+                    "w-full max-w-[760px] rounded-[20px] border px-4 py-2.5 transition-colors",
                     selectedBackgroundSrc
-                      ? "border-white/40 bg-white/55 shadow-[0_8px_24px_rgba(43,38,33,0.08)] backdrop-blur-md"
+                      ? "border-white/25 bg-white/14 hover:bg-white/20 focus-within:bg-white/28 focus-within:border-white/40"
                       : "border-black/[0.05] bg-[rgba(255,255,255,0.36)]"
                   )}
                 >
