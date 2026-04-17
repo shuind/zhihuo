@@ -60,6 +60,30 @@ async function request(method, path, body) {
   return { status: response.status, json };
 }
 
+async function requestFormData(method, path, formData) {
+  const headers = {};
+  const cookie = cookieHeader();
+  if (cookie) headers.cookie = cookie;
+
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    headers,
+    body: formData
+  });
+  updateCookies(response);
+
+  const text = await response.text();
+  let json = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = { raw: text };
+    }
+  }
+  return { status: response.status, json };
+}
+
 async function run() {
   console.log(`[api-test] base=${baseUrl}`);
 
@@ -201,6 +225,26 @@ async function run() {
   });
   assert(compatBackground.status === 200, `compat background update should succeed, got ${compatBackground.status}`);
   assert(Array.isArray(compatBackground.json?.background_asset_ids), "compat background response should include asset ids");
+
+  const imageAssetId = `asset-${Date.now()}`;
+  const uploadFormData = new FormData();
+  uploadFormData.append("file", new Blob(["fake-image-bytes"], { type: "image/png" }), "bg.png");
+  uploadFormData.append("asset_id", imageAssetId);
+  uploadFormData.append("file_name", "bg.png");
+  uploadFormData.append("mime_type", "image/png");
+  const uploadBackgroundAsset = await requestFormData("POST", "/v1/thinking/media/upload", uploadFormData);
+  assert(uploadBackgroundAsset.status === 200, `background media upload failed: ${uploadBackgroundAsset.status}`);
+  assert(uploadBackgroundAsset.json?.asset_id === imageAssetId, "background media upload should round-trip asset_id");
+
+  const persistBackgroundAsset = await request("POST", `/v1/thinking/spaces/${spaceId}/background`, {
+    background_asset_ids: [imageAssetId],
+    background_selected_asset_id: imageAssetId
+  });
+  assert(persistBackgroundAsset.status === 200, `background asset update failed: ${persistBackgroundAsset.status}`);
+  assert(
+    persistBackgroundAsset.json?.background_selected_asset_id === imageAssetId,
+    "background asset update should persist selected asset id"
+  );
 
   const preview = await request("POST", `/v1/thinking/spaces/${spaceId}/organize-preview`, {});
   assert(preview.status === 200, `organize preview failed: ${preview.status}`);

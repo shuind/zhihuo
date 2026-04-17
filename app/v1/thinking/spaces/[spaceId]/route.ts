@@ -40,7 +40,7 @@ export const POST = withApiRoute(
     if (!isBackgroundCompatRequest) return errorJson(400, "unsupported space mutation");
 
     const resultRef: { value: ReturnType<typeof updateSpaceBackground> | null } = { value: null };
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta"], (db) => {
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_media_assets"], (db) => {
       resultRef.value = updateSpaceBackground(
         db,
         userId,
