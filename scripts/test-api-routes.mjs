@@ -195,6 +195,13 @@ async function run() {
   assert(invalidBackground.status === 400, `invalid background should fail with 400, got ${invalidBackground.status}`);
   assert(invalidBackground.json?.error === "背景说明需在 100-300 字之间", "background length error message mismatch");
 
+  const compatBackground = await request("POST", `/v1/thinking/spaces/${spaceId}`, {
+    background_asset_ids: [],
+    background_selected_asset_id: null
+  });
+  assert(compatBackground.status === 200, `compat background update should succeed, got ${compatBackground.status}`);
+  assert(Array.isArray(compatBackground.json?.background_asset_ids), "compat background response should include asset ids");
+
   const preview = await request("POST", `/v1/thinking/spaces/${spaceId}/organize-preview`, {});
   assert(preview.status === 200, `organize preview failed: ${preview.status}`);
   assert(Array.isArray(preview.json?.candidates), "organize preview candidates should be array");
