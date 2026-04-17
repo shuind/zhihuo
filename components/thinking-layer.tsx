@@ -1928,7 +1928,7 @@ export function ThinkingLayer(props: {
                 className={cn(
                   "px-4 pb-[14px] pt-3 md:px-8 md:pb-5 md:pt-3",
                   selectedBackgroundSrc
-                    ? "bg-[#f5f2ee]/22 backdrop-blur-[6px]"
+                    ? "bg-transparent"
                     : "border-t border-black/[0.05] bg-[#f5f2ee]/66 backdrop-blur-md"
                 )}
               >
