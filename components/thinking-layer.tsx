@@ -1405,17 +1405,40 @@ export function ThinkingLayer(props: {
       <div
         style={detailViewportStyle}
         className={cn(
-          "mx-auto flex w-full flex-col overflow-hidden bg-[#f7f4ef]/95",
+          "relative mx-auto flex w-full flex-col overflow-hidden bg-[#f7f4ef]/95",
           mobileSpacesCardHeightClass,
           detailOpen
             ? "max-w-none border-0 shadow-none"
             : "max-w-6xl rounded-[24px] border border-black/10 shadow-[0_14px_36px_rgba(43,38,33,0.10)]"
         )}
       >
+        {/* 全局空间背景：覆盖导航栏 + 主内容 + 输入栏 */}
+        {detailOpen && activeSpace && selectedBackgroundSrc ? (
+          <div
+            key={selectedBackgroundSrc}
+            aria-hidden="true"
+            className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
+            style={{ animation: "zhBgFadeIn 620ms ease-out 1" }}
+          >
+            <img
+              src={selectedBackgroundSrc}
+              alt=""
+              className="h-full w-full scale-[1.04] object-cover opacity-[0.42] saturate-[0.96]"
+            />
+            {/* 柔和晕影：中央保留图片肌理，边缘略淡化 */}
+            <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_42%,rgba(247,244,239,0.04)_0%,rgba(247,244,239,0.46)_58%,rgba(247,244,239,0.78)_100%)]" />
+            {/* 顶部轻渐层：与导航栏毛玻璃融合 */}
+            <div className="absolute inset-x-0 top-0 h-24 bg-[linear-gradient(180deg,rgba(247,244,239,0.55)_0%,rgba(247,244,239,0)_100%)]" />
+            {/* 底部渐层：保证输入区可读性 */}
+            <div className="absolute inset-x-0 bottom-0 h-48 bg-[linear-gradient(180deg,rgba(247,244,239,0)_0%,rgba(247,244,239,0.72)_100%)]" />
+          </div>
+        ) : null}
+
         <header
           className={cn(
+            "relative z-10",
             detailOpen
-              ? "border-b border-black/[0.05] bg-[#f5f2ee]/88 px-4 backdrop-blur-sm md:px-8"
+              ? "border-b border-black/[0.05] bg-[#f5f2ee]/72 px-4 backdrop-blur-md md:px-8"
               : "border-b border-black/10 px-3 py-3 md:px-5"
           )}
         >
@@ -1605,25 +1628,7 @@ export function ThinkingLayer(props: {
           : null}
 
         {detailOpen && activeSpace ? (
-          <div data-thinking-detail="true" className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
-            {selectedBackgroundSrc ? (
-              <div
-                key={selectedBackgroundSrc}
-                aria-hidden="true"
-                className="pointer-events-none absolute inset-0 overflow-hidden"
-                style={{ animation: "zhBgFadeIn 620ms ease-out 1" }}
-              >
-                <img
-                  src={selectedBackgroundSrc}
-                  alt=""
-                  className="h-full w-full scale-[1.08] object-cover opacity-[0.28] blur-[3px] saturate-[0.92]"
-                />
-                {/* 柔和晕影：边缘略暗，中央保留图片肌理 */}
-                <div className="absolute inset-0 bg-[radial-gradient(ellipse_at_50%_35%,rgba(247,244,239,0.2)_0%,rgba(247,244,239,0.7)_55%,rgba(247,244,239,0.94)_100%)]" />
-                {/* 底部渐层：保证阅读区清晰 */}
-                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(247,244,239,0.35)_0%,rgba(247,244,239,0.76)_38%,rgba(247,244,239,0.95)_100%)]" />
-              </div>
-            ) : null}
+          <div data-thinking-detail="true" className="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
             <section className="relative min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
               <div
                 className={cn(
@@ -1918,10 +1923,10 @@ export function ThinkingLayer(props: {
               </div>
             </section>
 
-            <footer
-              data-composer="true"
-              className="border-t border-black/[0.05] bg-[#f5f2ee]/78 px-4 pb-[14px] pt-3 backdrop-blur-[2px] md:px-8 md:pb-5 md:pt-3"
-            >
+              <footer
+                data-composer="true"
+                className="border-t border-black/[0.05] bg-[#f5f2ee]/66 px-4 pb-[14px] pt-3 backdrop-blur-md md:px-8 md:pb-5 md:pt-3"
+              >
               <div className="ml-auto mr-0 max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
                 <div className="w-full max-w-[760px] rounded-[20px] border border-black/[0.05] bg-[rgba(255,255,255,0.36)] px-4 py-2.5">
                   <div className="flex items-end gap-3">
@@ -2308,7 +2313,7 @@ export function ThinkingLayer(props: {
             <div className="flex items-center justify-between gap-2">
               <div>
                 <p className="text-sm text-slate-800">整理一下</p>
-                <p className="mt-1 text-xs text-slate-500">选择内容并移动到目标思路线</p>
+                <p className="mt-1 text-xs text-slate-500">选择���容并移动到目标思路线</p>
               </div>
               <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
                 关闭
