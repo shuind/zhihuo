@@ -1438,7 +1438,9 @@ export function ThinkingLayer(props: {
           className={cn(
             "relative z-10",
             detailOpen
-              ? "border-b border-black/[0.05] bg-[#f5f2ee]/72 px-4 backdrop-blur-md md:px-8"
+              ? selectedBackgroundSrc
+                ? "bg-transparent px-4 md:px-8"
+                : "border-b border-black/[0.05] bg-[#f5f2ee]/72 px-4 backdrop-blur-md md:px-8"
               : "border-b border-black/10 px-3 py-3 md:px-5"
           )}
         >
