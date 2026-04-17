@@ -4155,58 +4155,266 @@ export function TimeArchive() {
     [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
-  const handleThinkingSaveBackground = useCallback(
-    async (spaceId: string, backgroundText: string | null) => {
-      if (!cloudSyncReady) {
-        const currentView = getLocalSpaceView(spaceId);
-        if (!currentView) return { ok: false as const, message: "当前空间未加载完成" };
-        const nextVersion = (currentView.backgroundVersion ?? 0) + 1;
+  const applyLocalSpaceGalleryState = useCallback(
+    async (
+      spaceId: string,
+      nextAssetIds: string[],
+      nextSelectedAssetId: string | null,
+      nextAsset?: ThinkingMediaAsset | null
+    ) => {
+      const currentView = getLocalSpaceView(spaceId);
+      const previousAssetIds = new Set(currentView?.backgroundAssetIds ?? []);
+      const nextBackgroundVersion = (currentView?.backgroundVersion ?? 0) + 1;
+      if (currentView) {
         commitLocalSpaceView(spaceId, {
           ...currentView,
-          backgroundText,
-          backgroundVersion: nextVersion
+          backgroundText: null,
+          backgroundVersion: nextBackgroundVersion,
+          backgroundAssetIds: nextAssetIds,
+          backgroundSelectedAssetId: nextSelectedAssetId
         });
-        setThinkingStore((prev) => ({
-          ...prev,
-          spaceMeta: prev.spaceMeta.map((meta) =>
-            meta.spaceId === spaceId
-              ? {
-                  ...meta,
-                  backgroundText,
-                  backgroundVersion: nextVersion
-                }
-              : meta
-          )
-        }));
-        markLocalChange();
-        return { ok: true as const, version: nextVersion };
       }
-      try {
-        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/background`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ background_text: backgroundText })
-        });
-        if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
-        const payload = (await response.json().catch(() => ({}))) as {
-          ok?: boolean;
-          background_version?: number;
-          error?: string;
-        };
-        if (!response.ok) {
-          return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "背景保存失败" };
+
+      let removedAssetIds: string[] = [];
+      setThinkingStore((prev) => {
+        let nextMediaAssets = prev.mediaAssets;
+        if (nextAsset) {
+          const existingIndex = nextMediaAssets.findIndex((asset) => asset.id === nextAsset.id);
+          if (existingIndex >= 0) {
+            nextMediaAssets = [...nextMediaAssets];
+            nextMediaAssets[existingIndex] = nextAsset;
+          } else {
+            nextMediaAssets = [nextAsset, ...nextMediaAssets];
+          }
         }
-        await loadThinkingViewFromApi(spaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
-        return {
-          ok: true as const,
-          version: Number.isFinite(payload.background_version) ? Number(payload.background_version) : 0
+
+        const existingMeta = prev.spaceMeta.find((meta) => meta.spaceId === spaceId);
+        const nextMetaEntry: ThinkingSpaceMeta = existingMeta
+          ? {
+              ...existingMeta,
+              backgroundText: null,
+              backgroundVersion: nextBackgroundVersion,
+              backgroundAssetIds: nextAssetIds,
+              backgroundSelectedAssetId: nextSelectedAssetId
+            }
+          : {
+              spaceId,
+              userFreezeNote: null,
+              exportVersion: 1,
+              backgroundText: null,
+              backgroundVersion: nextBackgroundVersion,
+              backgroundAssetIds: nextAssetIds,
+              backgroundSelectedAssetId: nextSelectedAssetId,
+              suggestionDecay: 0,
+              lastTrackId: currentView?.currentTrackId ?? null,
+              lastOrganizedOrder: -1,
+              parkingTrackId: currentView?.parkingTrackId ?? createId(),
+              pendingTrackId: currentView?.pendingTrackId ?? null,
+              emptyTrackIds: [],
+              milestoneNodeIds: currentView?.milestoneNodeIds ?? [],
+              trackDirectionHints: {}
+            };
+
+        const nextSpaceMeta = existingMeta
+          ? prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? nextMetaEntry : meta))
+          : [nextMetaEntry, ...prev.spaceMeta];
+
+        const candidateAssetIds = [...previousAssetIds].filter((assetId) => !nextAssetIds.includes(assetId));
+        const nextStore = {
+          ...prev,
+          spaceMeta: nextSpaceMeta,
+          mediaAssets: nextMediaAssets
         };
-      } catch {
-        return { ok: false as const, message: "网络异常，请稍后再试" };
-      }
+        removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, candidateAssetIds);
+        if (removedAssetIds.length) {
+          nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+        }
+        return nextStore;
+      });
+
+      await markMediaAssetsDeletedLocally(removedAssetIds);
+      markLocalChange();
+      return true;
     },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
+    [commitLocalSpaceView, getLocalSpaceView, markLocalChange, markMediaAssetsDeletedLocally]
+  );
+
+  const handleThinkingAddSpaceGalleryImage = useCallback(
+    async (spaceId: string, file: File) => {
+      if (!file.type.startsWith("image/")) return false;
+      const ownerKey = activeOwnerKey;
+      if (!ownerKey) return false;
+
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+
+      const assetId = createId();
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const draftAsset: ThinkingMediaAsset = {
+        id: assetId,
+        fileName: file.name || "image",
+        mimeType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        sha256,
+        width: dimensions.width,
+        height: dimensions.height,
+        createdAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null
+      };
+
+      const nextAssetIds = currentView.backgroundAssetIds.includes(draftAsset.id)
+        ? currentView.backgroundAssetIds
+        : [...currentView.backgroundAssetIds, draftAsset.id];
+      const nextSelectedAssetId = currentView.backgroundSelectedAssetId ?? draftAsset.id;
+      const payload = {
+        background_asset_ids: nextAssetIds,
+        background_selected_asset_id: nextSelectedAssetId,
+        client_updated_at: new Date().toISOString()
+      };
+
+      const persistOfflineAsset = async (status: OfflineMediaAssetStatus, uploadedAt?: string | null) => {
+        await saveOfflineMediaAsset({
+          id: draftAsset.id,
+          ownerKey,
+          fileName: draftAsset.fileName,
+          mimeType: draftAsset.mimeType,
+          byteSize: draftAsset.byteSize,
+          sha256: draftAsset.sha256,
+          width: draftAsset.width,
+          height: draftAsset.height,
+          status,
+          blob: file,
+          remoteUrl: status === "uploaded" ? buildApiUrl(`/v1/thinking/media/${draftAsset.id}`) : null,
+          createdAt: draftAsset.createdAt,
+          updatedAt: new Date().toISOString(),
+          uploadedAt: uploadedAt ?? null,
+          deletedAt: null,
+          lastError: null
+        });
+        await refreshOfflineMediaAssets(ownerKey);
+      };
+
+      if (cloudSyncReady) {
+        try {
+          const uploadedAsset = await uploadThinkingMediaAssetBinary(file, {
+            assetId,
+            fileName: draftAsset.fileName,
+            mimeType: draftAsset.mimeType,
+            width: draftAsset.width,
+            height: draftAsset.height
+          });
+          if (!uploadedAsset) return false;
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/background`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await persistOfflineAsset("uploaded", uploadedAsset.uploadedAt);
+          await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, uploadedAsset);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
+      }
+
+      await persistOfflineAsset("pending");
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, payload);
+      await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, draftAsset);
+      return true;
+    },
+    [
+      activeOwnerKey,
+      applyLocalSpaceGalleryState,
+      cloudSyncReady,
+      getLocalSpaceView,
+      handleUnauthorized,
+      markCloudSynced,
+      queueMutation,
+      refreshOfflineMediaAssets,
+      sessionUser?.userId,
+      uploadThinkingMediaAssetBinary
+    ]
+  );
+
+  const handleThinkingRemoveSpaceGalleryImage = useCallback(
+    async (spaceId: string, assetId: string) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+      if (!currentView.backgroundAssetIds.includes(assetId)) return true;
+
+      const nextAssetIds = currentView.backgroundAssetIds.filter((id) => id !== assetId);
+      const nextSelectedAssetId =
+        currentView.backgroundSelectedAssetId === assetId
+          ? nextAssetIds[0] ?? null
+          : nextAssetIds.includes(currentView.backgroundSelectedAssetId ?? "") ? currentView.backgroundSelectedAssetId : nextAssetIds[0] ?? null;
+      const payload = {
+        background_asset_ids: nextAssetIds,
+        background_selected_asset_id: nextSelectedAssetId,
+        client_updated_at: new Date().toISOString()
+      };
+
+      if (cloudSyncReady) {
+        try {
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/background`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, null);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
+      }
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, payload);
+      await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, null);
+      return true;
+    },
+    [applyLocalSpaceGalleryState, cloudSyncReady, getLocalSpaceView, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId]
+  );
+
+  const handleThinkingSelectSpaceBackgroundImage = useCallback(
+    async (spaceId: string, assetId: string | null) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+      if (assetId && !currentView.backgroundAssetIds.includes(assetId)) return false;
+
+      const payload = {
+        background_asset_ids: currentView.backgroundAssetIds,
+        background_selected_asset_id: assetId,
+        client_updated_at: new Date().toISOString()
+      };
+
+      if (cloudSyncReady) {
+        try {
+          const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/background`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await applyLocalSpaceGalleryState(spaceId, currentView.backgroundAssetIds, assetId, null);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
+      }
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, payload);
+      await applyLocalSpaceGalleryState(spaceId, currentView.backgroundAssetIds, assetId, null);
+      return true;
+    },
+    [applyLocalSpaceGalleryState, cloudSyncReady, getLocalSpaceView, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId]
   );
 
   const handleThinkingWriteToTime = useCallback(
@@ -4767,7 +4975,9 @@ export function TimeArchive() {
                 onRemoveNodeImage={handleThinkingRemoveNodeImage}
                 onSetActiveTrack={handleThinkingSetActiveTrack}
                 onCreateTrack={handleThinkingCreateTrack}
-                onSaveBackground={handleThinkingSaveBackground}
+                onAddSpaceGalleryImage={handleThinkingAddSpaceGalleryImage}
+                onRemoveSpaceGalleryImage={handleThinkingRemoveSpaceGalleryImage}
+                onSelectSpaceBackgroundImage={handleThinkingSelectSpaceBackgroundImage}
                 onWriteSpaceToTime={handleThinkingWriteToTime}
                 onDeleteSpace={handleThinkingDeleteSpace}
                 onRenameSpace={handleThinkingRenameSpace}

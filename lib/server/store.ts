@@ -1255,7 +1255,7 @@ export function addQuestionToSpace(
 
   const meta = ensureMeta(db, spaceId);
   const parkingTrackId = getParkingTrackId(meta);
-  const normalized = normalizeQuestionInput(rawText, meta.background_text ?? null);
+  const normalized = normalizeQuestionInput(rawText, null);
   if (!normalized.ok) {
     return {
       kind: "invalid" as const,
@@ -1616,7 +1616,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   }
 
   const suggestionQuota = Math.max(0, 3 - (meta.suggestion_decay ?? 0));
-  const suggestedQuestions = buildSuggestedQuestions(space.root_question_text, meta.background_text ?? null, suggestionQuota);
+  const suggestedQuestions = buildSuggestedQuestions(space.root_question_text, null, suggestionQuota);
 
   return {
     root: {
@@ -1808,7 +1808,7 @@ export function updateNodeQuestion(db: DbState, userId: string, nodeId: string, 
   if (space.status !== "active") return { kind: "readonly" as const };
 
   const meta = ensureMeta(db, node.space_id);
-  const normalized = normalizeQuestionInput(rawQuestionText, meta.background_text ?? null);
+  const normalized = normalizeQuestionInput(rawQuestionText, null);
   if (!normalized.ok) return { kind: "invalid" as const };
 
   node.raw_question_text = normalized.text;
@@ -2272,7 +2272,7 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
     lines.push("");
   }
   if ((meta.background_asset_ids ?? []).length) {
-    lines.push("## 背景图片");
+    lines.push("## 空间图集");
     for (const assetId of meta.background_asset_ids ?? []) {
       if (!mediaAssetIds.has(assetId)) continue;
       lines.push(`- ${assetId}${meta.background_selected_asset_id === assetId ? "（当前选中）" : ""}`);

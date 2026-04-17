@@ -191,7 +191,9 @@ export function ThinkingLayer(props: {
   onSetActiveTrack: (spaceId: string, trackId: string) => Promise<boolean>;
   onCreateTrack: (spaceId: string) => Promise<string | null>;
   onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
-  onSaveBackground: (spaceId: string, backgroundText: string | null) => Promise<{ ok: true; version: number } | { ok: false; message: string }>;
+  onAddSpaceGalleryImage: (spaceId: string, file: File) => Promise<boolean>;
+  onRemoveSpaceGalleryImage: (spaceId: string, assetId: string) => Promise<boolean>;
+  onSelectSpaceBackgroundImage: (spaceId: string, assetId: string | null) => Promise<boolean>;
   onWriteSpaceToTime: (
     spaceId: string,
     freezeNote?: string,
@@ -229,9 +231,9 @@ export function ThinkingLayer(props: {
   const [createSpaceHint, setCreateSpaceHint] = useState("");
   const [createSpaceSuggestions, setCreateSpaceSuggestions] = useState<string[]>([]);
   const [moreOpen, setMoreOpen] = useState(false);
-  const [backgroundOpen, setBackgroundOpen] = useState(false);
-  const [backgroundDraft, setBackgroundDraft] = useState("");
-  const [backgroundHint, setBackgroundHint] = useState("");
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [galleryHint, setGalleryHint] = useState("");
+  const [galleryBusyKey, setGalleryBusyKey] = useState<string | null>(null);
   const [renameSpaceOpen, setRenameSpaceOpen] = useState(false);
   const [renameSpaceDraft, setRenameSpaceDraft] = useState("");
   const [renameSpaceHint, setRenameSpaceHint] = useState("");
@@ -272,6 +274,7 @@ export function ThinkingLayer(props: {
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const scratchInputRef = useRef<HTMLTextAreaElement | null>(null);
   const nodeImageInputRef = useRef<HTMLInputElement | null>(null);
+  const spaceGalleryInputRef = useRef<HTMLInputElement | null>(null);
   const pendingImageNodeIdRef = useRef<string | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
@@ -418,7 +421,19 @@ export function ThinkingLayer(props: {
     return searchableSpaces.filter((space) => space.rootQuestionText.toLowerCase().includes(normalizedSpaceFinderQuery));
   }, [normalizedSpaceFinderQuery, searchableSpaces]);
   const detailOpen = Boolean(activeSpace && thinkingViewMode === "detail" && detailSpaceId === activeSpace.id);
-  const mediaAssetSources = props.mediaAssetSources ?? {};
+  const mediaAssetSources = useMemo(() => props.mediaAssetSources ?? {}, [props.mediaAssetSources]);
+  const activeSpaceView = activeSpace && props.spaceView?.spaceId === activeSpace.id ? props.spaceView : null;
+  const selectedBackgroundSrc =
+    activeSpaceView?.backgroundSelectedAssetId ? mediaAssetSources[activeSpaceView.backgroundSelectedAssetId] ?? null : null;
+  const activeSpaceGallery = useMemo(
+    () =>
+      (activeSpaceView?.backgroundAssetIds ?? []).map((assetId: string) => ({
+        assetId,
+        src: mediaAssetSources[assetId] ?? null,
+        selected: activeSpaceView?.backgroundSelectedAssetId === assetId
+      })),
+    [activeSpaceView?.backgroundAssetIds, activeSpaceView?.backgroundSelectedAssetId, mediaAssetSources]
+  );
 
   useEffect(() => {
     setLocalPendingTrackId(null);
@@ -426,13 +441,14 @@ export function ThinkingLayer(props: {
     setInputHint("");
     setInputSuggestions([]);
     setMoreOpen(false);
-    setBackgroundOpen(false);
+    setGalleryOpen(false);
+    setGalleryHint("");
+    setGalleryBusyKey(null);
     setRenameSpaceOpen(false);
     setRenameSpaceDraft("");
     setRenameSpaceHint("");
     setIsRenamingSpace(false);
     setPausedTrackIds({});
-    setBackgroundDraft(props.spaceView?.backgroundText ?? "");
     setOrganizeScope("all");
     setOrganizeQuery("");
     setOrganizeSelectedNodeIds([]);
@@ -457,7 +473,7 @@ export function ThinkingLayer(props: {
     setWriteToTimeHint("");
     setWriteToTimePreserveOriginal(true);
     setIsWritingToTime(false);
-  }, [props.activeSpaceId, props.spaceView?.backgroundText]);
+  }, [props.activeSpaceId]);
 
   useEffect(() => {
     if (!props.activeSpaceId) {
@@ -1001,18 +1017,52 @@ export function ThinkingLayer(props: {
     [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props, writeEnabled]
   );
 
-  const saveBackground = useCallback(() => {
-    if (!activeSpace) return;
-    void (async () => {
-      const result = await props.onSaveBackground(activeSpace.id, backgroundDraft.trim() ? backgroundDraft : null);
-      if (!result.ok) {
-        setBackgroundHint(result.message);
-        return;
-      }
-      setBackgroundHint(`已保存 v${result.version}`);
-      setTimeout(() => setBackgroundHint(""), 1200);
-    })();
-  }, [activeSpace, backgroundDraft, props]);
+  const openSpaceGalleryPicker = useCallback(() => {
+    if (!activeSpace || activeSpace.status !== "active" || !writeEnabled) return;
+    spaceGalleryInputRef.current?.click();
+  }, [activeSpace, writeEnabled]);
+
+  const handleSpaceGalleryInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      const spaceId = activeSpace?.id ?? null;
+      event.target.value = "";
+      if (!file || !spaceId) return;
+      void (async () => {
+        setGalleryBusyKey(`upload:${spaceId}`);
+        const ok = await props.onAddSpaceGalleryImage(spaceId, file);
+        setGalleryBusyKey((current) => (current === `upload:${spaceId}` ? null : current));
+        if (!ok) setGalleryHint("图集上传失败，请稍后再试");
+      })();
+    },
+    [activeSpace?.id, props]
+  );
+
+  const selectSpaceBackgroundImage = useCallback(
+    (assetId: string | null) => {
+      if (!activeSpace) return;
+      void (async () => {
+        setGalleryBusyKey(`select:${assetId ?? "none"}`);
+        const ok = await props.onSelectSpaceBackgroundImage(activeSpace.id, assetId);
+        setGalleryBusyKey((current) => (current === `select:${assetId ?? "none"}` ? null : current));
+        if (!ok) setGalleryHint("背景更新失败，请稍后再试");
+      })();
+    },
+    [activeSpace, props]
+  );
+
+  const removeSpaceGalleryImage = useCallback(
+    (assetId: string) => {
+      if (!activeSpace) return;
+      void (async () => {
+        setGalleryBusyKey(`remove:${assetId}`);
+        const ok = await props.onRemoveSpaceGalleryImage(activeSpace.id, assetId);
+        setGalleryBusyKey((current) => (current === `remove:${assetId}` ? null : current));
+        if (!ok) setGalleryHint("图片移除失败，请稍后再试");
+      })();
+    },
+    [activeSpace, props]
+  );
 
   const openOrganizePanel = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
@@ -1405,11 +1455,12 @@ export function ThinkingLayer(props: {
                       }}
                     />
                     <MenuItem
-                      label="背景说明"
+                      label="空间图集"
                       disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"}
                       onClick={() => {
                         setMoreOpen(false);
-                        setBackgroundOpen(true);
+                        setGalleryHint("");
+                        setGalleryOpen(true);
                       }}
                     />
                     <MenuItem
@@ -1539,8 +1590,18 @@ export function ThinkingLayer(props: {
           : null}
 
         {detailOpen && activeSpace ? (
-          <div data-thinking-detail="true" className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
-            <section className="min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
+          <div data-thinking-detail="true" className="relative grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
+            {selectedBackgroundSrc ? (
+              <div aria-hidden="true" className="pointer-events-none absolute inset-0 overflow-hidden">
+                <img
+                  src={selectedBackgroundSrc}
+                  alt=""
+                  className="h-full w-full scale-[1.03] object-cover opacity-[0.16] blur-[2px]"
+                />
+                <div className="absolute inset-0 bg-[linear-gradient(180deg,rgba(247,244,239,0.66)_0%,rgba(247,244,239,0.9)_32%,rgba(247,244,239,0.96)_100%)]" />
+              </div>
+            ) : null}
+            <section className="relative min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
               <div
                 className={cn(
                   "ml-auto mr-0 grid h-full max-w-[1180px] min-h-0 gap-6 md:mr-6 md:gap-11 lg:mr-10 xl:mr-14",
@@ -2026,7 +2087,7 @@ export function ThinkingLayer(props: {
                   setWriteToTimePreserveOriginal(true);
                 }}
               >
-                取消
+                关闭
               </Button>
               <Button
                 type="button"
@@ -2359,25 +2420,116 @@ export function ThinkingLayer(props: {
         </div>
       ) : null}
 
-      {backgroundOpen && activeSpace ? (
+      {galleryOpen && activeSpace ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[620px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">背景说明（100-300字）</p>
-            <textarea
-              data-zh-input="multiline"
-              value={backgroundDraft}
-              maxLength={320}
-              className="mt-3 h-40 w-full resize-none rounded-xl border border-black/12 bg-white px-3 py-2 text-sm leading-[1.6] text-slate-800 outline-none [overflow-wrap:anywhere] focus-visible:ring-1 focus-visible:ring-black/20"
-              onChange={(event) => setBackgroundDraft(event.target.value)}
-            />
-            <p className="mt-1 text-xs text-slate-500">仅影响之后的推荐，不回溯旧节点</p>
-            <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", backgroundHint ? "opacity-100" : "opacity-0")}>{backgroundHint}</p>
+          <div className="w-[760px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <p className="text-sm text-slate-800">空间图集</p>
+            <div className="mt-4 max-h-[62vh] overflow-y-auto pr-1">
+              {activeSpaceGallery.length ? (
+                <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {activeSpaceGallery.map((asset: { assetId: string; src: string | null; selected: boolean }) => {
+                    const selectBusy = galleryBusyKey === `select:${asset.assetId}`;
+                    const removeBusy = galleryBusyKey === `remove:${asset.assetId}`;
+                    const previewDisabled = !asset.src;
+                    return (
+                      <div
+                        key={asset.assetId}
+                        className={cn(
+                          "overflow-hidden rounded-[20px] border border-black/10 bg-[#fcfaf6]",
+                          asset.selected ? "ring-1 ring-black/12" : ""
+                        )}
+                      >
+                        <button
+                          type="button"
+                          className="relative block aspect-[4/3] w-full overflow-hidden bg-[#f2ece3]"
+                          disabled={previewDisabled}
+                          onClick={() => {
+                            if (!asset.src) return;
+                            setPreviewImage({ src: asset.src, alt: "空间图集" });
+                          }}
+                        >
+                          {asset.src ? (
+                            <img src={asset.src} alt="" className="h-full w-full object-cover" />
+                          ) : (
+                            <span className="grid h-full w-full place-items-center text-xs text-slate-400">预览不可用</span>
+                          )}
+                          {asset.selected ? (
+                            <span className="absolute left-3 top-3 rounded-full bg-white/92 px-2 py-1 text-[11px] text-slate-700 shadow-sm">
+                              当前背景
+                            </span>
+                          ) : null}
+                        </button>
+                        <div className="space-y-2 px-3 pb-3 pt-3">
+                          <p className="line-clamp-1 text-xs text-slate-500">{asset.assetId}</p>
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant={asset.selected ? "ghost" : "default"}
+                              className={cn(
+                                "rounded-full",
+                                asset.selected
+                                  ? "border border-black/12 text-slate-700"
+                                  : "bg-slate-900 text-slate-50 hover:bg-slate-800"
+                              )}
+                              disabled={selectBusy || removeBusy || asset.selected}
+                              onClick={() => selectSpaceBackgroundImage(asset.assetId)}
+                            >
+                              {selectBusy ? "设置中..." : asset.selected ? "已选为背景" : "设为背景"}
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="rounded-full border border-black/12 text-slate-700"
+                              disabled={previewDisabled}
+                              onClick={() => {
+                                if (!asset.src) return;
+                                setPreviewImage({ src: asset.src, alt: "空间图集" });
+                              }}
+                            >
+                              查看
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="ghost"
+                              className="rounded-full border border-black/12 text-slate-700"
+                              disabled={selectBusy || removeBusy}
+                              onClick={() => removeSpaceGalleryImage(asset.assetId)}
+                            >
+                              {removeBusy ? "移除中..." : "移出图集"}
+                            </Button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="rounded-[20px] border border-dashed border-black/10 bg-[#fcfaf6] px-4 py-12 text-center text-sm text-slate-500">
+                  这个空间还没有图片，可以先上传几张作为图集。
+                </div>
+              )}
+            </div>
+            <p className="mt-1 text-xs text-slate-500">可以从图集里随时切换背景，旧的背景说明文本已不再使用。</p>
+            <p className={cn("mt-3 min-h-[1.2em] text-xs text-slate-500", galleryHint ? "opacity-100" : "opacity-0")}>{galleryHint || "."}</p>
             <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setBackgroundOpen(false)}>
-                取消
+              <Button
+                type="button"
+                size="sm"
+                variant="ghost"
+                className="rounded-full border border-black/12 text-slate-700"
+                disabled={galleryBusyKey === `select:none` || !activeSpaceView?.backgroundSelectedAssetId}
+                onClick={() => selectSpaceBackgroundImage(null)}
+              >
+                清空背景
               </Button>
-              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={saveBackground}>
-                保存
+              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setGalleryOpen(false)}>
+                关闭
+              </Button>
+              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={openSpaceGalleryPicker}>
+                {galleryBusyKey === `upload:${activeSpace.id}` ? "上传中..." : "添加图片"}
               </Button>
             </div>
           </div>
@@ -2470,6 +2622,13 @@ export function ThinkingLayer(props: {
         accept="image/*"
         className="hidden"
         onChange={handleNodeImageInputChange}
+      />
+      <input
+        ref={spaceGalleryInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleSpaceGalleryInputChange}
       />
 
       {previewImage ? (
@@ -2687,4 +2846,3 @@ function NodeMenu(props: {
     </div>
   );
 }
-
