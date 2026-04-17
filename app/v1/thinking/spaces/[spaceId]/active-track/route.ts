@@ -1,0 +1,40 @@
+﻿import { NextRequest } from "next/server";
+
+import { updateDbScoped } from "@/lib/server/db";
+import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { withApiRoute } from "@/lib/server/observability";
+import { setActiveTrack } from "@/lib/server/store";
+import { nowIso } from "@/lib/server/utils";
+
+export const POST = withApiRoute(
+  "thinking.spaces.active_track",
+  async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
+    const body = await parseJsonBody<{
+      track_id?: string | null;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
+    const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
+
+    const userId = getUserId(request);
+    if (!userId) return unauthorizedJson();
+
+    let kind: "ok" | "not_found" | "track_not_found" = "not_found";
+    let trackId: string | null = null;
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
+      const result = setActiveTrack(db, userId, params.spaceId, typeof body?.track_id === "string" ? body.track_id : null);
+      kind = result.kind;
+      if (result.kind === "ok") trackId = result.track_id;
+    });
+
+    if (kind === "not_found") return errorJson(404, "space not found");
+    if (kind === "track_not_found") return errorJson(404, "track not found");
+    return okJson({
+      ok: true,
+      track_id: trackId,
+      updated_at: clientUpdatedAt ?? nowIso(),
+      client_mutation_id: clientMutationId
+    });
+  },
+  { rateLimit: { bucket: "thinking-space-track", max: 120, windowMs: 60 * 1000 } }
+);
