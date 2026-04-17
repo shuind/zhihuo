@@ -11,7 +11,7 @@ export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "下载 APK | 知惑 Zhihuo",
-  description: "下载知惑 Android APK，安装后即可在手机上使用。"
+  description: "下载知惑 Android APK。"
 };
 
 const DEFAULT_APK_PATH = "/downloads/zhihuo-latest.apk";
@@ -65,12 +65,6 @@ function resolveApkDownload() {
   };
 }
 
-const STEPS = [
-  "点击下方按钮下载安装包",
-  "如浏览器提示风险，允许本次未知来源安装",
-  "打开知惑，登录后即可开始同步"
-];
-
 export default async function ApkPage() {
   const apk = resolveApkDownload();
   const initialCount = await getApkDownloadCount().catch(() => 0);
@@ -101,14 +95,8 @@ export default async function ApkPage() {
           <p className="text-xs tracking-[0.42em] text-[#a07a3a]">ANDROID · APK</p>
 
           <h1 className="mt-6 text-balance text-[2rem] font-normal leading-[1.35] text-[#2f2a24] sm:text-[2.4rem]">
-            把知惑安放在手机里
+            下载知惑 APK
           </h1>
-
-          <p className="mt-6 max-w-md text-pretty text-[0.95rem] leading-8 text-[#5c554b]">
-            下载安装包，登录后即可与网页端同步。
-            <br />
-            仅一个按钮，仅一次安装。
-          </p>
 
           <div className="mt-12">
             <ApkDownloadPanel
@@ -133,21 +121,10 @@ export default async function ApkPage() {
               <dd className="text-[#2f2a24]">{apk.updatedAt ?? "—"}</dd>
             </div>
           </dl>
-
-          <ol className="mt-16 w-full max-w-sm space-y-4 text-left">
-            {STEPS.map((text, index) => (
-              <li key={text} className="flex items-baseline gap-4 text-[0.92rem] leading-7 text-[#5c554b]">
-                <span className="w-6 shrink-0 text-[11px] tracking-[0.2em] text-[#a07a3a] tabular-nums">
-                  {String(index + 1).padStart(2, "0")}
-                </span>
-                <span>{text}</span>
-              </li>
-            ))}
-          </ol>
         </section>
 
         <footer className="mt-20 border-t border-[#2f2a24]/10 pt-6 text-center text-[11px] tracking-[0.24em] text-[#8b8379]">
-          {apk.available ? "luylu.online · 仅限个人使用" : "请在部署环境配置 APK 文件或下载链接"}
+          {apk.available ? "luylu.online" : "请在部署环境配置 APK 文件或下载链接"}
         </footer>
       </div>
     </main>
