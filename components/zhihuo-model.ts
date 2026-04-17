@@ -69,11 +69,34 @@ export type ThinkingNode = {
   spaceId: string;
   parentNodeId: string | null;
   rawQuestionText: string;
+  imageAssetId?: string | null;
   createdAt: string;
   orderIndex: number;
   isSuggested: boolean;
   state: ThinkingNodeState;
   dimension: DimensionKey;
+};
+
+export type ThinkingMediaAsset = {
+  id: string;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  createdAt: string;
+  uploadedAt: string | null;
+  deletedAt: string | null;
+};
+
+export type ThinkingMediaRef = {
+  assetId: string;
+  entityType: "thinking_node" | "thinking_space";
+  entityId: string;
+  role: "cover" | "background";
+  position: number;
+  createdAt: string;
 };
 
 export type ThinkingSpaceMeta = {
@@ -82,6 +105,8 @@ export type ThinkingSpaceMeta = {
   exportVersion: number;
   backgroundText?: string | null;
   backgroundVersion?: number;
+  backgroundAssetIds?: string[];
+  backgroundSelectedAssetId?: string | null;
   suggestionDecay?: number;
   lastTrackId?: string | null;
   lastOrganizedOrder?: number;
@@ -103,6 +128,7 @@ export type ThinkingStore = {
   nodes: ThinkingNode[];
   spaceMeta: ThinkingSpaceMeta[];
   nodeLinks: ThinkingNodeLink[];
+  mediaAssets: ThinkingMediaAsset[];
   scratch: ThinkingScratchItem[];
   inbox: Record<string, ThinkingInboxItem[]>;
   assistEnabled: boolean;
@@ -156,6 +182,7 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   nodes: [],
   spaceMeta: [],
   nodeLinks: [],
+  mediaAssets: [],
   scratch: [],
   inbox: {},
   assistEnabled: true,
@@ -435,7 +462,7 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
   return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen) } };
 }
 
-function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
+export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
   const spaces: ThinkingSpace[] = (store.spaces ?? []).map((space) => {
     const status: ThinkingSpaceStatus = space.status === "active" ? "active" : "hidden";
     return {
@@ -457,6 +484,7 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
         spaceId: typeof node.spaceId === "string" ? node.spaceId : "",
         parentNodeId: typeof node.parentNodeId === "string" ? node.parentNodeId : null,
         rawQuestionText: typeof node.rawQuestionText === "string" ? node.rawQuestionText : "",
+        imageAssetId: typeof node.imageAssetId === "string" && node.imageAssetId.trim() ? node.imageAssetId : null,
         createdAt: toIso(node.createdAt),
         orderIndex: typeof node.orderIndex === "number" ? node.orderIndex : 0,
         isSuggested: Boolean(node.isSuggested),
@@ -471,6 +499,9 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     exportVersion: typeof meta.exportVersion === "number" ? meta.exportVersion : 1,
     backgroundText: typeof meta.backgroundText === "string" ? meta.backgroundText : null,
     backgroundVersion: typeof meta.backgroundVersion === "number" ? meta.backgroundVersion : 0,
+    backgroundAssetIds: Array.isArray(meta.backgroundAssetIds) ? meta.backgroundAssetIds.filter((id) => typeof id === "string") : [],
+    backgroundSelectedAssetId:
+      typeof meta.backgroundSelectedAssetId === "string" && meta.backgroundSelectedAssetId.trim() ? meta.backgroundSelectedAssetId : null,
     suggestionDecay: typeof meta.suggestionDecay === "number" ? meta.suggestionDecay : 0,
     lastTrackId: typeof meta.lastTrackId === "string" ? meta.lastTrackId : null,
     lastOrganizedOrder: typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
@@ -506,6 +537,20 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
       createdAt: toIso(link.createdAt)
     }))
     .filter((item) => item.spaceId && item.sourceNodeId && item.targetNodeId && item.sourceNodeId !== item.targetNodeId);
+  const mediaAssets: ThinkingMediaAsset[] = (store.mediaAssets ?? [])
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      fileName: typeof item.fileName === "string" ? item.fileName : "image",
+      mimeType: typeof item.mimeType === "string" && item.mimeType.trim() ? item.mimeType : "application/octet-stream",
+      byteSize: typeof item.byteSize === "number" && Number.isFinite(item.byteSize) ? Math.max(0, item.byteSize) : 0,
+      sha256: typeof item.sha256 === "string" ? item.sha256 : "",
+      width: typeof item.width === "number" && Number.isFinite(item.width) ? item.width : null,
+      height: typeof item.height === "number" && Number.isFinite(item.height) ? item.height : null,
+      createdAt: toIso(item.createdAt),
+      uploadedAt: item.uploadedAt ? toIso(item.uploadedAt) : null,
+      deletedAt: item.deletedAt ? toIso(item.deletedAt) : null
+    }))
+    .filter((item) => item.id && item.fileName);
   const inbox: Record<string, ThinkingInboxItem[]> = {};
   for (const [spaceId, items] of Object.entries(store.inbox ?? {})) {
     inbox[spaceId] = (items ?? []).map((item) => ({
@@ -540,6 +585,7 @@ function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
     nodes,
     spaceMeta,
     nodeLinks,
+    mediaAssets,
     scratch,
     inbox,
     assistEnabled: store.assistEnabled !== false,

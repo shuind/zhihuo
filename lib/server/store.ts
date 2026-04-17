@@ -4,6 +4,7 @@
   DoubtNoteRecord,
   DoubtRecord,
   TrackDirectionHint,
+  ThinkingMediaAssetRecord,
   ThinkingNodeLinkRecord,
   ThinkingNodeRecord,
   ThinkingScratchRecord,
@@ -266,6 +267,8 @@ function enforceMaxNodes(db: DbState, spaceId: string) {
 function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   if (!Object.prototype.hasOwnProperty.call(meta, "background_text")) meta.background_text = null;
   if (!Object.prototype.hasOwnProperty.call(meta, "background_version")) meta.background_version = 0;
+  if (!Object.prototype.hasOwnProperty.call(meta, "background_asset_ids")) meta.background_asset_ids = [];
+  if (!Object.prototype.hasOwnProperty.call(meta, "background_selected_asset_id")) meta.background_selected_asset_id = null;
   if (!Object.prototype.hasOwnProperty.call(meta, "suggestion_decay")) meta.suggestion_decay = 0;
   if (!Object.prototype.hasOwnProperty.call(meta, "last_track_id")) meta.last_track_id = null;
   if (!Object.prototype.hasOwnProperty.call(meta, "last_organized_order")) meta.last_organized_order = -1;
@@ -294,6 +297,16 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   } else {
     meta.empty_track_ids = meta.empty_track_ids.filter((id) => typeof id === "string" && id.trim());
   }
+  if (!Array.isArray(meta.background_asset_ids)) {
+    meta.background_asset_ids = [];
+  } else {
+    meta.background_asset_ids = meta.background_asset_ids.filter((id) => typeof id === "string" && id.trim());
+  }
+  if (typeof meta.background_selected_asset_id !== "string" || !meta.background_selected_asset_id.trim()) {
+    meta.background_selected_asset_id = null;
+  } else if (!meta.background_asset_ids.includes(meta.background_selected_asset_id)) {
+    meta.background_selected_asset_id = meta.background_asset_ids[0] ?? null;
+  }
   if (!meta.pending_track_id && meta.empty_track_ids.length) {
     meta.pending_track_id = meta.empty_track_ids[0] ?? null;
   }
@@ -320,6 +333,8 @@ function createDefaultMeta(spaceId: string) {
     export_version: 1,
     background_text: null,
     background_version: 0,
+    background_asset_ids: [],
+    background_selected_asset_id: null,
     suggestion_decay: 0,
     last_track_id: null,
     last_organized_order: -1,
@@ -381,6 +396,125 @@ function setPendingTrackId(meta: ThinkingSpaceMetaRecord, trackId: string | null
 function getTrackDirectionHints(meta: ThinkingSpaceMetaRecord) {
   sanitizeMeta(meta);
   return meta.track_direction_hints ?? {};
+}
+
+export function listThinkingMediaAssets(db: DbState, userId: string) {
+  return db.thinking_media_assets.filter((asset) => asset.user_id === userId && !asset.deleted_at);
+}
+
+function requireMediaAsset(db: DbState, userId: string, assetId: string) {
+  return db.thinking_media_assets.find((asset) => asset.id === assetId && asset.user_id === userId && !asset.deleted_at) ?? null;
+}
+
+function getMediaAssetReferenceCount(db: DbState, userId: string, assetId: string) {
+  let count = 0;
+  const userSpaceIds = new Set(userSpaces(db, userId).map((space) => space.id));
+  for (const node of db.thinking_nodes) {
+    if (!userSpaceIds.has(node.space_id)) continue;
+    if (node.image_asset_id === assetId) count += 1;
+  }
+  for (const meta of db.thinking_space_meta) {
+    if (!userSpaceIds.has(meta.space_id)) continue;
+    if ((meta.background_asset_ids ?? []).includes(assetId)) count += 1;
+    if (meta.background_selected_asset_id === assetId) count += 1;
+  }
+  return count;
+}
+
+function pruneUnusedMediaAsset(db: DbState, userId: string, assetId: string) {
+  if (!assetId) return false;
+  if (getMediaAssetReferenceCount(db, userId, assetId) > 0) return false;
+  const existing = db.thinking_media_assets.find((asset) => asset.id === assetId && asset.user_id === userId);
+  if (!existing) return false;
+  existing.deleted_at = nowIso();
+  return true;
+}
+
+export function upsertThinkingMediaAsset(
+  db: DbState,
+  userId: string,
+  asset: {
+    id: string;
+    file_name: string;
+    mime_type: string;
+    byte_size: number;
+    sha256: string;
+    width: number | null;
+    height: number | null;
+    created_at?: string;
+    uploaded_at?: string | null;
+    deleted_at?: string | null;
+  }
+) {
+  const existing = db.thinking_media_assets.find((item) => item.id === asset.id && item.user_id === userId);
+  if (existing) {
+    existing.file_name = asset.file_name;
+    existing.mime_type = asset.mime_type;
+    existing.byte_size = Number.isFinite(asset.byte_size) ? Math.max(0, Number(asset.byte_size)) : 0;
+    existing.sha256 = asset.sha256;
+    existing.width = asset.width;
+    existing.height = asset.height;
+    existing.deleted_at = asset.deleted_at ?? null;
+    existing.uploaded_at = asset.uploaded_at ?? existing.uploaded_at;
+    return existing;
+  }
+  const record: ThinkingMediaAssetRecord = {
+    id: asset.id,
+    user_id: userId,
+    file_name: asset.file_name,
+    mime_type: asset.mime_type,
+    byte_size: Number.isFinite(asset.byte_size) ? Math.max(0, Number(asset.byte_size)) : 0,
+    sha256: asset.sha256,
+    width: asset.width,
+    height: asset.height,
+    created_at: asset.created_at ?? nowIso(),
+    uploaded_at: asset.uploaded_at ?? null,
+    deleted_at: asset.deleted_at ?? null
+  };
+  db.thinking_media_assets.unshift(record);
+  return record;
+}
+
+export function setNodeImageAsset(db: DbState, userId: string, nodeId: string, assetId: string | null) {
+  const node = db.thinking_nodes.find((item) => item.id === nodeId);
+  if (!node) return { kind: "not_found" as const };
+  const space = requireSpace(db, userId, node.space_id);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+
+  const nextAssetId = typeof assetId === "string" && assetId.trim() ? assetId : null;
+  if (nextAssetId && !requireMediaAsset(db, userId, nextAssetId)) {
+    return { kind: "asset_not_found" as const };
+  }
+
+  const previousAssetId = node.image_asset_id ?? null;
+  if (previousAssetId === nextAssetId) return { kind: "ok" as const, node };
+
+  node.image_asset_id = nextAssetId;
+  if (previousAssetId) pruneUnusedMediaAsset(db, userId, previousAssetId);
+  bumpUserRevision(db, userId);
+  return { kind: "ok" as const, node };
+}
+
+export function setSpaceBackgroundAssets(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  backgroundAssetIds: string[],
+  backgroundSelectedAssetId: string | null
+) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+  if (space.status !== "active") return { kind: "readonly" as const };
+  const meta = ensureMeta(db, spaceId);
+  const nextIds = backgroundAssetIds.filter((id) => typeof id === "string" && id.trim());
+  for (const assetId of nextIds) {
+    if (!requireMediaAsset(db, userId, assetId)) return { kind: "asset_not_found" as const };
+  }
+  meta.background_asset_ids = nextIds;
+  meta.background_selected_asset_id = nextIds.includes(backgroundSelectedAssetId ?? "") ? (backgroundSelectedAssetId ?? null) : nextIds[0] ?? null;
+  bumpUserRevision(db, userId);
+  return { kind: "ok" as const, background_asset_ids: meta.background_asset_ids, background_selected_asset_id: meta.background_selected_asset_id };
 }
 
 function pruneTrackDirectionHints(meta: ThinkingSpaceMetaRecord, trackIds: Iterable<string>) {
@@ -868,6 +1002,8 @@ export function createThinkingSpace(
     export_version: 1,
     background_text: null,
     background_version: 0,
+    background_asset_ids: [],
+    background_selected_asset_id: null,
     suggestion_decay: 0,
     last_track_id: null,
     last_organized_order: -1,
@@ -1441,6 +1577,7 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
       return {
         id: node.id,
         raw_question_text: node.raw_question_text,
+        image_asset_id: node.image_asset_id ?? null,
         note_text: node.note_text ?? null,
         answer_text: node.answer_text ?? null,
         created_at: node.created_at,
@@ -1492,6 +1629,8 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     freeze_note: meta.user_freeze_note ?? null,
     background_text: meta.background_text ?? null,
     background_version: meta.background_version ?? 0,
+    background_asset_ids: meta.background_asset_ids ?? [],
+    background_selected_asset_id: meta.background_selected_asset_id ?? null,
     parking_track_id: parkingTrackId,
     pending_track_id: pendingTrackId,
     empty_track_ids: getEmptyTrackIds(meta),
@@ -1565,12 +1704,19 @@ export function updateTrackDirectionHint(
   return { kind: "ok" as const, track_id: normalized, direction_hint: directionHint };
 }
 
-export function updateSpaceBackground(db: DbState, userId: string, spaceId: string, backgroundText: string | null) {
+export function updateSpaceBackground(
+  db: DbState,
+  userId: string,
+  spaceId: string,
+  backgroundText: string | null,
+  options?: { backgroundAssetIds?: string[]; backgroundSelectedAssetId?: string | null }
+) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
   if (space.status !== "active") return { kind: "readonly" as const };
 
   const meta = ensureMeta(db, spaceId);
+  const previousBackgroundAssetIds = new Set(meta.background_asset_ids ?? []);
   const normalized = backgroundText ? collapseWhitespace(backgroundText) : "";
   if (!normalized) {
     if (meta.background_text !== null) {
@@ -1578,16 +1724,45 @@ export function updateSpaceBackground(db: DbState, userId: string, spaceId: stri
       meta.background_version = (meta.background_version ?? 0) + 1;
       bumpUserRevision(db, userId);
     }
-    return { kind: "ok" as const, background_text: null, background_version: meta.background_version ?? 0 };
-  }
-  if (normalized.length < 100 || normalized.length > 300) return { kind: "invalid_length" as const };
+  } else {
+    if (normalized.length < 100 || normalized.length > 300) return { kind: "invalid_length" as const };
 
-  if (meta.background_text !== normalized) {
-    meta.background_text = normalized;
-    meta.background_version = (meta.background_version ?? 0) + 1;
-    bumpUserRevision(db, userId);
+    if (meta.background_text !== normalized) {
+      meta.background_text = normalized;
+      meta.background_version = (meta.background_version ?? 0) + 1;
+      bumpUserRevision(db, userId);
+    }
   }
-  return { kind: "ok" as const, background_text: meta.background_text, background_version: meta.background_version ?? 0 };
+  if (options) {
+    const nextIds = Array.isArray(options.backgroundAssetIds)
+      ? options.backgroundAssetIds.filter((id) => typeof id === "string" && id.trim())
+      : meta.background_asset_ids ?? [];
+    for (const assetId of nextIds) {
+      if (!requireMediaAsset(db, userId, assetId)) return { kind: "asset_not_found" as const };
+    }
+    const beforeIds = [...(meta.background_asset_ids ?? [])];
+    const beforeSelected = meta.background_selected_asset_id ?? null;
+    meta.background_asset_ids = nextIds;
+    meta.background_selected_asset_id =
+      typeof options.backgroundSelectedAssetId === "string" && nextIds.includes(options.backgroundSelectedAssetId)
+        ? options.backgroundSelectedAssetId
+        : nextIds[0] ?? null;
+    const changed =
+      beforeIds.length !== nextIds.length ||
+      beforeIds.some((assetId, index) => assetId !== nextIds[index]) ||
+      beforeSelected !== meta.background_selected_asset_id;
+    for (const assetId of previousBackgroundAssetIds) {
+      if (!nextIds.includes(assetId)) pruneUnusedMediaAsset(db, userId, assetId);
+    }
+    if (changed) bumpUserRevision(db, userId);
+  }
+  return {
+    kind: "ok" as const,
+    background_text: meta.background_text,
+    background_version: meta.background_version ?? 0,
+    background_asset_ids: meta.background_asset_ids ?? [],
+    background_selected_asset_id: meta.background_selected_asset_id ?? null
+  };
 }
 
 export function updateSpaceRootQuestion(db: DbState, userId: string, spaceId: string, rootQuestionText: string) {
@@ -1663,6 +1838,7 @@ export function copyNode(db: DbState, userId: string, nodeId: string, targetTrac
     raw_question_text: node.raw_question_text,
     note_text: node.note_text ?? null,
     answer_text: node.answer_text ?? null,
+    image_asset_id: node.image_asset_id ?? null,
     created_at: nowIso(),
     order_index: maxOrderIndex(getSpaceNodes(db, node.space_id)) + 1,
     is_suggested: false,
@@ -1695,6 +1871,7 @@ export function deleteNode(db: DbState, userId: string, nodeId: string) {
   const space = requireSpace(db, userId, node.space_id);
   if (!space) return { kind: "not_found" as const };
   if (space.status !== "active") return { kind: "readonly" as const };
+  const previousAssetId = node.image_asset_id ?? null;
 
   db.thinking_nodes = db.thinking_nodes.filter((item) => item.id !== nodeId);
   db.thinking_node_links = db.thinking_node_links.filter((link) => link.source_node_id !== nodeId && link.target_node_id !== nodeId);
@@ -1703,6 +1880,7 @@ export function deleteNode(db: DbState, userId: string, nodeId: string) {
   const fallback = chooseFallbackTrackId(getSpaceNodes(db, node.space_id));
   if (!fallback) meta.last_track_id = null;
   else if (!meta.last_track_id || !getTrackMap(getSpaceNodes(db, node.space_id)).has(meta.last_track_id)) meta.last_track_id = fallback;
+  if (previousAssetId) pruneUnusedMediaAsset(db, userId, previousAssetId);
   bumpUserRevision(db, userId);
   return { kind: "ok" as const, space_id: node.space_id };
 }
@@ -1792,6 +1970,9 @@ export function deleteThinkingSpace(db: DbState, userId: string, spaceId: string
     targetId: spaceId,
     detail: `deleted space ${space.root_question_text.slice(0, 60)}`
   });
+  for (const asset of listThinkingMediaAssets(db, userId)) {
+    pruneUnusedMediaAsset(db, userId, asset.id);
+  }
   bumpUserRevision(db, userId);
   return { kind: "ok" as const };
 }
@@ -1854,6 +2035,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       spaceId: node.space_id,
       parentNodeId: node.parent_node_id,
       rawQuestionText: node.raw_question_text,
+      imageAssetId: node.image_asset_id ?? null,
       noteText: node.note_text ?? null,
       answerText: node.answer_text ?? null,
       createdAt: node.created_at,
@@ -1868,6 +2050,8 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       exportVersion: meta.export_version,
       backgroundText: meta.background_text ?? null,
       backgroundVersion: meta.background_version ?? 0,
+      backgroundAssetIds: meta.background_asset_ids ?? [],
+      backgroundSelectedAssetId: meta.background_selected_asset_id ?? null,
       suggestionDecay: meta.suggestion_decay ?? 0,
       lastTrackId: meta.last_track_id ?? null,
       lastOrganizedOrder: meta.last_organized_order ?? -1,
@@ -1885,6 +2069,19 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       linkType: link.link_type,
       score: link.score,
       createdAt: link.created_at
+    })),
+    mediaAssets: listThinkingMediaAssets(db, userId).map((asset) => ({
+      id: asset.id,
+      userId: asset.user_id,
+      fileName: asset.file_name,
+      mimeType: asset.mime_type,
+      byteSize: asset.byte_size,
+      sha256: asset.sha256,
+      width: asset.width,
+      height: asset.height,
+      createdAt: asset.created_at,
+      uploadedAt: asset.uploaded_at,
+      deletedAt: asset.deleted_at
     })),
     inbox: inboxMap,
     scratch,
@@ -1911,6 +2108,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
       space_id: node.spaceId,
       parent_node_id: typeof node.parentNodeId === "string" ? node.parentNodeId : null,
       raw_question_text: collapseWhitespace(node.rawQuestionText ?? ""),
+      image_asset_id: typeof node.imageAssetId === "string" && node.imageAssetId.trim() ? node.imageAssetId : null,
       note_text: typeof node.noteText === "string" ? collapseWhitespace(node.noteText) : null,
       answer_text: typeof node.answerText === "string" ? node.answerText.trim() || null : null,
       created_at: typeof node.createdAt === "string" ? node.createdAt : nowIso(),
@@ -1933,6 +2131,13 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
           typeof meta.backgroundVersion === "number" && Number.isFinite(meta.backgroundVersion) && meta.backgroundVersion >= 0
             ? meta.backgroundVersion
             : 0,
+        background_asset_ids: Array.isArray(meta.backgroundAssetIds)
+          ? meta.backgroundAssetIds.filter((id) => typeof id === "string" && id.trim())
+          : [],
+        background_selected_asset_id:
+          typeof meta.backgroundSelectedAssetId === "string" && meta.backgroundSelectedAssetId.trim()
+            ? meta.backgroundSelectedAssetId
+            : null,
         suggestion_decay:
           typeof meta.suggestionDecay === "number" && Number.isFinite(meta.suggestionDecay) && meta.suggestionDecay >= 0
             ? meta.suggestionDecay
@@ -1998,6 +2203,22 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     }))
     .filter((item) => item.raw_text);
 
+  const nextMediaAssets: ThinkingMediaAssetRecord[] = (snapshot.mediaAssets ?? [])
+    .filter((asset) => asset && typeof asset.id === "string" && typeof asset.userId === "string" && asset.userId === userId)
+    .map((asset) => ({
+      id: asset.id,
+      user_id: userId,
+      file_name: typeof asset.fileName === "string" ? asset.fileName : "image",
+      mime_type: typeof asset.mimeType === "string" && asset.mimeType.trim() ? asset.mimeType : "application/octet-stream",
+      byte_size: Number.isFinite(asset.byteSize) ? Math.max(0, Number(asset.byteSize)) : 0,
+      sha256: typeof asset.sha256 === "string" ? asset.sha256 : "",
+      width: asset.width === null || asset.width === undefined ? null : Number(asset.width),
+      height: asset.height === null || asset.height === undefined ? null : Number(asset.height),
+      created_at: typeof asset.createdAt === "string" ? asset.createdAt : nowIso(),
+      uploaded_at: typeof asset.uploadedAt === "string" ? asset.uploadedAt : null,
+      deleted_at: typeof asset.deletedAt === "string" ? asset.deletedAt : null
+    }));
+
   const userSpaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
   db.thinking_spaces = [...db.thinking_spaces.filter((space) => space.user_id !== userId), ...nextSpaces];
   db.thinking_nodes = [
@@ -2008,6 +2229,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
   db.thinking_node_links = [...db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id)), ...nextLinks];
   db.thinking_inbox = [...db.thinking_inbox.filter((item) => !userSpaceIds.has(item.space_id)), ...nextInbox];
   db.thinking_scratch = [...db.thinking_scratch.filter((item) => item.user_id !== userId), ...nextScratch];
+  db.thinking_media_assets = [...db.thinking_media_assets.filter((asset) => asset.user_id !== userId), ...nextMediaAssets];
   bumpUserRevision(db, userId);
 }
 
@@ -2029,12 +2251,16 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   lines.push("");
   lines.push(`- 创建时间：${formatDateTime(space.created_at)}`);
   lines.push("");
+  const mediaAssetIds = new Set(listThinkingMediaAssets(db, userId).map((asset) => asset.id));
 
   orderedTracks.forEach(([trackId, trackNodes], index) => {
     lines.push(`## 方向 ${index + 1}`);
     for (const node of trackNodes) {
       const star = milestoneSet.has(node.id) ? "⭐ " : "";
       lines.push(`- ${star}${node.raw_question_text}`);
+      if (node.image_asset_id && mediaAssetIds.has(node.image_asset_id)) {
+        lines.push(`  - 图片：${node.image_asset_id}`);
+      }
       if (node.note_text) lines.push(`  - 附注：${node.note_text}`);
     }
     lines.push("");
@@ -2043,6 +2269,14 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   if (meta.user_freeze_note) {
     lines.push("## 当前状态");
     lines.push(meta.user_freeze_note);
+    lines.push("");
+  }
+  if ((meta.background_asset_ids ?? []).length) {
+    lines.push("## 背景图片");
+    for (const assetId of meta.background_asset_ids ?? []) {
+      if (!mediaAssetIds.has(assetId)) continue;
+      lines.push(`- ${assetId}${meta.background_selected_asset_id === assetId ? "（当前选中）" : ""}`);
+    }
     lines.push("");
   }
 
@@ -2074,6 +2308,7 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
   db.thinking_node_links = db.thinking_node_links.filter((link) => !spaceIds.has(link.space_id));
   db.thinking_spaces = db.thinking_spaces.filter((space) => space.user_id !== userId);
   db.thinking_scratch = db.thinking_scratch.filter((item) => item.user_id !== userId);
+  db.thinking_media_assets = db.thinking_media_assets.filter((item) => item.user_id !== userId);
   db.user_sync_state = db.user_sync_state.filter((item) => item.user_id !== userId);
   db.applied_client_mutations = db.applied_client_mutations.filter((item) => item.user_id !== userId);
 

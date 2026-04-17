@@ -36,6 +36,7 @@ export type ThinkingNodeRecord = {
   space_id: string;
   parent_node_id: string | null;
   raw_question_text: string;
+  image_asset_id?: string | null;
   note_text?: string | null;
   answer_text?: string | null;
   created_at: string;
@@ -70,6 +71,8 @@ export type ThinkingSpaceMetaRecord = {
   export_version: number;
   background_text?: string | null;
   background_version?: number;
+  background_asset_ids?: string[];
+  background_selected_asset_id?: string | null;
   suggestion_decay?: number;
   last_track_id?: string | null;
   last_organized_order?: number;
@@ -90,6 +93,20 @@ export type ThinkingNodeLinkRecord = {
   created_at: string;
 };
 
+export type ThinkingMediaAssetRecord = {
+  id: string;
+  user_id: string;
+  file_name: string;
+  mime_type: string;
+  byte_size: number;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  created_at: string;
+  uploaded_at: string | null;
+  deleted_at: string | null;
+};
+
 export type DbState = {
   doubts: DoubtRecord[];
   doubt_notes: DoubtNoteRecord[];
@@ -99,6 +116,7 @@ export type DbState = {
   thinking_scratch: ThinkingScratchRecord[];
   thinking_space_meta: ThinkingSpaceMetaRecord[];
   thinking_node_links: ThinkingNodeLinkRecord[];
+  thinking_media_assets: ThinkingMediaAssetRecord[];
   email_verification_codes: EmailVerificationCodeRecord[];
   users: UserRecord[];
   audit_logs: AuditLogRecord[];
@@ -167,6 +185,7 @@ export type ThinkingSnapshot = {
     spaceId: string;
     parentNodeId: string | null;
     rawQuestionText: string;
+    imageAssetId?: string | null;
     noteText?: string | null;
     answerText?: string | null;
     createdAt: string;
@@ -181,6 +200,8 @@ export type ThinkingSnapshot = {
     exportVersion: number;
     backgroundText?: string | null;
     backgroundVersion?: number;
+    backgroundAssetIds?: string[];
+    backgroundSelectedAssetId?: string | null;
     suggestionDecay?: number;
     lastTrackId?: string | null;
     lastOrganizedOrder?: number;
@@ -198,6 +219,19 @@ export type ThinkingSnapshot = {
     linkType: "related";
     score: number;
     createdAt: string;
+  }>;
+  mediaAssets?: Array<{
+    id: string;
+    userId: string;
+    fileName: string;
+    mimeType: string;
+    byteSize: number;
+    sha256: string;
+    width: number | null;
+    height: number | null;
+    createdAt: string;
+    uploadedAt: string | null;
+    deletedAt: string | null;
   }>;
   inbox: Record<
     string,

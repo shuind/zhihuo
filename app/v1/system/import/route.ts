@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { canImportUserData } from "@/lib/capabilities";
 import { updateDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { writeThinkingMediaAssetFile } from "@/lib/server/media";
 import { withApiRoute } from "@/lib/server/observability";
 import { verifyUserExportIntegrity } from "@/lib/server/security";
 import { getUserRevision, replaceLifeSnapshot, replaceThinkingSnapshot } from "@/lib/server/store";
@@ -47,6 +48,7 @@ type UserExportPayload = {
       spaceId?: string;
       parentNodeId?: string | null;
       rawQuestionText?: string;
+      imageAssetId?: string | null;
       noteText?: string | null;
       answerText?: string | null;
       createdAt?: string;
@@ -61,6 +63,8 @@ type UserExportPayload = {
       exportVersion?: number;
       backgroundText?: string | null;
       backgroundVersion?: number;
+      backgroundAssetIds?: string[];
+      backgroundSelectedAssetId?: string | null;
       suggestionDecay?: number;
       lastTrackId?: string | null;
       lastOrganizedOrder?: number;
@@ -91,6 +95,28 @@ type UserExportPayload = {
       derivedSpaceId?: string | null;
       fedTimeDoubtId?: string | null;
     }>;
+    media_assets?: Array<{
+      id?: string;
+      user_id?: string;
+      userId?: string;
+      file_name?: string;
+      fileName?: string;
+      mime_type?: string;
+      mimeType?: string;
+      byte_size?: number;
+      byteSize?: number;
+      sha256?: string;
+      width?: number | null;
+      height?: number | null;
+      created_at?: string;
+      createdAt?: string;
+      uploaded_at?: string | null;
+      uploadedAt?: string | null;
+      deleted_at?: string | null;
+      deletedAt?: string | null;
+      content_base64?: string;
+      contentBase64?: string;
+    }>;
   };
 };
 
@@ -101,13 +127,31 @@ function validateReferences(payload: UserExportPayload) {
   const nodes = Array.isArray(payload.thinking?.nodes) ? payload.thinking?.nodes : [];
   const inbox = payload.thinking?.inbox ?? {};
   const meta = Array.isArray(payload.thinking?.space_meta) ? payload.thinking?.space_meta : [];
+  const mediaAssets = Array.isArray(payload.thinking?.media_assets) ? payload.thinking?.media_assets : [];
 
   const doubtIds = new Set(doubts.map((item) => item.id).filter((id): id is string => typeof id === "string"));
   const spaceIds = new Set(spaces.map((item) => item.id).filter((id): id is string => typeof id === "string"));
+  const mediaIds = new Set(mediaAssets.map((item) => item.id).filter((id): id is string => typeof id === "string"));
 
   const brokenNotes = notes.filter((item) => !doubtIds.has(item.doubt_id ?? ""));
-  const brokenNodes = nodes.filter((item) => !spaceIds.has(item.spaceId ?? ""));
-  const brokenMeta = meta.filter((item) => !spaceIds.has(item.spaceId ?? ""));
+  const brokenNodes = nodes.filter(
+    (item) =>
+      !spaceIds.has(item.spaceId ?? "") ||
+      (typeof item.imageAssetId === "string" && item.imageAssetId.trim() ? !mediaIds.has(item.imageAssetId) : false)
+  );
+  const brokenMeta = meta.filter((item) => {
+    if (!spaceIds.has(item.spaceId ?? "")) return true;
+    const backgroundAssetIds = Array.isArray(item.backgroundAssetIds) ? item.backgroundAssetIds : [];
+    if (backgroundAssetIds.some((assetId) => typeof assetId === "string" && !mediaIds.has(assetId))) return true;
+    if (
+      typeof item.backgroundSelectedAssetId === "string" &&
+      item.backgroundSelectedAssetId.trim() &&
+      !mediaIds.has(item.backgroundSelectedAssetId)
+    ) {
+      return true;
+    }
+    return false;
+  });
   const brokenInbox = Object.entries(inbox).filter(([spaceId]) => !spaceIds.has(spaceId));
 
   return {
@@ -176,7 +220,7 @@ export const POST = withApiRoute(
     let replaced: { life: number; thinking: number; scratch: number } | null = null;
     let revision: number | null = null;
     let importError: string | null = null;
-    await updateDb((db) => {
+    await updateDb(async (db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!canImportUserData(user)) return;
 
@@ -210,11 +254,40 @@ export const POST = withApiRoute(
         nodeLinks: (payload.thinking?.node_links ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["nodeLinks"],
         inbox: (payload.thinking?.inbox ?? {}) as Parameters<typeof replaceThinkingSnapshot>[2]["inbox"],
         scratch: (payload.thinking?.scratch ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["scratch"],
+        mediaAssets: (payload.thinking?.media_assets ?? []).map((asset) => ({
+          id: asset.id ?? createId(),
+          userId,
+          fileName: asset.fileName ?? asset.file_name ?? "image",
+          mimeType: asset.mimeType ?? asset.mime_type ?? "application/octet-stream",
+          byteSize:
+            typeof asset.byteSize === "number"
+              ? asset.byteSize
+              : typeof asset.byte_size === "number"
+                ? asset.byte_size
+                : 0,
+          sha256: typeof asset.sha256 === "string" ? asset.sha256 : "",
+          width: typeof asset.width === "number" ? asset.width : null,
+          height: typeof asset.height === "number" ? asset.height : null,
+          createdAt: asset.createdAt ?? asset.created_at ?? nowIso(),
+          uploadedAt: asset.uploadedAt ?? asset.uploaded_at ?? null,
+          deletedAt: asset.deletedAt ?? asset.deleted_at ?? null
+        })),
         assistEnabled: true
       };
 
       replaceLifeSnapshot(db, userId, payload.life ?? {});
       replaceThinkingSnapshot(db, userId, thinkingSnapshot);
+      for (const asset of payload.thinking?.media_assets ?? []) {
+        const assetId = typeof asset.id === "string" && asset.id.trim() ? asset.id : null;
+        const contentBase64 =
+          typeof asset.contentBase64 === "string"
+            ? asset.contentBase64
+            : typeof asset.content_base64 === "string"
+              ? asset.content_base64
+              : "";
+        if (!assetId || !contentBase64) continue;
+        await writeThinkingMediaAssetFile(userId, assetId, Buffer.from(contentBase64, "base64"));
+      }
 
       replaced = {
         life: (payload.life?.doubts?.length ?? 0) + (payload.life?.notes?.length ?? 0),
@@ -222,6 +295,7 @@ export const POST = withApiRoute(
           (payload.thinking?.spaces?.length ?? 0) +
           (payload.thinking?.nodes?.length ?? 0) +
           (payload.thinking?.space_meta?.length ?? 0) +
+          (payload.thinking?.media_assets?.length ?? 0) +
           Object.values(payload.thinking?.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
         scratch: payload.thinking?.scratch?.length ?? 0
       };

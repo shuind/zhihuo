@@ -16,7 +16,7 @@ export const GET = withApiRoute(
     const includeThinking = request.nextUrl.searchParams.get("include_thinking") !== "false";
 
     let result: { markdown: string } | { payload: unknown; checksum: string } | null = null;
-    await updateDb((db) => {
+    await updateDb(async (db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!user) return;
       if (format === "markdown") {
@@ -27,7 +27,7 @@ export const GET = withApiRoute(
           })
         };
       } else {
-        result = buildUserExport(db, userId, user.email);
+        result = await buildUserExport(db, userId, user.email);
       }
       db.audit_logs.push({
         id: createId(),

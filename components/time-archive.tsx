@@ -27,20 +27,27 @@ import {
   listDeadLetterMutationsByOwner,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
+  listOfflineMediaAssetsByOwner,
+  listPendingOfflineMediaAssetsByOwner,
   removeOfflineMutation,
   saveOfflineSnapshotByOwner,
+  saveOfflineMediaAsset,
   updateOfflineMutation,
+  updateOfflineMediaAsset,
   verifyPin,
   type OfflineOwnerKey,
+  type OfflineMediaAssetRecord,
+  type OfflineMediaAssetStatus,
   type OfflineSnapshotMeta,
   type QueuedMutation
 } from "@/components/offline-store";
 import { canAccessGuestMode, canUseCloudSync } from "@/lib/capabilities";
-import { apiFetch } from "@/lib/api-client";
+import { apiFetch, buildApiUrl } from "@/lib/api-client";
 import {
   type LayerTab,
   type LifeDoubt,
   type LifeNote,
+  type ThinkingMediaAsset,
   type ThinkingSpace,
   type ThinkingScratchItem,
   type ThinkingNodeLink,
@@ -60,6 +67,7 @@ import {
   persistLifeStore,
   persistThinkingStore,
   pickDefaultSpaceId,
+  normalizeThinkingStore,
   sanitizeTimeZone
 } from "@/components/zhihuo-model";
 
@@ -108,6 +116,8 @@ type ApiThinkingSpaceMeta = {
   export_version: number;
   background_text?: string | null;
   background_version?: number;
+  background_asset_ids?: string[];
+  background_selected_asset_id?: string | null;
   suggestion_decay?: number;
   last_track_id?: string | null;
   last_organized_order?: number;
@@ -121,6 +131,7 @@ type ApiThinkingSpaceMeta = {
 type ApiThinkingTrackNode = {
   id: string;
   raw_question_text: string;
+  image_asset_id?: string | null;
   note_text?: string | null;
   answer_text?: string | null;
   created_at: string;
@@ -149,10 +160,26 @@ type ApiThinkingSpaceView = {
   freeze_note?: string | null;
   background_text?: string | null;
   background_version?: number;
+  background_asset_ids?: string[];
+  background_selected_asset_id?: string | null;
   parking_track_id?: string | null;
   pending_track_id?: string | null;
   empty_track_ids?: string[];
   milestone_node_ids?: string[];
+};
+
+type ApiThinkingMediaAsset = {
+  id?: string;
+  userId?: string;
+  fileName?: string;
+  mimeType?: string;
+  byteSize?: number;
+  sha256?: string;
+  width?: number | null;
+  height?: number | null;
+  createdAt?: string;
+  uploadedAt?: string | null;
+  deletedAt?: string | null;
 };
 
 type SessionUser = {
@@ -205,6 +232,7 @@ type UserExportPayload = {
       spaceId: string;
       parentNodeId: string | null;
       rawQuestionText: string;
+      imageAssetId?: string | null;
       noteText?: string | null;
       answerText?: string | null;
       createdAt: string;
@@ -219,6 +247,8 @@ type UserExportPayload = {
       exportVersion: number;
       backgroundText?: string | null;
       backgroundVersion?: number;
+      backgroundAssetIds?: string[];
+      backgroundSelectedAssetId?: string | null;
       suggestionDecay?: number;
       lastTrackId?: string | null;
       lastOrganizedOrder?: number;
@@ -248,6 +278,20 @@ type UserExportPayload = {
       deletedAt: string | null;
       derivedSpaceId: string | null;
       fedTimeDoubtId: string | null;
+    }>;
+    media_assets?: Array<{
+      id: string;
+      user_id: string;
+      file_name: string;
+      mime_type: string;
+      byte_size: number;
+      sha256: string;
+      width: number | null;
+      height: number | null;
+      created_at: string;
+      uploaded_at: string | null;
+      deleted_at: string | null;
+      content_base64: string;
     }>;
   };
   audit: Array<Record<string, never>>;
@@ -279,39 +323,55 @@ type SyncSnapshotResponse = {
       spaceId?: string;
       parentNodeId?: string | null;
       rawQuestionText?: string;
+      imageAssetId?: string | null;
       createdAt?: string;
       orderIndex?: number;
       isSuggested?: boolean;
       state?: "normal" | "hidden";
       dimension?: string;
     }>;
-    spaceMeta?: Array<{
-      spaceId?: string;
-      userFreezeNote?: string | null;
-      exportVersion?: number;
-      backgroundText?: string | null;
-      backgroundVersion?: number;
-      suggestionDecay?: number;
-      lastTrackId?: string | null;
-      lastOrganizedOrder?: number;
+      spaceMeta?: Array<{
+        spaceId?: string;
+        userFreezeNote?: string | null;
+        exportVersion?: number;
+        backgroundText?: string | null;
+        backgroundVersion?: number;
+        backgroundAssetIds?: string[];
+        backgroundSelectedAssetId?: string | null;
+        suggestionDecay?: number;
+        lastTrackId?: string | null;
+        lastOrganizedOrder?: number;
       parkingTrackId?: string | null;
       pendingTrackId?: string | null;
       emptyTrackIds?: string[];
       milestoneNodeIds?: string[];
       trackDirectionHints?: Record<string, TrackDirectionHint | null>;
     }>;
-    nodeLinks?: Array<{
-      id?: string;
-      spaceId?: string;
+      nodeLinks?: Array<{
+        id?: string;
+        spaceId?: string;
       sourceNodeId?: string;
       targetNodeId?: string;
       linkType?: "related";
       score?: number;
-      createdAt?: string;
-    }>;
-    inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
-    scratch?: Array<{
-      id?: string;
+        createdAt?: string;
+      }>;
+      mediaAssets?: Array<{
+        id?: string;
+        userId?: string;
+        fileName?: string;
+        mimeType?: string;
+        byteSize?: number;
+        sha256?: string;
+        width?: number | null;
+        height?: number | null;
+        createdAt?: string;
+        uploadedAt?: string | null;
+        deletedAt?: string | null;
+      }>;
+      inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
+      scratch?: Array<{
+        id?: string;
       userId?: string;
       rawText?: string;
       createdAt?: string;
@@ -358,12 +418,83 @@ async function sha256Hex(input: string) {
     .join("");
 }
 
+async function blobToBase64(blob: Blob) {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  let binary = "";
+  const chunkSize = 0x8000;
+  for (let index = 0; index < bytes.length; index += chunkSize) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
+  }
+  return btoa(binary);
+}
+
+async function sha256HexForBlob(blob: Blob) {
+  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
+  return Array.from(new Uint8Array(digest))
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function readImageDimensions(file: Blob): Promise<{ width: number | null; height: number | null }> {
+  if (typeof window === "undefined") return { width: null, height: null };
+  return new Promise((resolve) => {
+    const objectUrl = URL.createObjectURL(file);
+    const image = new Image();
+    image.onload = () => {
+      resolve({ width: image.naturalWidth || null, height: image.naturalHeight || null });
+      URL.revokeObjectURL(objectUrl);
+    };
+    image.onerror = () => {
+      resolve({ width: null, height: null });
+      URL.revokeObjectURL(objectUrl);
+    };
+    image.src = objectUrl;
+  });
+}
+
+function isThinkingMediaAssetReferenced(store: ThinkingStore, assetId: string, options?: { ignoreNodeId?: string | null }) {
+  if (!assetId) return false;
+  if (
+    store.nodes.some(
+      (node) => node.id !== options?.ignoreNodeId && node.imageAssetId === assetId
+    )
+  ) {
+    return true;
+  }
+  return store.spaceMeta.some((meta) => (meta.backgroundAssetIds ?? []).includes(assetId));
+}
+
+function collectUnreferencedMediaAssetIds(store: ThinkingStore, candidateAssetIds: Iterable<string>) {
+  const next = new Set<string>();
+  for (const assetId of candidateAssetIds) {
+    if (!assetId || isThinkingMediaAssetReferenced(store, assetId)) continue;
+    next.add(assetId);
+  }
+  return [...next];
+}
+
+function mapOfflineMediaAssetToThinkingMediaAsset(asset: OfflineMediaAssetRecord): ThinkingMediaAsset {
+  return {
+    id: asset.id,
+    fileName: asset.fileName,
+    mimeType: asset.mimeType,
+    byteSize: asset.byteSize,
+    sha256: asset.sha256,
+    width: asset.width,
+    height: asset.height,
+    createdAt: asset.createdAt,
+    uploadedAt: asset.uploadedAt,
+    deletedAt: asset.deletedAt
+  };
+}
+
 function hasMeaningfulLocalData(lifeStore: typeof EMPTY_LIFE_STORE, thinkingStore: ThinkingStore) {
   return (
     lifeStore.doubts.length > 0 ||
     lifeStore.notes.length > 0 ||
     thinkingStore.spaces.length > 0 ||
     thinkingStore.nodes.length > 0 ||
+    thinkingStore.mediaAssets.length > 0 ||
     thinkingStore.scratch.length > 0 ||
     Object.values(thinkingStore.inbox).some((items) => items.length > 0)
   );
@@ -376,6 +507,7 @@ function isCloudPayloadEmpty(payload: UserExportPayload) {
     payload.thinking.spaces.length === 0 &&
     payload.thinking.nodes.length === 0 &&
     (payload.thinking.scratch?.length ?? 0) === 0 &&
+    (payload.thinking.media_assets?.length ?? 0) === 0 &&
     Object.values(payload.thinking.inbox).every((items) => items.length === 0)
   );
 }
@@ -386,6 +518,9 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
   const rawMeta = Array.isArray(payload.thinking.space_meta) ? (payload.thinking.space_meta as Array<Record<string, unknown>>) : [];
   const rawNodeLinks = Array.isArray(payload.thinking.node_links) ? (payload.thinking.node_links as Array<Record<string, unknown>>) : [];
   const rawScratch = Array.isArray(payload.thinking.scratch) ? (payload.thinking.scratch as Array<Record<string, unknown>>) : [];
+  const rawMediaAssets = Array.isArray(payload.thinking.media_assets)
+    ? (payload.thinking.media_assets as Array<Record<string, unknown>>)
+    : [];
   const rawInbox = payload.thinking.inbox as unknown;
   const normalizedInboxEntries = Array.isArray(rawInbox)
     ? (rawInbox as Array<Record<string, unknown>>).reduce<Record<string, Array<Record<string, unknown>>>>((acc, item) => {
@@ -462,6 +597,12 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
               : typeof item.raw_question_text === "string"
                 ? item.raw_question_text
                 : "",
+          imageAssetId:
+            typeof item.imageAssetId === "string"
+              ? item.imageAssetId
+              : typeof item.image_asset_id === "string"
+                ? item.image_asset_id
+                : null,
           noteText:
             typeof item.noteText === "string" ? item.noteText : typeof item.note_text === "string" ? item.note_text : null,
           answerText:
@@ -509,6 +650,13 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
               : typeof item.background_version === "number"
                 ? item.background_version
                 : 0,
+          backgroundAssetIds: [...(((item.backgroundAssetIds ?? item.background_asset_ids ?? []) as string[]) ?? [])].sort(),
+          backgroundSelectedAssetId:
+            typeof item.backgroundSelectedAssetId === "string"
+              ? item.backgroundSelectedAssetId
+              : typeof item.background_selected_asset_id === "string"
+                ? item.background_selected_asset_id
+                : null,
           suggestionDecay:
             typeof item.suggestionDecay === "number"
               ? item.suggestionDecay
@@ -568,6 +716,42 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
             (typeof item.linkType === "string" ? item.linkType : typeof item.link_type === "string" ? item.link_type : "related") as "related",
           score: item.score,
           createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
+        }))
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
+      media_assets: rawMediaAssets
+        .map((item) => ({
+          id: item.id,
+          user_id: typeof item.user_id === "string" ? item.user_id : typeof item.userId === "string" ? item.userId : "",
+          file_name: typeof item.file_name === "string" ? item.file_name : typeof item.fileName === "string" ? item.fileName : "image",
+          mime_type: typeof item.mime_type === "string" ? item.mime_type : typeof item.mimeType === "string" ? item.mimeType : "application/octet-stream",
+          byte_size:
+            typeof item.byte_size === "number"
+              ? item.byte_size
+              : typeof item.byteSize === "number"
+                ? item.byteSize
+                : 0,
+          sha256: typeof item.sha256 === "string" ? item.sha256 : "",
+          width: typeof item.width === "number" ? item.width : null,
+          height: typeof item.height === "number" ? item.height : null,
+          created_at: typeof item.created_at === "string" ? item.created_at : typeof item.createdAt === "string" ? item.createdAt : "",
+          uploaded_at:
+            typeof item.uploaded_at === "string"
+              ? item.uploaded_at
+              : typeof item.uploadedAt === "string"
+                ? item.uploadedAt
+                : null,
+          deleted_at:
+            typeof item.deleted_at === "string"
+              ? item.deleted_at
+              : typeof item.deletedAt === "string"
+                ? item.deletedAt
+                : null,
+          content_base64:
+            typeof item.content_base64 === "string"
+              ? item.content_base64
+              : typeof item.contentBase64 === "string"
+                ? item.contentBase64
+                : ""
         }))
         .sort((a, b) => String(a.id).localeCompare(String(b.id))),
       inbox: Object.fromEntries(
@@ -693,6 +877,7 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
     nodes.push({
       id: node.id,
       questionText: node.rawQuestionText,
+      imageAssetId: node.imageAssetId ?? null,
       noteText: null,
       answerText: null,
       isSuggested: node.isSuggested,
@@ -741,7 +926,9 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
     suggestedQuestions: [],
     freezeNote: meta?.userFreezeNote ?? null,
     backgroundText: meta?.backgroundText ?? null,
-    backgroundVersion: meta?.backgroundVersion ?? 0
+    backgroundVersion: meta?.backgroundVersion ?? 0,
+    backgroundAssetIds: meta?.backgroundAssetIds ?? [],
+    backgroundSelectedAssetId: meta?.backgroundSelectedAssetId ?? null
   };
 }
 
@@ -751,14 +938,15 @@ function syncStoreNodesFromView(store: ThinkingStore, spaceId: string, view: Thi
   const nextNodes = view.tracks.flatMap((track) =>
     track.nodes.map((node) => {
       const existing = existingById.get(node.id);
-      const next = {
-        id: node.id,
-        spaceId,
-        parentNodeId: toTrackParentId(track.id),
-        rawQuestionText: node.questionText,
-        createdAt: existing?.createdAt ?? node.createdAt ?? new Date().toISOString(),
-        orderIndex,
-        isSuggested: node.isSuggested,
+        const next = {
+          id: node.id,
+          spaceId,
+          parentNodeId: toTrackParentId(track.id),
+          rawQuestionText: node.questionText,
+          imageAssetId: node.imageAssetId ?? null,
+          createdAt: existing?.createdAt ?? node.createdAt ?? new Date().toISOString(),
+          orderIndex,
+          isSuggested: node.isSuggested,
         state: "normal" as const,
         dimension: existing?.dimension ?? "definition"
       };
@@ -827,6 +1015,9 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
     exportVersion: item.export_version,
     backgroundText: typeof item.background_text === "string" ? item.background_text : null,
     backgroundVersion: Number.isFinite(item.background_version) ? Number(item.background_version) : 0,
+    backgroundAssetIds: Array.isArray(item.background_asset_ids) ? item.background_asset_ids.filter((id) => typeof id === "string") : [],
+    backgroundSelectedAssetId:
+      typeof item.background_selected_asset_id === "string" ? item.background_selected_asset_id : null,
     suggestionDecay: Number.isFinite(item.suggestion_decay) ? Number(item.suggestion_decay) : 0,
     lastTrackId: typeof item.last_track_id === "string" ? item.last_track_id : null,
     lastOrganizedOrder: Number.isFinite(item.last_organized_order) ? Number(item.last_organized_order) : -1,
@@ -874,6 +1065,7 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
       nodes: (track.nodes ?? []).map((node) => ({
         id: node.id,
         questionText: node.raw_question_text,
+        imageAssetId: typeof node.image_asset_id === "string" ? node.image_asset_id : null,
         noteText: typeof node.note_text === "string" ? node.note_text : null,
         answerText: typeof node.answer_text === "string" ? node.answer_text : null,
         isSuggested: Boolean(node.is_suggested),
@@ -891,7 +1083,10 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
     suggestedQuestions: (payload.suggested_questions ?? []).filter((item) => typeof item === "string"),
     freezeNote: payload.freeze_note ?? null,
     backgroundText: typeof payload.background_text === "string" ? payload.background_text : null,
-    backgroundVersion: Number.isFinite(payload.background_version) ? Number(payload.background_version) : 0
+    backgroundVersion: Number.isFinite(payload.background_version) ? Number(payload.background_version) : 0,
+    backgroundAssetIds: Array.isArray(payload.background_asset_ids) ? payload.background_asset_ids.filter((id) => typeof id === "string") : [],
+    backgroundSelectedAssetId:
+      typeof payload.background_selected_asset_id === "string" ? payload.background_selected_asset_id : null
   };
 }
 
@@ -919,6 +1114,7 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             spaceId: item.spaceId as string,
             parentNodeId: typeof item.parentNodeId === "string" ? item.parentNodeId : null,
             rawQuestionText: typeof item.rawQuestionText === "string" ? item.rawQuestionText : "",
+            imageAssetId: typeof item.imageAssetId === "string" ? item.imageAssetId : null,
             createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
             orderIndex: Number.isFinite(item.orderIndex) ? Number(item.orderIndex) : 0,
             isSuggested: item.isSuggested === true,
@@ -942,6 +1138,8 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             exportVersion: Number.isFinite(item.exportVersion) ? Number(item.exportVersion) : 1,
             backgroundText: typeof item.backgroundText === "string" ? item.backgroundText : null,
             backgroundVersion: Number.isFinite(item.backgroundVersion) ? Number(item.backgroundVersion) : 0,
+            backgroundAssetIds: Array.isArray(item.backgroundAssetIds) ? item.backgroundAssetIds.filter((value) => typeof value === "string") : [],
+            backgroundSelectedAssetId: typeof item.backgroundSelectedAssetId === "string" ? item.backgroundSelectedAssetId : null,
             suggestionDecay: Number.isFinite(item.suggestionDecay) ? Number(item.suggestionDecay) : 0,
             lastTrackId: typeof item.lastTrackId === "string" ? item.lastTrackId : null,
             lastOrganizedOrder: Number.isFinite(item.lastOrganizedOrder) ? Number(item.lastOrganizedOrder) : -1,
@@ -997,6 +1195,22 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             deletedAt: typeof item.deletedAt === "string" ? item.deletedAt : null,
             derivedSpaceId: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
             fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
+          }))
+      : [],
+    mediaAssets: Array.isArray(payload?.mediaAssets)
+      ? payload.mediaAssets
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            fileName: typeof item.fileName === "string" ? item.fileName : "image",
+            mimeType: typeof item.mimeType === "string" ? item.mimeType : "application/octet-stream",
+            byteSize: Number.isFinite(item.byteSize) ? Number(item.byteSize) : 0,
+            sha256: typeof item.sha256 === "string" ? item.sha256 : "",
+            width: Number.isFinite(item.width) ? Number(item.width) : null,
+            height: Number.isFinite(item.height) ? Number(item.height) : null,
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+            uploadedAt: typeof item.uploadedAt === "string" ? item.uploadedAt : null,
+            deletedAt: typeof item.deletedAt === "string" ? item.deletedAt : null
           }))
       : []
   };
@@ -1058,6 +1272,8 @@ export function TimeArchive() {
   const [authDialogOpen, setAuthDialogOpen] = useState(false);
   const [bindingDialog, setBindingDialog] = useState<BindingDialogState | null>(null);
   const [deadLetterMutations, setDeadLetterMutations] = useState<QueuedMutation[]>([]);
+  const [offlineMediaAssets, setOfflineMediaAssets] = useState<OfflineMediaAssetRecord[]>([]);
+  const [mediaAssetSources, setMediaAssetSources] = useState<Record<string, string>>({});
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1067,6 +1283,7 @@ export function TimeArchive() {
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
+  const mediaObjectUrlsRef = useRef<string[]>([]);
   const [stars] = useState(() => createStars(36));
   const freezeNoteByDoubtId = useMemo(() => {
     const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
@@ -1105,6 +1322,17 @@ export function TimeArchive() {
       noticeTimerRef.current = null;
     }, duration);
   }, []);
+
+  const handleUnauthorized = useCallback(
+    (response: Response) => {
+      if (response.status !== 401) return false;
+      setSessionUser(null);
+      setAuthReady(true);
+      if (sessionUser) showNotice("登录已失效，请重新登录");
+      return true;
+    },
+    [sessionUser, showNotice]
+  );
 
   const refreshPinState = useCallback(() => {
     const status = getPinStatus();
@@ -1162,6 +1390,163 @@ export function TimeArchive() {
     const items = await listDeadLetterMutationsByOwner(ownerKey);
     setDeadLetterMutations(items);
   }, []);
+
+  const refreshOfflineMediaAssets = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
+    if (!ownerKey) {
+      setOfflineMediaAssets([]);
+      return [];
+    }
+    const items = await listOfflineMediaAssetsByOwner(ownerKey);
+    setOfflineMediaAssets(items);
+    return items;
+  }, []);
+
+  const syncThinkingMediaAssetState = useCallback((asset: ThinkingMediaAsset) => {
+    setThinkingStore((prev) => {
+      const index = prev.mediaAssets.findIndex((item) => item.id === asset.id);
+      const nextMediaAssets = [...prev.mediaAssets];
+      if (index >= 0) nextMediaAssets[index] = asset;
+      else nextMediaAssets.unshift(asset);
+      return { ...prev, mediaAssets: nextMediaAssets };
+    });
+  }, []);
+
+  const markMediaAssetsDeletedLocally = useCallback(
+    async (assetIds: string[]) => {
+      const uniqueAssetIds = [...new Set(assetIds.filter((assetId) => typeof assetId === "string" && assetId.trim()))];
+      if (!uniqueAssetIds.length) return;
+      const deletedAt = new Date().toISOString();
+      await Promise.all(uniqueAssetIds.map((assetId) => updateOfflineMediaAsset(assetId, { deletedAt })));
+      await refreshOfflineMediaAssets(activeOwnerKey);
+    },
+    [activeOwnerKey, refreshOfflineMediaAssets]
+  );
+
+  const uploadThinkingMediaAssetBinary = useCallback(
+    async (
+      file: Blob,
+      options: { assetId: string; fileName: string; mimeType: string; width: number | null; height: number | null }
+    ) => {
+      const formData = new FormData();
+      formData.append("file", file, options.fileName);
+      formData.append("asset_id", options.assetId);
+      formData.append("file_name", options.fileName);
+      formData.append("mime_type", options.mimeType);
+      if (typeof options.width === "number") formData.append("width", String(options.width));
+      if (typeof options.height === "number") formData.append("height", String(options.height));
+      const response = await apiFetch("/v1/thinking/media/upload", {
+        method: "POST",
+        body: formData
+      });
+      if (handleUnauthorized(response)) return null;
+      if (!response.ok) return null;
+      const payload = (await response.json().catch(() => ({}))) as {
+        asset_id?: string;
+        file_name?: string;
+        mime_type?: string;
+        byte_size?: number;
+        sha256?: string;
+        width?: number | null;
+        height?: number | null;
+        uploaded_at?: string;
+      };
+      if (typeof payload.asset_id !== "string") return null;
+      return {
+        id: payload.asset_id,
+        fileName: typeof payload.file_name === "string" ? payload.file_name : options.fileName,
+        mimeType: typeof payload.mime_type === "string" ? payload.mime_type : options.mimeType,
+        byteSize: Number.isFinite(payload.byte_size) ? Number(payload.byte_size) : file.size,
+        sha256: typeof payload.sha256 === "string" ? payload.sha256 : "",
+        width: Number.isFinite(payload.width) ? Number(payload.width) : options.width,
+        height: Number.isFinite(payload.height) ? Number(payload.height) : options.height,
+        createdAt: new Date().toISOString(),
+        uploadedAt: typeof payload.uploaded_at === "string" ? payload.uploaded_at : new Date().toISOString(),
+        deletedAt: null
+      } satisfies ThinkingMediaAsset;
+    },
+    [handleUnauthorized]
+  );
+
+  const syncPendingOfflineMediaAssets = useCallback(
+    async (ownerKey: OfflineOwnerKey | null) => {
+      if (!ownerKey || !ownerKey.startsWith("user:")) return true;
+      const pendingAssets = await listPendingOfflineMediaAssetsByOwner(ownerKey);
+      for (const asset of pendingAssets) {
+        if (!asset.blob) continue;
+        try {
+          const uploadedAsset = await uploadThinkingMediaAssetBinary(asset.blob, {
+            assetId: asset.id,
+            fileName: asset.fileName,
+            mimeType: asset.mimeType,
+            width: asset.width,
+            height: asset.height
+          });
+          if (!uploadedAsset) {
+            await updateOfflineMediaAsset(asset.id, {
+              status: "dead_letter",
+              lastError: "upload_rejected"
+            });
+            continue;
+          }
+          await updateOfflineMediaAsset(asset.id, {
+            status: "uploaded",
+            remoteUrl: buildApiUrl(`/v1/thinking/media/${uploadedAsset.id}`),
+            uploadedAt: uploadedAsset.uploadedAt,
+            lastError: null,
+            blob: null,
+            byteSize: uploadedAsset.byteSize,
+            sha256: uploadedAsset.sha256
+          });
+          syncThinkingMediaAssetState(uploadedAsset);
+        } catch (error) {
+          await updateOfflineMediaAsset(asset.id, {
+            lastError: error instanceof Error ? error.message : String(error)
+          });
+          return false;
+        }
+      }
+      await refreshOfflineMediaAssets(ownerKey);
+      return true;
+    },
+    [refreshOfflineMediaAssets, syncThinkingMediaAssetState, uploadThinkingMediaAssetBinary]
+  );
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void refreshOfflineMediaAssets(activeOwnerKey);
+  }, [activeOwnerKey, hydrated, refreshOfflineMediaAssets]);
+
+  useEffect(() => {
+    for (const url of mediaObjectUrlsRef.current) {
+      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+    }
+    const nextSources: Record<string, string> = {};
+    const nextObjectUrls: string[] = [];
+    const seenAssetIds = new Set<string>();
+    const mediaAssets = Array.isArray(thinkingStore.mediaAssets) ? thinkingStore.mediaAssets : [];
+    for (const asset of offlineMediaAssets) {
+      if (asset.deletedAt) continue;
+      seenAssetIds.add(asset.id);
+      if (asset.blob) {
+        const url = URL.createObjectURL(asset.blob);
+        nextSources[asset.id] = url;
+        nextObjectUrls.push(url);
+        continue;
+      }
+      nextSources[asset.id] = asset.remoteUrl ?? buildApiUrl(`/v1/thinking/media/${asset.id}`);
+    }
+    for (const asset of mediaAssets) {
+      if (asset.deletedAt || seenAssetIds.has(asset.id)) continue;
+      nextSources[asset.id] = buildApiUrl(`/v1/thinking/media/${asset.id}`);
+    }
+    mediaObjectUrlsRef.current = nextObjectUrls;
+    setMediaAssetSources(nextSources);
+    return () => {
+      for (const url of nextObjectUrls) {
+        if (url.startsWith("blob:")) URL.revokeObjectURL(url);
+      }
+    };
+  }, [offlineMediaAssets, thinkingStore.mediaAssets]);
 
   const syncRevisionFromServer = useCallback(
     async (userId?: string | null) => {
@@ -1241,22 +1626,23 @@ export function TimeArchive() {
       thinkingViews?: Record<string, ThinkingSpaceView>;
       meta: OfflineSnapshotMeta;
     }) => {
-      const initialSpaceId = snapshot.activeSpaceId ?? pickDefaultSpaceId(snapshot.thinkingStore.spaces);
+      const normalizedThinkingStore = normalizeThinkingStore(snapshot.thinkingStore);
+      const initialSpaceId = snapshot.activeSpaceId ?? pickDefaultSpaceId(normalizedThinkingStore.spaces);
       const cachedInitialView = initialSpaceId ? snapshot.thinkingViews?.[initialSpaceId] ?? null : null;
-      const initialView = isSpaceViewConsistentWithStore(snapshot.thinkingStore, initialSpaceId ?? "", cachedInitialView)
+      const initialView = isSpaceViewConsistentWithStore(normalizedThinkingStore, initialSpaceId ?? "", cachedInitialView)
         ? cachedInitialView
         : initialSpaceId
-          ? buildSpaceViewFromStore(snapshot.thinkingStore, initialSpaceId)
+          ? buildSpaceViewFromStore(normalizedThinkingStore, initialSpaceId)
           : null;
       setLifeStore(snapshot.lifeStore);
-      setThinkingStore(snapshot.thinkingStore);
+      setThinkingStore(normalizedThinkingStore);
       setActiveSpaceId(initialSpaceId);
       thinkingViewCacheRef.current = snapshot.thinkingViews ?? {};
       if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
       setThinkingView(initialView);
       setOfflineMeta(snapshot.meta);
       setOfflineSnapshotExists(
-        hasMeaningfulLocalData(snapshot.lifeStore, snapshot.thinkingStore) ||
+        hasMeaningfulLocalData(snapshot.lifeStore, normalizedThinkingStore) ||
           Object.keys(snapshot.thinkingViews ?? {}).length > 0
       );
     },
@@ -1298,89 +1684,129 @@ export function TimeArchive() {
   );
 
   const buildLocalExportPayload = useCallback(
-    (user: SessionUser): UserExportPayload => ({
-      version: "2026-03-03",
-      exported_at: new Date().toISOString(),
-      user_id: user.userId,
-      user_email: user.email,
-      life: {
-        doubts: lifeStore.doubts.map((item) => ({
-          id: item.id,
-          raw_text: item.rawText,
-          first_node_preview: item.firstNodePreview,
-          last_node_preview: item.lastNodePreview,
-          created_at: item.createdAt,
-          archived_at: item.archivedAt,
-          deleted_at: item.deletedAt
-        })),
-        notes: lifeStore.notes.map((item) => ({
-          id: item.id,
-          doubt_id: item.doubtId,
-          note_text: item.noteText,
-          created_at: item.createdAt
-        }))
-      },
-      thinking: {
-        spaces: thinkingStore.spaces.map((item) => ({
-          id: item.id,
-          userId: user.userId,
-          rootQuestionText: item.rootQuestionText,
-          status: item.status,
-          createdAt: item.createdAt,
-          frozenAt: item.frozenAt,
-          sourceTimeDoubtId: item.sourceTimeDoubtId
-        })),
-        nodes: thinkingStore.nodes.map((item) => ({
-          id: item.id,
-          spaceId: item.spaceId,
-          parentNodeId: item.parentNodeId,
-          rawQuestionText: item.rawQuestionText,
-          createdAt: item.createdAt,
-          orderIndex: item.orderIndex,
-          isSuggested: item.isSuggested,
-          state: item.state,
-          dimension: item.dimension
-        })),
-        space_meta: thinkingStore.spaceMeta.map((item) => ({
-          spaceId: item.spaceId,
-          userFreezeNote: item.userFreezeNote,
-          exportVersion: item.exportVersion,
-          backgroundText: item.backgroundText ?? null,
-          backgroundVersion: item.backgroundVersion ?? 0,
-          suggestionDecay: item.suggestionDecay ?? 0,
-          lastTrackId: item.lastTrackId ?? null,
-          lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
-          parkingTrackId: item.parkingTrackId ?? null,
-          pendingTrackId: item.pendingTrackId ?? null,
-          emptyTrackIds: item.emptyTrackIds ?? [],
-          milestoneNodeIds: item.milestoneNodeIds ?? [],
-          trackDirectionHints: item.trackDirectionHints ?? {}
-        })),
-        node_links: thinkingStore.nodeLinks.map((item) => ({
-          id: item.id,
-          spaceId: item.spaceId,
-          sourceNodeId: item.sourceNodeId,
-          targetNodeId: item.targetNodeId,
-          linkType: item.linkType,
-          score: item.score,
-          createdAt: item.createdAt
-        })),
-        inbox: thinkingStore.inbox,
-        scratch: thinkingStore.scratch.map((item) => ({
-          id: item.id,
-          userId: user.userId,
-          rawText: item.rawText,
-          createdAt: item.createdAt,
-          updatedAt: item.updatedAt,
-          archivedAt: item.archivedAt,
-          deletedAt: item.deletedAt,
-          derivedSpaceId: item.derivedSpaceId,
-          fedTimeDoubtId: item.fedTimeDoubtId
-        }))
-      },
-      audit: []
-    }),
-    [lifeStore.doubts, lifeStore.notes, thinkingStore.inbox, thinkingStore.nodeLinks, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
+    async (user: SessionUser, ownerKey: OfflineOwnerKey | null): Promise<UserExportPayload> => {
+      const mediaAssets = ownerKey ? await listOfflineMediaAssetsByOwner(ownerKey) : offlineMediaAssets;
+      const serializableMediaAssets = await Promise.all(
+        mediaAssets
+          .filter((asset) => !asset.deletedAt)
+          .map(async (asset) => {
+            let blob = asset.blob;
+            if (!blob && asset.remoteUrl) {
+              try {
+                const response = await apiFetch(asset.remoteUrl, { method: "GET", cache: "no-store" });
+                if (response.ok) blob = await response.blob();
+              } catch {
+                blob = null;
+              }
+            }
+            if (!blob) return null;
+            return {
+              id: asset.id,
+              user_id: user.userId,
+              file_name: asset.fileName,
+              mime_type: asset.mimeType,
+              byte_size: asset.byteSize,
+              sha256: asset.sha256,
+              width: asset.width,
+              height: asset.height,
+              created_at: asset.createdAt,
+              uploaded_at: asset.uploadedAt,
+              deleted_at: asset.deletedAt,
+              content_base64: await blobToBase64(blob)
+            };
+          })
+      );
+
+      return {
+        version: "2026-03-03",
+        exported_at: new Date().toISOString(),
+        user_id: user.userId,
+        user_email: user.email,
+        life: {
+          doubts: lifeStore.doubts.map((item) => ({
+            id: item.id,
+            raw_text: item.rawText,
+            first_node_preview: item.firstNodePreview,
+            last_node_preview: item.lastNodePreview,
+            created_at: item.createdAt,
+            archived_at: item.archivedAt,
+            deleted_at: item.deletedAt
+          })),
+          notes: lifeStore.notes.map((item) => ({
+            id: item.id,
+            doubt_id: item.doubtId,
+            note_text: item.noteText,
+            created_at: item.createdAt
+          }))
+        },
+        thinking: {
+          spaces: thinkingStore.spaces.map((item) => ({
+            id: item.id,
+            userId: user.userId,
+            rootQuestionText: item.rootQuestionText,
+            status: item.status,
+            createdAt: item.createdAt,
+            frozenAt: item.frozenAt,
+            sourceTimeDoubtId: item.sourceTimeDoubtId
+          })),
+          nodes: thinkingStore.nodes.map((item) => ({
+            id: item.id,
+            spaceId: item.spaceId,
+            parentNodeId: item.parentNodeId,
+            rawQuestionText: item.rawQuestionText,
+            imageAssetId: item.imageAssetId ?? null,
+            createdAt: item.createdAt,
+            orderIndex: item.orderIndex,
+            isSuggested: item.isSuggested,
+            state: item.state,
+            dimension: item.dimension
+          })),
+          space_meta: thinkingStore.spaceMeta.map((item) => ({
+            spaceId: item.spaceId,
+            userFreezeNote: item.userFreezeNote,
+            exportVersion: item.exportVersion,
+            backgroundText: item.backgroundText ?? null,
+            backgroundVersion: item.backgroundVersion ?? 0,
+            backgroundAssetIds: item.backgroundAssetIds ?? [],
+            backgroundSelectedAssetId: item.backgroundSelectedAssetId ?? null,
+            suggestionDecay: item.suggestionDecay ?? 0,
+            lastTrackId: item.lastTrackId ?? null,
+            lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
+            parkingTrackId: item.parkingTrackId ?? null,
+            pendingTrackId: item.pendingTrackId ?? null,
+            emptyTrackIds: item.emptyTrackIds ?? [],
+            milestoneNodeIds: item.milestoneNodeIds ?? [],
+            trackDirectionHints: item.trackDirectionHints ?? {}
+          })),
+          node_links: thinkingStore.nodeLinks.map((item) => ({
+            id: item.id,
+            spaceId: item.spaceId,
+            sourceNodeId: item.sourceNodeId,
+            targetNodeId: item.targetNodeId,
+            linkType: item.linkType,
+            score: item.score,
+            createdAt: item.createdAt
+          })),
+          inbox: thinkingStore.inbox,
+          scratch: thinkingStore.scratch.map((item) => ({
+            id: item.id,
+            userId: user.userId,
+            rawText: item.rawText,
+            createdAt: item.createdAt,
+            updatedAt: item.updatedAt,
+            archivedAt: item.archivedAt,
+            deletedAt: item.deletedAt,
+            derivedSpaceId: item.derivedSpaceId,
+            fedTimeDoubtId: item.fedTimeDoubtId
+          })),
+          media_assets: serializableMediaAssets.filter(
+            (item): item is NonNullable<(typeof serializableMediaAssets)[number]> => Boolean(item)
+          )
+        },
+        audit: []
+      };
+    },
+    [lifeStore.doubts, lifeStore.notes, offlineMediaAssets, thinkingStore.inbox, thinkingStore.nodeLinks, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
   );
 
   const getLocalSpaceView = useCallback(
@@ -1433,17 +1859,6 @@ export function TimeArchive() {
       return false;
     }
   }, []);
-
-  const handleUnauthorized = useCallback(
-    (response: Response) => {
-      if (response.status !== 401) return false;
-      setSessionUser(null);
-      setAuthReady(true);
-      if (sessionUser) showNotice("登录已失效，请重新登录");
-      return true;
-    },
-    [sessionUser, showNotice]
-  );
 
   const syncLifeFromApi = useCallback(
     async (silent = false) => {
@@ -1570,6 +1985,7 @@ export function TimeArchive() {
                 spaceId: mappedView.spaceId,
                 parentNodeId: `track:${track.id}`,
                 rawQuestionText: node.questionText,
+                imageAssetId: node.imageAssetId ?? null,
                 createdAt: node.createdAt ?? new Date().toISOString(),
                 orderIndex: indexWithinTrack,
                 isSuggested: node.isSuggested,
@@ -1693,7 +2109,7 @@ export function TimeArchive() {
         showNotice("本地思路内容未完整加载，已阻止覆盖云端");
         return false;
       }
-      const payload = buildLocalExportPayload(user);
+      const payload = await buildLocalExportPayload(user, activeOwnerKey);
       const checksum = await sha256Hex(stableStringify(payload));
       const response = await apiFetch("/v1/system/import", {
         method: "POST",
@@ -1721,7 +2137,7 @@ export function TimeArchive() {
       await refreshFromCloud(null);
       return true;
     },
-    [buildLocalExportPayload, handleUnauthorized, offlineMeta?.completeness, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
+    [activeOwnerKey, buildLocalExportPayload, handleUnauthorized, offlineMeta?.completeness, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
   );
 
   const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
@@ -1730,6 +2146,8 @@ export function TimeArchive() {
     if (typeof navigator !== "undefined" && navigator.onLine === false) return;
     offlineSyncingRef.current = true;
     try {
+      const mediaReady = await syncPendingOfflineMediaAssets(ownerKey);
+      if (!mediaReady) return;
       const pending = await listOfflineMutationsByOwner(ownerKey);
       if (!pending.length) return;
       const baseRevision = pending[0]?.baseRevision ?? latestRevisionRef.current ?? offlineMeta?.revision ?? 0;
@@ -1875,6 +2293,7 @@ export function TimeArchive() {
     refreshFromCloud,
     refreshDeadLetterMutations,
     showNotice,
+    syncPendingOfflineMediaAssets,
     syncRevisionFromServer,
     setRevisionBaseline,
     updateOfflineMeta
@@ -2218,7 +2637,9 @@ export function TimeArchive() {
         suggestedQuestions: [],
         freezeNote: null,
         backgroundText: null,
-        backgroundVersion: 0
+        backgroundVersion: 0,
+        backgroundAssetIds: [],
+        backgroundSelectedAssetId: null
       };
       thinkingViewCacheRef.current[localSpaceId] = localView;
       setThinkingStore((prev) => ({
@@ -2897,6 +3318,7 @@ export function TimeArchive() {
       const patchNode = {
         id: localNodeId,
         questionText: payload.rawInput.trim(),
+        imageAssetId: null,
         noteText: null,
         answerText: null,
         isSuggested: payload.fromSuggestion === true,
@@ -3180,6 +3602,7 @@ export function TimeArchive() {
         if (!activeSpaceId) return false;
         const currentView = getLocalSpaceView(activeSpaceId);
         if (!currentView) return false;
+        const removedNode = thinkingStore.nodes.find((node) => node.id === nodeId) ?? null;
         const nextLinks = thinkingStore.nodeLinks.filter((link) => link.sourceNodeId !== nodeId && link.targetNodeId !== nodeId);
         const nextTracks = currentView.tracks.map((track) => ({
           ...track,
@@ -3190,15 +3613,24 @@ export function TimeArchive() {
           tracks: normalizeTrackListWithLinks(nextTracks, nextLinks, activeSpaceId)
         };
         commitLocalSpaceView(activeSpaceId, nextView);
-        setThinkingStore((prev) => ({
-          ...syncStoreNodesFromView(prev, activeSpaceId, nextView),
-          nodeLinks: nextLinks,
-          spaceMeta: prev.spaceMeta.map((meta) =>
-            meta.spaceId === activeSpaceId
-              ? { ...meta, milestoneNodeIds: (meta.milestoneNodeIds ?? []).filter((id) => id !== nodeId) }
-              : meta
-          )
-        }));
+        let removedAssetIds: string[] = [];
+        setThinkingStore((prev) => {
+          const nextStore = {
+            ...syncStoreNodesFromView(prev, activeSpaceId, nextView),
+            nodeLinks: nextLinks,
+            spaceMeta: prev.spaceMeta.map((meta) =>
+              meta.spaceId === activeSpaceId
+                ? { ...meta, milestoneNodeIds: (meta.milestoneNodeIds ?? []).filter((id) => id !== nodeId) }
+                : meta
+            )
+          };
+          removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, removedNode?.imageAssetId ? [removedNode.imageAssetId] : []);
+          if (removedAssetIds.length) {
+            nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+          }
+          return nextStore;
+        });
+        await markMediaAssetsDeletedLocally(removedAssetIds);
         markLocalChange();
         return true;
       }
@@ -3213,7 +3645,20 @@ export function TimeArchive() {
         return false;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
+    [
+      activeSpaceId,
+      cloudSyncReady,
+      commitLocalSpaceView,
+      getLocalSpaceView,
+      handleUnauthorized,
+      loadThinkingViewFromApi,
+      markCloudSynced,
+      markLocalChange,
+      markMediaAssetsDeletedLocally,
+      sessionUser?.userId,
+      thinkingStore.nodeLinks,
+      thinkingStore.nodes
+    ]
   );
 
   const handleThinkingUpdateNode = useCallback(
@@ -3347,6 +3792,179 @@ export function TimeArchive() {
       return true;
     },
     [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
+  );
+
+  const applyLocalNodeImageAsset = useCallback(
+    async (nodeId: string, nextAsset: ThinkingMediaAsset | null) => {
+      const existingNode = thinkingStore.nodes.find((node) => node.id === nodeId);
+      if (!existingNode) return false;
+
+      const nextAssetId = nextAsset?.id ?? null;
+      const previousAssetId = existingNode.imageAssetId ?? null;
+      const spaceId = existingNode.spaceId;
+      const currentView = getLocalSpaceView(spaceId);
+      if (currentView) {
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          tracks: currentView.tracks.map((track) => ({
+            ...track,
+            nodes: track.nodes.map((node) => (node.id === nodeId ? { ...node, imageAssetId: nextAssetId } : node))
+          }))
+        });
+      }
+
+      let removedAssetIds: string[] = [];
+      setThinkingStore((prev) => {
+        const nextNodes = prev.nodes.map((node) => (node.id === nodeId ? { ...node, imageAssetId: nextAssetId } : node));
+        let nextMediaAssets = prev.mediaAssets;
+        if (nextAsset) {
+          const index = nextMediaAssets.findIndex((asset) => asset.id === nextAsset.id);
+          if (index >= 0) {
+            nextMediaAssets = [...nextMediaAssets];
+            nextMediaAssets[index] = nextAsset;
+          } else {
+            nextMediaAssets = [nextAsset, ...nextMediaAssets];
+          }
+        }
+        const nextStore = { ...prev, nodes: nextNodes, mediaAssets: nextMediaAssets };
+        removedAssetIds = collectUnreferencedMediaAssetIds(
+          nextStore,
+          previousAssetId && previousAssetId !== nextAssetId ? [previousAssetId] : []
+        );
+        if (removedAssetIds.length) {
+          nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+        }
+        return nextStore;
+      });
+
+      await markMediaAssetsDeletedLocally(removedAssetIds);
+      markLocalChange();
+      return true;
+    },
+    [
+      commitLocalSpaceView,
+      getLocalSpaceView,
+      markMediaAssetsDeletedLocally,
+      markLocalChange,
+      thinkingStore.nodes
+    ]
+  );
+
+  const handleThinkingSetNodeImage = useCallback(
+    async (nodeId: string, file: File) => {
+      if (!file.type.startsWith("image/")) return false;
+      const ownerKey = activeOwnerKey;
+      if (!ownerKey) return false;
+
+      const assetId = createId();
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const draftAsset: ThinkingMediaAsset = {
+        id: assetId,
+        fileName: file.name || "image",
+        mimeType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        sha256,
+        width: dimensions.width,
+        height: dimensions.height,
+        createdAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null
+      };
+
+      const persistOfflineAsset = async (status: OfflineMediaAssetStatus, uploadedAt?: string | null) => {
+        await saveOfflineMediaAsset({
+          id: draftAsset.id,
+          ownerKey,
+          fileName: draftAsset.fileName,
+          mimeType: draftAsset.mimeType,
+          byteSize: draftAsset.byteSize,
+          sha256: draftAsset.sha256,
+          width: draftAsset.width,
+          height: draftAsset.height,
+          status,
+          blob: file,
+          remoteUrl: status === "uploaded" ? buildApiUrl(`/v1/thinking/media/${draftAsset.id}`) : null,
+          createdAt: draftAsset.createdAt,
+          updatedAt: new Date().toISOString(),
+          uploadedAt: uploadedAt ?? null,
+          deletedAt: null,
+          lastError: null
+        });
+        await refreshOfflineMediaAssets(ownerKey);
+      };
+
+      const nodePayload = { image_asset_id: draftAsset.id, client_updated_at: new Date().toISOString() };
+      if (cloudSyncReady) {
+        try {
+          const uploadedAsset = await uploadThinkingMediaAssetBinary(file, {
+            assetId,
+            fileName: draftAsset.fileName,
+            mimeType: draftAsset.mimeType,
+            width: draftAsset.width,
+            height: draftAsset.height
+          });
+          if (!uploadedAsset) return false;
+          const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(nodePayload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await persistOfflineAsset("uploaded", uploadedAsset.uploadedAt);
+          await applyLocalNodeImageAsset(nodeId, uploadedAsset);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
+      }
+
+      await persistOfflineAsset("pending");
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/image`, nodePayload);
+      await applyLocalNodeImageAsset(nodeId, draftAsset);
+      return true;
+    },
+    [
+      activeOwnerKey,
+      applyLocalNodeImageAsset,
+      cloudSyncReady,
+      handleUnauthorized,
+      markCloudSynced,
+      queueMutation,
+      refreshOfflineMediaAssets,
+      sessionUser?.userId,
+      uploadThinkingMediaAssetBinary
+    ]
+  );
+
+  const handleThinkingRemoveNodeImage = useCallback(
+    async (nodeId: string) => {
+      const node = thinkingStore.nodes.find((item) => item.id === nodeId);
+      if (!node?.imageAssetId) return true;
+      const payload = { image_asset_id: null, client_updated_at: new Date().toISOString() };
+      if (cloudSyncReady) {
+        try {
+          const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/image`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+          });
+          if (handleUnauthorized(response)) return false;
+          if (!response.ok) return false;
+          await applyLocalNodeImageAsset(nodeId, null);
+          markCloudSynced(sessionUser?.userId ?? null);
+          return true;
+        } catch (error) {
+          if (!isOfflineNetworkError(error)) return false;
+        }
+      }
+
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/image`, payload);
+      await applyLocalNodeImageAsset(nodeId, null);
+      return true;
+    },
+    [applyLocalNodeImageAsset, cloudSyncReady, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId, thinkingStore.nodes]
   );
 
   const handleThinkingMisplacedNode = useCallback(
@@ -3691,6 +4309,8 @@ export function TimeArchive() {
                 exportVersion: 1,
                 backgroundText: null,
                 backgroundVersion: 0,
+                backgroundAssetIds: [],
+                backgroundSelectedAssetId: null,
                 suggestionDecay: 0,
                 lastTrackId: null,
                 lastOrganizedOrder: -1,
@@ -3749,20 +4369,45 @@ export function TimeArchive() {
         }
       }
       delete thinkingViewCacheRef.current[spaceId];
-      setThinkingStore((prev) => ({
-        ...prev,
-        spaces: prev.spaces.filter((space) => space.id !== spaceId),
-        nodes: prev.nodes.filter((node) => node.spaceId !== spaceId),
-        spaceMeta: prev.spaceMeta.filter((meta) => meta.spaceId !== spaceId),
-        inbox: Object.fromEntries(Object.entries(prev.inbox).filter(([key]) => key !== spaceId))
-      }));
+      let removedAssetIds: string[] = [];
+      setThinkingStore((prev) => {
+        const candidateAssetIds = [
+          ...prev.nodes.filter((node) => node.spaceId === spaceId).map((node) => node.imageAssetId ?? ""),
+          ...prev.spaceMeta
+            .filter((meta) => meta.spaceId === spaceId)
+            .flatMap((meta) => [...(meta.backgroundAssetIds ?? []), meta.backgroundSelectedAssetId ?? ""])
+        ];
+        const nextStore = {
+          ...prev,
+          spaces: prev.spaces.filter((space) => space.id !== spaceId),
+          nodes: prev.nodes.filter((node) => node.spaceId !== spaceId),
+          spaceMeta: prev.spaceMeta.filter((meta) => meta.spaceId !== spaceId),
+          inbox: Object.fromEntries(Object.entries(prev.inbox).filter(([key]) => key !== spaceId))
+        };
+        removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, candidateAssetIds);
+        if (removedAssetIds.length) {
+          nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+        }
+        return nextStore;
+      });
+      await markMediaAssetsDeletedLocally(removedAssetIds);
       const nextActive = pickDefaultSpaceId(thinkingStore.spaces.filter((space) => space.id !== spaceId));
       setActiveSpaceId(nextActive);
       setThinkingView(nextActive ? thinkingViewCacheRef.current[nextActive] ?? null : null);
       markLocalChange();
       return { ok: true as const };
     },
-    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, syncThinkingSpacesFromApi, thinkingStore.spaces]
+    [
+      cloudSyncReady,
+      handleUnauthorized,
+      loadThinkingViewFromApi,
+      markCloudSynced,
+      markLocalChange,
+      markMediaAssetsDeletedLocally,
+      sessionUser?.userId,
+      syncThinkingSpacesFromApi,
+      thinkingStore.spaces
+    ]
   );
 
   const handleThinkingExport = useCallback(async (spaceId: string) => {
@@ -4118,6 +4763,8 @@ export function TimeArchive() {
                 onUpdateNodeQuestion={handleThinkingUpdateNode}
                 onCopyNode={handleThinkingCopyNode}
                 onSaveNodeAnswer={handleThinkingSaveNodeAnswer}
+                onSetNodeImage={handleThinkingSetNodeImage}
+                onRemoveNodeImage={handleThinkingRemoveNodeImage}
                 onSetActiveTrack={handleThinkingSetActiveTrack}
                 onCreateTrack={handleThinkingCreateTrack}
                 onSaveBackground={handleThinkingSaveBackground}
@@ -4136,6 +4783,7 @@ export function TimeArchive() {
                 onViewModeChange={setThinkingViewMode}
                 reentryTarget={thinkingJumpTarget}
                 onReentryHandled={() => setThinkingJumpTarget(null)}
+                mediaAssetSources={mediaAssetSources}
                 showNotice={showNotice}
               />
             </motion.section>

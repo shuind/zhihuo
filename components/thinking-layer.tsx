@@ -1,6 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MouseEvent as ReactMouseEvent, type SetStateAction } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ChangeEvent,
+  type Dispatch,
+  type MouseEvent as ReactMouseEvent,
+  type SetStateAction
+} from "react";
 import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
@@ -65,6 +75,7 @@ function spaceStatusLabel(status: ThinkingSpaceStatus) {
 export type ThinkingTrackNodeView = {
   id: string;
   questionText: string;
+  imageAssetId: string | null;
   noteText: string | null;
   answerText: string | null;
   createdAt?: string;
@@ -96,6 +107,8 @@ export type ThinkingSpaceView = {
   freezeNote: string | null;
   backgroundText: string | null;
   backgroundVersion: number;
+  backgroundAssetIds: string[];
+  backgroundSelectedAssetId: string | null;
 };
 
 type OrganizeCandidate = {
@@ -173,6 +186,8 @@ export function ThinkingLayer(props: {
   onUpdateNodeQuestion: (nodeId: string, rawQuestionText: string) => Promise<boolean>;
   onCopyNode: (nodeId: string, targetTrackId?: string) => Promise<string | null>;
   onSaveNodeAnswer: (nodeId: string, answerText: string | null) => Promise<boolean>;
+  onSetNodeImage: (nodeId: string, file: File) => Promise<boolean>;
+  onRemoveNodeImage: (nodeId: string) => Promise<boolean>;
   onSetActiveTrack: (spaceId: string, trackId: string) => Promise<boolean>;
   onCreateTrack: (spaceId: string) => Promise<string | null>;
   onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
@@ -196,6 +211,7 @@ export function ThinkingLayer(props: {
   reentryTarget: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null } | null;
   onReentryHandled: () => void;
   writeEnabled?: boolean;
+  mediaAssetSources?: Record<string, string>;
   showNotice: (message: string) => void;
 }) {
   const [newSpaceInput, setNewSpaceInput] = useState("");
@@ -240,6 +256,8 @@ export function ThinkingLayer(props: {
   const [savingAnswerNodeId, setSavingAnswerNodeId] = useState<string | null>(null);
   const [editingNodeId, setEditingNodeId] = useState<string | null>(null);
   const [editingQuestionDraft, setEditingQuestionDraft] = useState("");
+  const [uploadingImageNodeId, setUploadingImageNodeId] = useState<string | null>(null);
+  const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
   const [clipboardMode, setClipboardMode] = useState<"cut" | "copy" | null>(null);
   const [clipboardNodeId, setClipboardNodeId] = useState<string | null>(null);
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
@@ -253,6 +271,8 @@ export function ThinkingLayer(props: {
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
   const scratchInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const nodeImageInputRef = useRef<HTMLInputElement | null>(null);
+  const pendingImageNodeIdRef = useRef<string | null>(null);
   const clearAddedTimerRef = useRef<number | null>(null);
   const trackPositionsRef = useRef<Record<string, TrackPosition>>({});
   const lastRestoredSpaceIdRef = useRef<string | null>(null);
@@ -398,6 +418,7 @@ export function ThinkingLayer(props: {
     return searchableSpaces.filter((space) => space.rootQuestionText.toLowerCase().includes(normalizedSpaceFinderQuery));
   }, [normalizedSpaceFinderQuery, searchableSpaces]);
   const detailOpen = Boolean(activeSpace && thinkingViewMode === "detail" && detailSpaceId === activeSpace.id);
+  const mediaAssetSources = props.mediaAssetSources ?? {};
 
   useEffect(() => {
     setLocalPendingTrackId(null);
@@ -425,6 +446,8 @@ export function ThinkingLayer(props: {
     setSavingAnswerNodeId(null);
     setEditingNodeId(null);
     setEditingQuestionDraft("");
+    setUploadingImageNodeId(null);
+    setPreviewImage(null);
     setClipboardMode(null);
     setClipboardNodeId(null);
     setClipboardSourceTrackId(null);
@@ -1184,6 +1207,40 @@ export function ThinkingLayer(props: {
     [props]
   );
 
+  const openNodeImagePicker = useCallback((nodeId: string) => {
+    pendingImageNodeIdRef.current = nodeId;
+    nodeImageInputRef.current?.click();
+  }, []);
+
+  const handleNodeImageInputChange = useCallback(
+    (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      const nodeId = pendingImageNodeIdRef.current;
+      event.target.value = "";
+      pendingImageNodeIdRef.current = null;
+      if (!file || !nodeId) return;
+      void (async () => {
+        setUploadingImageNodeId(nodeId);
+        const ok = await props.onSetNodeImage(nodeId, file);
+        setUploadingImageNodeId((current) => (current === nodeId ? null : current));
+        if (!ok) props.showNotice("图片保存失败，请稍后再试");
+      })();
+    },
+    [props]
+  );
+
+  const removeNodeImage = useCallback(
+    (nodeId: string) => {
+      void (async () => {
+        setUploadingImageNodeId(nodeId);
+        const ok = await props.onRemoveNodeImage(nodeId);
+        setUploadingImageNodeId((current) => (current === nodeId ? null : current));
+        if (!ok) props.showNotice("图片移除失败，请稍后再试");
+      })();
+    },
+    [props]
+  );
+
   const startEditingNode = useCallback((node: ThinkingTrackNodeView) => {
     suppressQuestionFocusUntilRef.current = Date.now() + 600;
     setFocusMenuNodeId(null);
@@ -1531,6 +1588,8 @@ export function ThinkingLayer(props: {
                             const draftValue = answerDraftByNodeId[node.id] ?? node.answerText ?? "";
                             const isEditing = editingNodeId === node.id;
                             const isCut = clipboardMode === "cut" && clipboardNodeId === node.id;
+                            const imageSrc = node.imageAssetId ? mediaAssetSources[node.imageAssetId] ?? null : null;
+                            const imageBusy = uploadingImageNodeId === node.id;
                             return (
                               <li
                                 key={node.id}
@@ -1591,9 +1650,27 @@ export function ThinkingLayer(props: {
                                       {node.isMilestone ? <span className="text-[13px] text-[#a96f55]">★</span> : null}
                                       {!props.focusMode || focusMenuNodeId === node.id ? (
                                         <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
-                                                                                    <NodeMenu
+                                          <NodeMenu
                                             disabled={activeSpace.status !== "active"}
-                                            triggerClassName="opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                                            triggerClassName={
+                                              imageSrc
+                                                ? "opacity-100"
+                                                : "opacity-0 transition-opacity group-hover:opacity-100 focus-within:opacity-100"
+                                            }
+                                            imageSrc={imageSrc}
+                                            imageAlt={node.questionText || "Node image"}
+                                            imageBusy={imageBusy}
+                                            canManageImage={writeEnabled && activeSpace.status === "active"}
+                                            onAddImage={() => openNodeImagePicker(node.id)}
+                                            onPreviewImage={
+                                              imageSrc
+                                                ? () => {
+                                                    setPreviewImage({ src: imageSrc, alt: node.questionText || "Node image" });
+                                                  }
+                                                : undefined
+                                            }
+                                            onReplaceImage={() => openNodeImagePicker(node.id)}
+                                            onRemoveImage={() => removeNodeImage(node.id)}
                                             onEdit={() => startEditingNode(node)}
                                             onCopy={() => copyNodeToClipboard(node.id, activeTrack.id)}
                                             onDelete={() =>
@@ -1607,7 +1684,7 @@ export function ThinkingLayer(props: {
                                       ) : null}
                                     </div>
                                   </div>
-                                  <div className="mt-4 max-w-[88%]">
+                                  <div className="mt-4 min-w-0">
                                     {isEditing ? (
                                       <Textarea
                                         autoFocus
@@ -1644,7 +1721,9 @@ export function ThinkingLayer(props: {
                                     ) : null}
                                   </div>
                                   <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400/90">
-                                    <span>{node.hasRelatedLink ? "有关联" : ""}</span>
+                                    <div className="flex flex-wrap items-center gap-2">
+                                      <span>{node.hasRelatedLink ? "有关联" : ""}</span>
+                                    </div>
                                     {node.echoTrackId ? (
                                       <button
                                         type="button"
@@ -2385,6 +2464,35 @@ export function ThinkingLayer(props: {
         </div>
       ) : null}
 
+      <input
+        ref={nodeImageInputRef}
+        type="file"
+        accept="image/*"
+        className="hidden"
+        onChange={handleNodeImageInputChange}
+      />
+
+      {previewImage ? (
+        <div className="absolute inset-0 z-[70] grid place-items-center bg-[rgba(15,23,42,0.72)] p-4 backdrop-blur-sm">
+          <button
+            type="button"
+            aria-label="关闭图片预览"
+            className="absolute inset-0"
+            onClick={() => setPreviewImage(null)}
+          />
+          <div className="relative z-10 w-full max-w-5xl">
+            <button
+              type="button"
+              className="absolute right-0 top-[-2.5rem] rounded-full border border-white/20 bg-black/20 px-3 py-1 text-xs text-white/85 transition-colors hover:bg-black/30"
+              onClick={() => setPreviewImage(null)}
+            >
+              关闭
+            </button>
+            <img src={previewImage.src} alt={previewImage.alt} className="max-h-[82vh] w-full rounded-[20px] object-contain shadow-[0_24px_60px_rgba(15,23,42,0.35)]" />
+          </div>
+        </div>
+      ) : null}
+
       <style jsx>{`
         @keyframes zhTrackNodeIn {
           0% {
@@ -2422,12 +2530,22 @@ function NodeMenu(props: {
   onEdit: () => void;
   onCopy: () => void;
   onDelete: () => void;
+  imageSrc?: string | null;
+  imageAlt?: string;
+  imageBusy?: boolean;
+  canManageImage?: boolean;
+  onAddImage?: () => void;
+  onPreviewImage?: () => void;
+  onReplaceImage?: () => void;
+  onRemoveImage?: () => void;
   triggerClassName?: string;
 }) {
   const [open, setOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number } | null>(null);
+  const hasImage = Boolean(props.imageSrc);
+  const triggerDisabled = props.disabled || props.imageBusy;
 
   useEffect(() => {
     if (!open) return;
@@ -2469,9 +2587,7 @@ function NodeMenu(props: {
     };
   }, [open]);
 
-  const runAction = (event: ReactMouseEvent<HTMLButtonElement>, fn: () => void) => {
-    event.preventDefault();
-    event.stopPropagation();
+  const runAction = (fn: () => void) => {
     fn();
     setOpen(false);
   };
@@ -2487,12 +2603,29 @@ function NodeMenu(props: {
         open ? "block" : "hidden"
       )}
     >
+      {hasImage ? (
+        <>
+          {props.onPreviewImage ? <MenuItem label="查看图片" disabled={triggerDisabled} onClick={() => runAction(props.onPreviewImage as () => void)} /> : null}
+          {props.canManageImage && props.onReplaceImage ? (
+            <MenuItem label={props.imageBusy ? "处理中..." : "更换图片"} disabled={triggerDisabled} onClick={() => runAction(props.onReplaceImage as () => void)} />
+          ) : null}
+          {props.canManageImage && props.onRemoveImage ? (
+            <MenuItem label="移除图片" disabled={triggerDisabled} onClick={() => runAction(props.onRemoveImage as () => void)} />
+          ) : null}
+          {(props.onPreviewImage || (props.canManageImage && (props.onReplaceImage || props.onRemoveImage))) ? <div className="my-1 h-px bg-black/8" /> : null}
+        </>
+      ) : props.canManageImage && props.onAddImage ? (
+        <>
+          <MenuItem label={props.imageBusy ? "处理中..." : "添加图片"} disabled={triggerDisabled} onClick={() => runAction(props.onAddImage as () => void)} />
+          <div className="my-1 h-px bg-black/8" />
+        </>
+      ) : null}
       <button
         type="button"
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={(event) => runAction(event, props.onEdit)}
+        onClick={() => runAction(props.onEdit)}
       >
         修改
       </button>
@@ -2501,7 +2634,7 @@ function NodeMenu(props: {
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={(event) => runAction(event, props.onCopy)}
+        onClick={() => runAction(props.onCopy)}
       >
         复制
       </button>
@@ -2511,7 +2644,7 @@ function NodeMenu(props: {
         role="menuitem"
         disabled={props.disabled}
         className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={(event) => runAction(event, props.onDelete)}
+        onClick={() => runAction(props.onDelete)}
       >
         删除
       </button>
@@ -2523,19 +2656,32 @@ function NodeMenu(props: {
       <button
         ref={triggerRef}
         type="button"
-        aria-label="节点菜单"
+        aria-label={hasImage ? "节点图片菜单" : "节点菜单"}
         aria-haspopup="menu"
         aria-expanded={open}
         className={cn(
-          "relative flex h-7 w-7 items-center justify-center rounded-full bg-transparent text-slate-400 transition-colors hover:bg-white/80 hover:text-slate-700",
-          props.disabled ? "cursor-not-allowed" : open ? "cursor-pointer" : "cursor-pointer hover:bg-black/[0.025]"
+          "relative flex items-center justify-center overflow-hidden transition-colors",
+          hasImage
+            ? "h-9 w-9 rounded-[12px] bg-transparent"
+            : "h-7 w-7 rounded-full bg-transparent text-slate-400 hover:bg-white/80 hover:text-slate-700",
+          triggerDisabled ? "cursor-not-allowed opacity-60" : open ? "cursor-pointer" : "cursor-pointer hover:bg-black/[0.025]"
         )}
-        disabled={props.disabled}
-        onClick={() => setOpen((prev) => !prev)}
+        disabled={triggerDisabled}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setOpen((prev) => !prev);
+        }}
       >
-        <span aria-hidden="true" className="text-base leading-none">
-          ⋯
-        </span>
+        {hasImage && props.imageSrc ? (
+          <>
+            <img src={props.imageSrc} alt={props.imageAlt ?? "节点图片"} className="h-full w-full rounded-[12px] object-cover" />
+          </>
+        ) : (
+          <span aria-hidden="true" className="text-base leading-none">
+            ⋯
+          </span>
+        )}
       </button>
       {typeof document !== "undefined" ? createPortal(menuContent, document.body) : null}
     </div>

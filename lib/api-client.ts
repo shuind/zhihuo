@@ -2,7 +2,7 @@
 
 const API_BASE_URL = (process.env.NEXT_PUBLIC_API_BASE_URL ?? "").replace(/\/+$/, "");
 
-function withApiBase(input: string) {
+export function buildApiUrl(input: string) {
   if (!API_BASE_URL || !input.startsWith("/v1/")) return input;
   return `${API_BASE_URL}${input}`;
 }
@@ -13,7 +13,7 @@ export function apiFetch(input: RequestInfo | URL, init?: RequestInit) {
     ...init
   };
   if (typeof input === "string") {
-    return fetch(withApiBase(input), nextInit);
+    return fetch(buildApiUrl(input), nextInit);
   }
   return fetch(input, nextInit);
 }

@@ -4,9 +4,10 @@ import type { ThinkingSpaceView } from "@/components/thinking-layer";
 import type { LifeStore, ThinkingStore } from "@/components/zhihuo-model";
 
 const DB_NAME = "zhihuo_offline_v1";
-const DB_VERSION = 1;
+const DB_VERSION = 2;
 const SNAPSHOT_STORE = "snapshot";
 const QUEUE_STORE = "mutation_queue";
+const MEDIA_STORE = "media_asset";
 const LEGACY_SNAPSHOT_KEY = "main";
 const PIN_STORAGE_KEY = "zhihuo_pin_v1";
 const LOCAL_PROFILE_STORAGE_KEY = "zhihuo_local_profile_v1";
@@ -84,6 +85,27 @@ export type QueuedMutation = {
   createdAt: string;
   retryCount: number;
   nextRetryAt: number;
+  lastError: string | null;
+};
+
+export type OfflineMediaAssetStatus = "pending" | "uploaded" | "dead_letter";
+
+export type OfflineMediaAssetRecord = {
+  id: string;
+  ownerKey: OfflineOwnerKey;
+  fileName: string;
+  mimeType: string;
+  byteSize: number;
+  sha256: string;
+  width: number | null;
+  height: number | null;
+  status: OfflineMediaAssetStatus;
+  blob: Blob | null;
+  remoteUrl: string | null;
+  createdAt: string;
+  updatedAt: string;
+  uploadedAt: string | null;
+  deletedAt: string | null;
   lastError: string | null;
 };
 
@@ -186,6 +208,27 @@ function normalizeQueuedMutation(raw: QueuedMutation, fallbackOwnerKey: OfflineO
   };
 }
 
+function normalizeOfflineMediaAsset(raw: OfflineMediaAssetRecord, fallbackOwnerKey: OfflineOwnerKey): OfflineMediaAssetRecord {
+  return {
+    ...raw,
+    ownerKey: typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey,
+    fileName: typeof raw.fileName === "string" ? raw.fileName : "image",
+    mimeType: typeof raw.mimeType === "string" && raw.mimeType.trim() ? raw.mimeType : "application/octet-stream",
+    byteSize: Number.isFinite(raw.byteSize) ? Math.max(0, Number(raw.byteSize)) : 0,
+    sha256: typeof raw.sha256 === "string" ? raw.sha256 : "",
+    width: Number.isFinite(raw.width) ? Number(raw.width) : null,
+    height: Number.isFinite(raw.height) ? Number(raw.height) : null,
+    status: raw.status === "uploaded" || raw.status === "dead_letter" ? raw.status : "pending",
+    blob: raw.blob instanceof Blob ? raw.blob : null,
+    remoteUrl: typeof raw.remoteUrl === "string" && raw.remoteUrl.trim() ? raw.remoteUrl : null,
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+    updatedAt: typeof raw.updatedAt === "string" ? raw.updatedAt : new Date().toISOString(),
+    uploadedAt: typeof raw.uploadedAt === "string" ? raw.uploadedAt : null,
+    deletedAt: typeof raw.deletedAt === "string" ? raw.deletedAt : null,
+    lastError: typeof raw.lastError === "string" && raw.lastError.trim() ? raw.lastError : null
+  };
+}
+
 function canUseIdb() {
   return typeof window !== "undefined" && typeof window.indexedDB !== "undefined";
 }
@@ -204,6 +247,9 @@ function openDb(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(QUEUE_STORE)) {
           db.createObjectStore(QUEUE_STORE, { keyPath: "id" });
         }
+        if (!db.objectStoreNames.contains(MEDIA_STORE)) {
+          db.createObjectStore(MEDIA_STORE, { keyPath: "id" });
+        }
       };
       request.onsuccess = () => resolve(request.result);
     } catch {
@@ -214,6 +260,14 @@ function openDb(): Promise<IDBDatabase | null> {
 
 function cloneValue<T>(input: T): T {
   return JSON.parse(JSON.stringify(input)) as T;
+}
+
+function cloneMediaAssetRecord<T extends OfflineMediaAssetRecord>(input: T): T {
+  if (typeof structuredClone === "function") return structuredClone(input) as T;
+  return {
+    ...input,
+    blob: input.blob ?? null
+  };
 }
 
 function canUseLocalStorage() {
@@ -593,9 +647,10 @@ export async function clearOfflineState(): Promise<void> {
   const db = await openDb();
   if (!db) return;
   await new Promise<void>((resolve) => {
-    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE], "readwrite");
+    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE, MEDIA_STORE], "readwrite");
     tx.objectStore(SNAPSHOT_STORE).clear();
     tx.objectStore(QUEUE_STORE).clear();
+    tx.objectStore(MEDIA_STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
@@ -649,5 +704,130 @@ export async function clearOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey): Pr
 }
 
 export async function clearOfflineOwnerState(ownerKey: OfflineOwnerKey): Promise<void> {
-  await Promise.all([clearOfflineSnapshotByOwner(ownerKey), clearOfflineMutationsByOwner(ownerKey)]);
+  await Promise.all([
+    clearOfflineSnapshotByOwner(ownerKey),
+    clearOfflineMutationsByOwner(ownerKey),
+    clearOfflineMediaAssetsByOwner(ownerKey)
+  ]);
+}
+
+export async function saveOfflineMediaAsset(asset: OfflineMediaAssetRecord): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  const normalized = normalizeOfflineMediaAsset(asset, asset.ownerKey);
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readwrite");
+    tx.objectStore(MEDIA_STORE).put(cloneMediaAssetRecord(normalized));
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+export async function loadOfflineMediaAssetById(assetId: string): Promise<OfflineMediaAssetRecord | null> {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readonly");
+    const store = tx.objectStore(MEDIA_STORE);
+    const req = store.get(assetId);
+    req.onerror = () => resolve(null);
+    req.onsuccess = () => {
+      const row = req.result as OfflineMediaAssetRecord | undefined;
+      resolve(row ? cloneMediaAssetRecord(row) : null);
+    };
+  });
+}
+
+export async function listOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineMediaAssetRecord[]> {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readonly");
+    const store = tx.objectStore(MEDIA_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
+      resolve(
+        rows
+          .map((item) => normalizeOfflineMediaAsset(item, ownerKey))
+          .filter((item) => item.ownerKey === ownerKey)
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      );
+    };
+  });
+}
+
+export async function listPendingOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineMediaAssetRecord[]> {
+  const assets = await listOfflineMediaAssetsByOwner(ownerKey);
+  return assets.filter((item) => item.status === "pending" && !item.deletedAt && item.blob);
+}
+
+export async function updateOfflineMediaAsset(
+  assetId: string,
+  patch: Partial<
+    Pick<
+      OfflineMediaAssetRecord,
+      "status" | "remoteUrl" | "uploadedAt" | "deletedAt" | "lastError" | "updatedAt" | "blob" | "byteSize" | "sha256"
+    >
+  >
+): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readwrite");
+    const store = tx.objectStore(MEDIA_STORE);
+    const req = store.get(assetId);
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const item = req.result as OfflineMediaAssetRecord | undefined;
+      if (!item) {
+        resolve();
+        return;
+      }
+      store.put(
+        cloneMediaAssetRecord({
+          ...item,
+          ...patch,
+          updatedAt: patch.updatedAt ?? new Date().toISOString()
+        })
+      );
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+export async function removeOfflineMediaAsset(assetId: string): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readwrite");
+    tx.objectStore(MEDIA_STORE).delete(assetId);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+export async function clearOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readwrite");
+    const store = tx.objectStore(MEDIA_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
+      for (const row of rows) {
+        if (row.ownerKey === ownerKey) store.delete(row.id);
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
 }

@@ -55,6 +55,7 @@ const EMPTY_DB: DbState = {
   thinking_scratch: [],
   thinking_space_meta: [],
   thinking_node_links: [],
+  thinking_media_assets: [],
   email_verification_codes: [],
   users: [],
   audit_logs: [],
@@ -97,6 +98,7 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
           ...row,
           note_text: typeof row.note_text === "string" ? row.note_text : null,
           answer_text: typeof row.answer_text === "string" ? row.answer_text : null,
+          image_asset_id: typeof (row as { image_asset_id?: unknown }).image_asset_id === "string" ? String((row as { image_asset_id?: unknown }).image_asset_id) : null,
           order_index: Number.isFinite(row.order_index) ? Number(row.order_index) : 0,
           is_suggested: row.is_suggested === true,
           state: row.state === "hidden" ? "hidden" : "normal",
@@ -119,6 +121,13 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
           ...row,
           background_text: typeof row.background_text === "string" ? row.background_text : null,
           background_version: Number.isFinite(row.background_version) ? Number(row.background_version) : 0,
+          background_asset_ids: Array.isArray((row as { background_asset_ids?: unknown }).background_asset_ids)
+            ? ((row as { background_asset_ids?: unknown }).background_asset_ids as unknown[]).filter((id) => typeof id === "string")
+            : [],
+          background_selected_asset_id:
+            typeof (row as { background_selected_asset_id?: unknown }).background_selected_asset_id === "string"
+              ? String((row as { background_selected_asset_id?: unknown }).background_selected_asset_id)
+              : null,
           suggestion_decay: Number.isFinite(row.suggestion_decay) ? Number(row.suggestion_decay) : 0,
           last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
           last_organized_order: Number.isFinite(row.last_organized_order) ? Number(row.last_organized_order) : -1,
@@ -142,9 +151,26 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
                         hint === "constraint" ||
                         hint === "aside")
                   )
-                )
-              : {}
+            )
+          : {}
         }))
+      : [],
+    thinking_media_assets: Array.isArray(input?.thinking_media_assets)
+      ? input.thinking_media_assets
+          .filter((row) => row && typeof row.id === "string" && typeof row.user_id === "string")
+          .map((row) => ({
+            id: row.id,
+            user_id: row.user_id,
+            file_name: typeof row.file_name === "string" ? row.file_name : "image",
+            mime_type: typeof row.mime_type === "string" && row.mime_type.trim() ? row.mime_type : "application/octet-stream",
+            byte_size: Number.isFinite(row.byte_size) ? Math.max(0, Number(row.byte_size)) : 0,
+            sha256: typeof row.sha256 === "string" ? row.sha256 : "",
+            width: Number.isFinite(row.width) ? Number(row.width) : null,
+            height: Number.isFinite(row.height) ? Number(row.height) : null,
+            created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+            uploaded_at: typeof row.uploaded_at === "string" ? row.uploaded_at : null,
+            deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null
+          }))
       : [],
     thinking_node_links: Array.isArray(input?.thinking_node_links)
       ? input.thinking_node_links
@@ -353,6 +379,7 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     scratch,
     spaceMeta,
     nodeLinks,
+    mediaAssets,
     emailVerificationCodes,
     auditLogs,
     userSyncState,
@@ -365,15 +392,18 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
     ),
     client.query(
-      "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+      "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, image_asset_id, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
     ),
     client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox"),
     client.query("SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"),
     client.query(
-      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
     ),
     client.query(
       "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
+    ),
+    client.query(
+      "SELECT id, user_id, file_name, mime_type, byte_size, sha256, width, height, created_at, uploaded_at, deleted_at FROM thinking_media_assets"
     ),
     client.query(
       "SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at, last_sent_at, send_count FROM email_verification_codes"
@@ -394,6 +424,7 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       ...row,
       order_index: Number(row.order_index),
       is_suggested: Boolean(row.is_suggested),
+      image_asset_id: typeof row.image_asset_id === "string" ? row.image_asset_id : null,
       note_text: typeof row.note_text === "string" ? row.note_text : null,
       answer_text: typeof row.answer_text === "string" ? row.answer_text : null
     })) as DbState["thinking_nodes"],
@@ -410,6 +441,11 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       export_version: Number(row.export_version),
       background_text: typeof row.background_text === "string" ? row.background_text : null,
       background_version: Number(row.background_version ?? 0),
+      background_asset_ids: Array.isArray(row.background_asset_ids)
+        ? row.background_asset_ids.filter((id: unknown) => typeof id === "string")
+        : [],
+      background_selected_asset_id:
+        typeof row.background_selected_asset_id === "string" ? row.background_selected_asset_id : null,
       suggestion_decay: Number(row.suggestion_decay ?? 0),
       last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
       last_organized_order: Number(row.last_organized_order ?? -1),
@@ -441,6 +477,18 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       link_type: "related" as const,
       score: Number(row.score ?? 0)
     })) as DbState["thinking_node_links"],
+    thinking_media_assets: mediaAssets.rows.map((row) => ({
+      ...row,
+      file_name: typeof row.file_name === "string" ? row.file_name : "image",
+      mime_type: typeof row.mime_type === "string" ? row.mime_type : "application/octet-stream",
+      byte_size: Number(row.byte_size ?? 0),
+      sha256: typeof row.sha256 === "string" ? row.sha256 : "",
+      width: row.width === null || row.width === undefined ? null : Number(row.width),
+      height: row.height === null || row.height === undefined ? null : Number(row.height),
+      created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+      uploaded_at: typeof row.uploaded_at === "string" ? row.uploaded_at : null,
+      deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null
+    })) as DbState["thinking_media_assets"],
     email_verification_codes: emailVerificationCodes.rows.map((row) => ({
       ...row,
       purpose: normalizeVerificationPurpose(row.purpose),
@@ -565,6 +613,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         "export_version",
         "background_text",
         "background_version",
+        "background_asset_ids",
+        "background_selected_asset_id",
         "suggestion_decay",
         "last_track_id",
         "last_organized_order",
@@ -581,6 +631,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.export_version,
         row.background_text ?? null,
         row.background_version ?? 0,
+        row.background_asset_ids ?? [],
+        row.background_selected_asset_id ?? null,
         row.suggestion_decay ?? 0,
         row.last_track_id ?? null,
         row.last_organized_order ?? -1,
@@ -601,6 +653,7 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         "raw_question_text",
         "note_text",
         "answer_text",
+        "image_asset_id",
         "created_at",
         "order_index",
         "is_suggested",
@@ -615,6 +668,7 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.raw_question_text,
         row.note_text ?? null,
         row.answer_text ?? null,
+        row.image_asset_id ?? null,
         row.created_at,
         row.order_index,
         row.is_suggested,
@@ -659,6 +713,25 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.link_type,
         row.score,
         row.created_at
+      ])
+    },
+    {
+      table: "thinking_media_assets",
+      idColumn: "id",
+      columns: ["id", "user_id", "file_name", "mime_type", "byte_size", "sha256", "width", "height", "created_at", "uploaded_at", "deleted_at"],
+      conflictColumns: ["id"],
+      rows: db.thinking_media_assets.map((row) => [
+        row.id,
+        row.user_id,
+        row.file_name,
+        row.mime_type,
+        row.byte_size,
+        row.sha256,
+        row.width,
+        row.height,
+        row.created_at,
+        row.uploaded_at,
+        row.deleted_at
       ])
     },
     {
@@ -719,6 +792,7 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "audit_logs",
     "user_sync_state",
     "applied_client_mutations",
+    "thinking_media_assets",
     "email_verification_codes",
     "doubt_notes",
     "thinking_space_meta",
@@ -741,6 +815,7 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_spaces",
     "doubts",
     "thinking_scratch",
+    "thinking_media_assets",
     "email_verification_codes",
     "audit_logs",
     "applied_client_mutations",
@@ -764,6 +839,7 @@ type ScopedTable =
   | "thinking_inbox"
   | "thinking_scratch"
   | "thinking_node_links"
+  | "thinking_media_assets"
   | "audit_logs"
   | "user_sync_state"
   | "applied_client_mutations";
@@ -778,6 +854,7 @@ function createEmptyDbState(): DbState {
     thinking_scratch: [],
     thinking_space_meta: [],
     thinking_node_links: [],
+    thinking_media_assets: [],
     email_verification_codes: [],
     users: [],
     audit_logs: [],
@@ -822,13 +899,18 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     }
     if (table === "thinking_space_meta") {
       const { rows } = await client.query(
-        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
       );
       state.thinking_space_meta = rows.map((row) => ({
         ...row,
         export_version: Number(row.export_version),
         background_text: typeof row.background_text === "string" ? row.background_text : null,
         background_version: Number(row.background_version ?? 0),
+        background_asset_ids: Array.isArray(row.background_asset_ids)
+          ? row.background_asset_ids.filter((id: unknown) => typeof id === "string")
+          : [],
+        background_selected_asset_id:
+          typeof row.background_selected_asset_id === "string" ? row.background_selected_asset_id : null,
         suggestion_decay: Number(row.suggestion_decay ?? 0),
         last_track_id: typeof row.last_track_id === "string" ? row.last_track_id : null,
         last_organized_order: Number(row.last_organized_order ?? -1),
@@ -859,12 +941,13 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     }
     if (table === "thinking_nodes") {
       const { rows } = await client.query(
-        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, image_asset_id, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
       );
       state.thinking_nodes = rows.map((row) => ({
         ...row,
         order_index: Number(row.order_index),
         is_suggested: Boolean(row.is_suggested),
+        image_asset_id: typeof row.image_asset_id === "string" ? row.image_asset_id : null,
         note_text: typeof row.note_text === "string" ? row.note_text : null,
         answer_text: typeof row.answer_text === "string" ? row.answer_text : null
       })) as DbState["thinking_nodes"];
@@ -897,6 +980,24 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
         link_type: "related" as const,
         score: Number(row.score ?? 0)
       })) as DbState["thinking_node_links"];
+      continue;
+    }
+    if (table === "thinking_media_assets") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, file_name, mime_type, byte_size, sha256, width, height, created_at, uploaded_at, deleted_at FROM thinking_media_assets"
+      );
+      state.thinking_media_assets = rows.map((row) => ({
+        ...row,
+        file_name: typeof row.file_name === "string" ? row.file_name : "image",
+        mime_type: typeof row.mime_type === "string" ? row.mime_type : "application/octet-stream",
+        byte_size: Number(row.byte_size ?? 0),
+        sha256: typeof row.sha256 === "string" ? row.sha256 : "",
+        width: row.width === null || row.width === undefined ? null : Number(row.width),
+        height: row.height === null || row.height === undefined ? null : Number(row.height),
+        created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+        uploaded_at: typeof row.uploaded_at === "string" ? row.uploaded_at : null,
+        deleted_at: typeof row.deleted_at === "string" ? row.deleted_at : null
+      })) as DbState["thinking_media_assets"];
       continue;
     }
     if (table === "audit_logs") {
@@ -995,6 +1096,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           "export_version",
           "background_text",
           "background_version",
+          "background_asset_ids",
+          "background_selected_asset_id",
           "suggestion_decay",
           "last_track_id",
           "last_organized_order",
@@ -1011,6 +1114,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.export_version,
           row.background_text ?? null,
           row.background_version ?? 0,
+          row.background_asset_ids ?? [],
+          row.background_selected_asset_id ?? null,
           row.suggestion_decay ?? 0,
           row.last_track_id ?? null,
           row.last_organized_order ?? -1,
@@ -1027,7 +1132,20 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       planByScope.set(item, {
         table: "thinking_nodes",
         idColumn: "id",
-        columns: ["id", "space_id", "parent_node_id", "raw_question_text", "note_text", "answer_text", "created_at", "order_index", "is_suggested", "state", "dimension"],
+        columns: [
+          "id",
+          "space_id",
+          "parent_node_id",
+          "raw_question_text",
+          "note_text",
+          "answer_text",
+          "image_asset_id",
+          "created_at",
+          "order_index",
+          "is_suggested",
+          "state",
+          "dimension"
+        ],
         conflictColumns: ["id"],
         rows: db.thinking_nodes.map((row) => [
           row.id,
@@ -1036,6 +1154,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.raw_question_text,
           row.note_text ?? null,
           row.answer_text ?? null,
+          row.image_asset_id ?? null,
           row.created_at,
           row.order_index,
           row.is_suggested,
@@ -1093,6 +1212,28 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       });
       continue;
     }
+    if (item === "thinking_media_assets") {
+      planByScope.set(item, {
+        table: "thinking_media_assets",
+        idColumn: "id",
+        columns: ["id", "user_id", "file_name", "mime_type", "byte_size", "sha256", "width", "height", "created_at", "uploaded_at", "deleted_at"],
+        conflictColumns: ["id"],
+        rows: db.thinking_media_assets.map((row) => [
+          row.id,
+          row.user_id,
+          row.file_name,
+          row.mime_type,
+          row.byte_size,
+          row.sha256,
+          row.width,
+          row.height,
+          row.created_at,
+          row.uploaded_at,
+          row.deleted_at
+        ])
+      });
+      continue;
+    }
     if (item === "audit_logs") {
       planByScope.set(item, {
         table: "audit_logs",
@@ -1139,6 +1280,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "audit_logs",
     "user_sync_state",
     "applied_client_mutations",
+    "thinking_media_assets",
     "doubt_notes",
     "thinking_space_meta",
     "thinking_nodes",
@@ -1160,6 +1302,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "doubt_notes",
     "doubts",
     "thinking_scratch",
+    "thinking_media_assets",
     "audit_logs",
     "applied_client_mutations",
     "user_sync_state"
