@@ -17,6 +17,13 @@ import {
   getDateKeyInTimeZone,
   isOlderThanOneYear
 } from "@/components/zhihuo-model";
+import { useDecorStore, type LifePaper } from "@/components/decor-store";
+import {
+  PAPER_PRESETS,
+  PaperPickerPopover,
+  getPaperPreset,
+  paperCardShapeClass
+} from "@/components/paper-stamp-ui";
 
 type DateGroup = {
   key: string;
@@ -52,6 +59,12 @@ export function LifeLayer(props: {
   const [isMobile, setIsMobile] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [fieldFocused, setFieldFocused] = useState(false);
+  const decor = useDecorStore();
+  const [paperPicker, setPaperPicker] = useState<{ doubtId: string; anchor: { top: number; left: number } } | null>(null);
+  const openPaperPicker = useCallback((doubtId: string, anchor: { top: number; left: number }) => {
+    setPaperPicker({ doubtId, anchor });
+  }, []);
+  const closePaperPicker = useCallback(() => setPaperPicker(null), []);
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -328,8 +341,10 @@ export function LifeLayer(props: {
                       mode={!isMobile && !isSplitView ? "home-desktop" : !isMobile ? "split" : "mobile"}
                       selectedId={selectedDoubtId}
                       notesMap={notesMap}
+                      paperMap={decor.papers}
                       rowRefs={rowRefs}
                       onSelect={handleSelect}
+                      onLongPress={openPaperPicker}
                     />
                   ))}
                 </div>
@@ -346,10 +361,12 @@ export function LifeLayer(props: {
               timezone={props.timezone}
               freezeNote={props.freezeNoteByDoubtId[selectedDoubt.id] ?? ""}
               noteText={notesMap.get(selectedDoubt.id) ?? ""}
+              paper={decor.getPaper(selectedDoubt.id)}
               onClose={closeDetail}
               onDelete={() => setDeleteId(selectedDoubt.id)}
               onImport={() => props.onImportToThinking(selectedDoubt)}
               onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
+              onSetPaper={(paper) => decor.setPaper(selectedDoubt.id, paper)}
             />
           ) : null}
         </AnimatePresence>
@@ -363,11 +380,13 @@ export function LifeLayer(props: {
             timezone={props.timezone}
             freezeNote={props.freezeNoteByDoubtId[selectedDoubt.id] ?? ""}
             noteText={notesMap.get(selectedDoubt.id) ?? ""}
+            paper={decor.getPaper(selectedDoubt.id)}
             onOpenSearch={openMobileSearch}
             onClose={closeDetail}
             onDelete={() => setDeleteId(selectedDoubt.id)}
             onImport={() => props.onImportToThinking(selectedDoubt)}
             onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
+            onSetPaper={(paper) => decor.setPaper(selectedDoubt.id, paper)}
           />
         ) : null}
       </AnimatePresence>
@@ -392,6 +411,18 @@ export function LifeLayer(props: {
       </AnimatePresence>
 
       <AnimatePresence>{!props.ready ? <LifeOpeningOverlay phase={props.openingPhase} stars={props.stars} /> : null}</AnimatePresence>
+
+      <PaperPickerPopover
+        open={Boolean(paperPicker)}
+        anchor={paperPicker?.anchor ?? null}
+        currentPaper={paperPicker ? decor.getPaper(paperPicker.doubtId) : "plain"}
+        variant="dark"
+        onPick={(paper) => {
+          if (paperPicker) decor.setPaper(paperPicker.doubtId, paper === "plain" ? null : paper);
+          closePaperPicker();
+        }}
+        onClose={closePaperPicker}
+      />
     </div>
   );
 }
@@ -420,8 +451,10 @@ function TimeClusterGroup(props: {
   mode: "home-desktop" | "split" | "mobile";
   selectedId: string | null;
   notesMap: Map<string, string>;
+  paperMap: Record<string, LifePaper>;
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
+  onLongPress: (id: string, anchor: { top: number; left: number }) => void;
 }) {
   const selectedIndex = props.selectedId ? props.items.findIndex((entry) => entry.id === props.selectedId) : -1;
 
@@ -433,12 +466,14 @@ function TimeClusterGroup(props: {
             key={item.id}
             doubt={item}
             noteText={props.notesMap.get(item.id) ?? ""}
+            paper={props.paperMap[item.id] ?? "plain"}
             mode={props.mode}
             isSelected={props.selectedId === item.id}
             isAdjacent={selectedIndex >= 0 && Math.abs(selectedIndex - index) === 1}
             itemIndex={index}
             rowRefs={props.rowRefs}
             onSelect={props.onSelect}
+            onLongPress={props.onLongPress}
           />
         ))}
       </div>
@@ -449,15 +484,31 @@ function TimeClusterGroup(props: {
 function TimeEntryCard(props: {
   doubt: LifeDoubt;
   noteText: string;
+  paper: LifePaper;
   mode: "home-desktop" | "split" | "mobile";
   isSelected: boolean;
   isAdjacent: boolean;
   itemIndex: number;
   rowRefs: MutableRefObject<Record<string, HTMLButtonElement | null>>;
   onSelect: (id: string) => void;
+  onLongPress: (id: string, anchor: { top: number; left: number }) => void;
 }) {
   const driftOffsets = [0, 6, 2, 8, 3, 7];
   const driftOffset = props.mode === "home-desktop" ? 0 : driftOffsets[props.itemIndex % driftOffsets.length];
+
+  const longPressTimerRef = useRef<number | null>(null);
+  const longPressFiredRef = useRef(false);
+
+  const cancelLongPress = useCallback(() => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => cancelLongPress();
+  }, [cancelLongPress]);
 
   return (
     <motion.article
@@ -483,13 +534,41 @@ function TimeEntryCard(props: {
         }}
         type="button"
         className={cn(
-          "life-pearl-card -mx-2 w-full rounded-[1.25rem] px-3 py-5 text-left transition-all duration-700 cursor-default",
+          "life-pearl-card -mx-2 w-full px-3 py-5 text-left transition-all duration-700 cursor-default",
+          paperCardShapeClass(props.paper),
           props.isAdjacent && "is-adjacent",
           props.isSelected && "is-selected"
         )}
         data-life-item="true"
         data-life-item-selected={props.isSelected ? "true" : "false"}
-        onClick={() => props.onSelect(props.doubt.id)}
+        data-life-paper={props.paper}
+        onContextMenu={(event) => {
+          event.preventDefault();
+          const rect = event.currentTarget.getBoundingClientRect();
+          props.onLongPress(props.doubt.id, { top: rect.top + 12, left: Math.max(16, rect.left + 16) });
+        }}
+        onPointerDown={(event) => {
+          if (event.pointerType === "mouse" && event.button !== 0) return;
+          longPressFiredRef.current = false;
+          cancelLongPress();
+          const clientX = event.clientX;
+          const clientY = event.clientY;
+          longPressTimerRef.current = window.setTimeout(() => {
+            longPressFiredRef.current = true;
+            props.onLongPress(props.doubt.id, { top: clientY + 8, left: Math.max(16, clientX - 140) });
+          }, 480);
+        }}
+        onPointerUp={cancelLongPress}
+        onPointerLeave={cancelLongPress}
+        onPointerCancel={cancelLongPress}
+        onClick={(event) => {
+          if (longPressFiredRef.current) {
+            event.preventDefault();
+            longPressFiredRef.current = false;
+            return;
+          }
+          props.onSelect(props.doubt.id);
+        }}
       >
         <div className="relative z-10 flex items-start gap-4">
           <div className="relative flex h-[1.96rem] shrink-0 items-center">
@@ -528,10 +607,12 @@ function DetailPanel(props: {
   timezone: string;
   freezeNote: string;
   noteText: string;
+  paper: LifePaper;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
   onSaveNote: (value: string) => void;
+  onSetPaper: (paper: LifePaper | null) => void;
 }) {
   return (
     <motion.aside
@@ -552,11 +633,13 @@ function MobileDetailDrawer(props: {
   timezone: string;
   freezeNote: string;
   noteText: string;
+  paper: LifePaper;
   onOpenSearch: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
   onSaveNote: (value: string) => void;
+  onSetPaper: (paper: LifePaper | null) => void;
 }) {
   return (
     <motion.section
@@ -588,11 +671,13 @@ function DetailBody(props: {
   timezone: string;
   freezeNote: string;
   noteText: string;
+  paper: LifePaper;
   onOpenSearch?: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
   onSaveNote: (value: string) => void;
+  onSetPaper: (paper: LifePaper | null) => void;
   compact?: boolean;
 }) {
   const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
@@ -674,6 +759,39 @@ function DetailBody(props: {
           ) : !freezeNoteText ? (
             <div className="mb-12" />
           ) : null}
+
+          <div className="mb-12">
+            <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"笺纸"}</h3>
+            <div className="flex flex-wrap gap-2">
+              {PAPER_PRESETS.map((preset) => {
+                const selected = preset.id === props.paper;
+                return (
+                  <button
+                    key={preset.id}
+                    type="button"
+                    title={preset.desc}
+                    className={cn(
+                      "flex items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] tracking-[0.06em] transition-all duration-300",
+                      selected
+                        ? "border-white/20 bg-white/[0.04] text-[rgba(220,214,202,0.9)]"
+                        : "border-white/[0.06] bg-white/[0.01] text-[rgba(170,176,180,0.6)] hover:border-white/15 hover:text-[rgba(198,204,208,0.82)]"
+                    )}
+                    onClick={() => props.onSetPaper(preset.id === "plain" ? null : preset.id)}
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-3 w-4 rounded-[2px]"
+                      style={{ background: preset.swatch, boxShadow: `inset 0 0 0 1px ${preset.ring}` }}
+                    />
+                    {preset.name}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="mt-3 text-[11px] leading-[1.7] tracking-[0.04em] text-[rgba(150,156,160,0.52)]">
+              {getPaperPreset(props.paper).desc}
+            </p>
+          </div>
 
           {canEditNote ? (
             <div className="mb-12">

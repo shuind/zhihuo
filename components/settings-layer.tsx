@@ -1,4 +1,4 @@
-﻿"use client";
+"use client";
 
 import { useMemo, useState } from "react";
 
@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
+import { PAPER_PRESETS, STAMP_PRESETS, StampGlyph } from "@/components/paper-stamp-ui";
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Shanghai", label: "中国标准时间 (UTC+08:00)" },
@@ -209,6 +210,60 @@ export function SettingsLayer(props: {
                 )}
               </div>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>笺纸 · 印章</CardTitle>
+            <CardDescription>时间层每张卡片可以换笺纸，思路层每个节点可以盖印。这里仅用于浏览预设，具体切换请在卡片本体上操作。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-5">
+            <div className="space-y-3">
+              <p className="text-xs tracking-[0.08em] text-slate-500">笺纸（时间层卡片）</p>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                {PAPER_PRESETS.map((preset) => (
+                  <div key={preset.id} className="flex items-center gap-2.5 rounded-lg border border-slate-300 bg-white px-3 py-2">
+                    <span
+                      aria-hidden="true"
+                      className="inline-block h-5 w-7 shrink-0 rounded-[3px]"
+                      style={{ background: preset.swatch, boxShadow: `inset 0 0 0 1px ${preset.ring}` }}
+                    />
+                    <div className="min-w-0 leading-[1.35]">
+                      <p className="truncate text-[13px] text-slate-800">{preset.name}</p>
+                      <p className="truncate text-[11px] text-slate-500">{preset.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] leading-[1.65] text-slate-500">
+                入口：长按时间层卡片（触屏右键亦可）、或打开详情面板的"笺纸"栏。
+              </p>
+            </div>
+            <div className="h-px bg-slate-300/60" />
+            <div className="space-y-3">
+              <p className="text-xs tracking-[0.08em] text-slate-500">印章（思路节点）</p>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-3">
+                {STAMP_PRESETS.map((preset) => (
+                  <div key={preset.id} className="flex items-center gap-2.5 rounded-lg border border-slate-300 bg-white px-3 py-2">
+                    <span
+                      aria-hidden="true"
+                      className="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-slate-50"
+                    >
+                      <StampGlyph shape={preset.shape} color={preset.color} size={14} />
+                    </span>
+                    <div className="min-w-0 leading-[1.35]">
+                      <p className="truncate text-[13px] text-slate-800">{preset.name}</p>
+                      <p className="truncate text-[11px] text-slate-500">{preset.desc}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <p className="text-[11px] leading-[1.65] text-slate-500">
+                入口：点击节点右上角小印章（未盖印时，鼠标悬停显现）。
+              </p>
+            </div>
+            <p className="text-[11px] leading-[1.65] text-slate-400">装饰仅保存在当前设备，不随账号同步。</p>
           </CardContent>
         </Card>
 

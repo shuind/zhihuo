@@ -24,6 +24,8 @@ import {
   type ThinkingStore,
   type TrackDirectionHint
 } from "@/components/zhihuo-model";
+import { useDecorStore } from "@/components/decor-store";
+import { StampGlyph, StampPickerPopover, getStampPreset } from "@/components/paper-stamp-ui";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
@@ -270,6 +272,12 @@ export function ThinkingLayer(props: {
   const [writeToTimeHint, setWriteToTimeHint] = useState("");
   const [writeToTimePreserveOriginal, setWriteToTimePreserveOriginal] = useState(true);
   const [isWritingToTime, setIsWritingToTime] = useState(false);
+  const decor = useDecorStore();
+  const [stampPicker, setStampPicker] = useState<{ nodeId: string; anchor: { top: number; left: number } } | null>(null);
+  const openStampPicker = useCallback((nodeId: string, anchor: { top: number; left: number }) => {
+    setStampPicker({ nodeId, anchor });
+  }, []);
+  const closeStampPicker = useCallback(() => setStampPicker(null), []);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
   const questionInputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -1736,6 +1744,37 @@ export function ThinkingLayer(props: {
                                       <span>{formatRelativeNodeTime(node.createdAt)}</span>
                                     </div>
                                     <div className="flex items-center gap-2">
+                                      {(() => {
+                                        const currentStamp = decor.getStamp(node.id);
+                                        const stampDisabled = activeSpace.status !== "active";
+                                        const preset = currentStamp ? getStampPreset(currentStamp) : null;
+                                        return (
+                                          <button
+                                            type="button"
+                                            aria-label={preset ? `印章：${preset.name}` : "盖印"}
+                                            title={preset ? `${preset.name} · ${preset.desc}` : "盖印"}
+                                            disabled={stampDisabled}
+                                            className={cn(
+                                              "thinking-stamp-slot transition-opacity disabled:cursor-not-allowed disabled:opacity-30",
+                                              currentStamp ? "opacity-100" : "opacity-0 group-hover:opacity-100 focus-within:opacity-100"
+                                            )}
+                                            onClick={(event) => {
+                                              event.stopPropagation();
+                                              const rect = event.currentTarget.getBoundingClientRect();
+                                              openStampPicker(node.id, {
+                                                top: rect.bottom + 8,
+                                                left: Math.max(16, rect.left - 240)
+                                              });
+                                            }}
+                                          >
+                                            {preset ? (
+                                              <StampGlyph shape={preset.shape} color={preset.color} size={12} strokeWidth={1.5} />
+                                            ) : (
+                                              <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-slate-400/70" />
+                                            )}
+                                          </button>
+                                        );
+                                      })()}
                                       {node.isMilestone ? <span className="text-[13px] text-[#a96f55]">★</span> : null}
                                       {!props.focusMode || focusMenuNodeId === node.id ? (
                                         <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
@@ -2853,6 +2892,17 @@ export function ThinkingLayer(props: {
           }
         }
       `}</style>
+
+      <StampPickerPopover
+        open={Boolean(stampPicker)}
+        anchor={stampPicker?.anchor ?? null}
+        currentStamp={stampPicker ? decor.getStamp(stampPicker.nodeId) : null}
+        onPick={(stamp) => {
+          if (stampPicker) decor.setStamp(stampPicker.nodeId, stamp);
+          closeStampPicker();
+        }}
+        onClose={closeStampPicker}
+      />
     </div>
   );
 }
