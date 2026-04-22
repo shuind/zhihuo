@@ -10,6 +10,7 @@ export const GET = withApiRoute("sync.state.get", async (request: NextRequest) =
   if (!userId) return unauthorizedJson();
   const db = await readDb();
   return okJson({
-    revision: getUserRevision(db, userId)
+    revision: getUserRevision(db, userId),
+    server_time: new Date().toISOString()
   });
 });

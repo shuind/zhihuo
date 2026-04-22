@@ -361,6 +361,23 @@ type SyncSnapshotResponse = {
   thinking_views?: Record<string, ApiThinkingSpaceView>;
 };
 
+type SyncStateResponse = {
+  revision?: number;
+  server_time?: string;
+};
+
+type SyncPhase = "idle" | "bootstrap" | "push" | "conflict" | "repairing" | "ready" | "error";
+
+type SyncRepairSummary = {
+  startedAt: string;
+  finishedAt: string;
+  replayedCount: number;
+  pendingCount: number;
+  deadLetterCount: number;
+  cloudRevision: number | null;
+  failedReason: string | null;
+};
+
 type OfflineRuntimeState =
   | "guest_ready"
   | "user_bootstrapping"
@@ -1134,6 +1151,27 @@ function getIncompleteSpaceIdsForExport(store: ThinkingStore, thinkingViews: Rec
     .map((space) => space.id);
 }
 
+function describeOfflineRuntimeState(state: OfflineRuntimeState, options: { sessionEmail: string | null; isOnline: boolean }) {
+  switch (state) {
+    case "guest_ready":
+      return options.sessionEmail ? "账号未绑定云端同步" : "本地离线模式";
+    case "user_bootstrapping":
+      return "账号数据初始化中";
+    case "user_syncing":
+      return "云端同步中";
+    case "user_sync_ready":
+      return options.isOnline ? "账号云端同步已就绪" : "账号离线工作模式";
+    case "user_offline_ready":
+      return "账号离线工作模式";
+    case "binding_required":
+      return "等待选择绑定方式";
+    case "switching_account":
+      return "账号切换中";
+    default:
+      return "同步状态未知";
+  }
+}
+
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
@@ -1167,6 +1205,12 @@ export function TimeArchive() {
   const [deadLetterMutations, setDeadLetterMutations] = useState<QueuedMutation[]>([]);
   const [offlineMediaAssets, setOfflineMediaAssets] = useState<OfflineMediaAssetRecord[]>([]);
   const [mediaAssetSources, setMediaAssetSources] = useState<Record<string, string>>({});
+  const [pendingMutationCount, setPendingMutationCount] = useState(0);
+  const [cloudRevision, setCloudRevision] = useState<number | null>(null);
+  const [cloudServerTime, setCloudServerTime] = useState<string | null>(null);
+  const [syncPhase, setSyncPhase] = useState<SyncPhase>("idle");
+  const [lastCanonicalSyncError, setLastCanonicalSyncError] = useState<string | null>(null);
+  const [lastRepairSummary, setLastRepairSummary] = useState<SyncRepairSummary | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1244,6 +1288,88 @@ export function TimeArchive() {
     offlineRuntimeState === "user_syncing" ||
     offlineRuntimeState === "binding_required" ||
     offlineRuntimeState === "switching_account";
+  const syncModeLabel = useMemo(
+    () =>
+      describeOfflineRuntimeState(offlineRuntimeState, {
+        sessionEmail: sessionUser?.email ?? null,
+        isOnline
+      }),
+    [isOnline, offlineRuntimeState, sessionUser?.email]
+  );
+  const syncPhaseLabel = useMemo(() => {
+    switch (syncPhase) {
+      case "bootstrap":
+        return "初始化";
+      case "push":
+        return "推送中";
+      case "conflict":
+        return "检测到冲突";
+      case "repairing":
+        return "同步刷新中";
+      case "ready":
+        return "已收敛";
+      case "error":
+        return "同步异常";
+      default:
+        return "空闲";
+    }
+  }, [syncPhase]);
+  const syncWarning = useMemo(() => {
+    if (lastCanonicalSyncError) return `检测到快照重建异常：${lastCanonicalSyncError}`;
+    if (
+      cloudSyncReady &&
+      typeof cloudRevision === "number" &&
+      typeof offlineMeta?.revision === "number" &&
+      cloudRevision !== offlineMeta.revision &&
+      offlineMeta.syncState.hasLocalChanges !== true
+    ) {
+      return "本地版本号与云端版本号不一致，建议执行同步刷新";
+    }
+    if (
+      cloudSyncReady &&
+      pendingMutationCount > 0 &&
+      offlineMeta?.syncState.lastSyncedAt &&
+      Date.now() - new Date(offlineMeta.syncState.lastSyncedAt).getTime() > 60 * 1000
+    ) {
+      return "待同步改动停留较久，建议执行同步刷新";
+    }
+    return null;
+  }, [cloudRevision, cloudSyncReady, lastCanonicalSyncError, offlineMeta, pendingMutationCount]);
+  const syncDiagnosticsReport = useMemo(
+    () =>
+      JSON.stringify(
+        {
+          mode: syncModeLabel,
+          runtime_state: offlineRuntimeState,
+          phase_label: syncPhaseLabel,
+          local_revision: offlineMeta?.revision ?? null,
+          cloud_revision: cloudRevision,
+          cloud_server_time: cloudServerTime,
+          pending_mutations: pendingMutationCount,
+          dead_letters: deadLetterMutations.length,
+          last_synced_at: offlineMeta?.syncState.lastSyncedAt ?? null,
+          has_local_changes: offlineMeta?.syncState.hasLocalChanges === true,
+          sync_phase: syncPhase,
+          warning: syncWarning,
+          last_repair: lastRepairSummary
+        },
+        null,
+        2
+      ),
+    [
+      cloudRevision,
+      cloudServerTime,
+      deadLetterMutations.length,
+      lastRepairSummary,
+      offlineMeta,
+      offlineRuntimeState,
+      pendingMutationCount,
+      syncModeLabel,
+      syncPhaseLabel,
+      syncPhase,
+      syncWarning
+    ]
+  );
 
   const updateOfflineMeta = useCallback((updater: (current: OfflineSnapshotMeta) => OfflineSnapshotMeta) => {
     setOfflineMeta((current) => {
@@ -1269,6 +1395,16 @@ export function TimeArchive() {
       }
     }));
   }, [updateOfflineMeta]);
+
+  const refreshPendingMutationCount = useCallback(async (ownerKey: OfflineOwnerKey | null, includeDeferred = true) => {
+    if (!ownerKey) {
+      setPendingMutationCount(0);
+      return 0;
+    }
+    const items = await listOfflineMutationsByOwner(ownerKey, includeDeferred ? Number.MAX_SAFE_INTEGER : Date.now());
+    setPendingMutationCount(items.length);
+    return items.length;
+  }, []);
 
   const refreshDeadLetterMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
     if (!ownerKey) {
@@ -1442,8 +1578,10 @@ export function TimeArchive() {
       try {
         const response = await apiFetch("/v1/sync/state", { method: "GET", cache: "no-store" });
         if (!response.ok) return null;
-        const payload = (await response.json()) as { revision?: number };
+        const payload = (await response.json()) as SyncStateResponse;
         const revision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
+        setCloudRevision(revision);
+        setCloudServerTime(typeof payload.server_time === "string" ? payload.server_time : null);
         if (revision === null) return null;
         updateOfflineMeta((current) => ({
           ...current,
@@ -1460,8 +1598,31 @@ export function TimeArchive() {
     [updateOfflineMeta]
   );
 
+  const refreshCloudSyncState = useCallback(
+    async (userId?: string | null) => {
+      if (!userId) {
+        setCloudRevision(null);
+        setCloudServerTime(null);
+        return null;
+      }
+      try {
+        const response = await apiFetch("/v1/sync/state", { method: "GET", cache: "no-store" });
+        if (handleUnauthorized(response) || !response.ok) return null;
+        const payload = (await response.json().catch(() => null)) as SyncStateResponse | null;
+        if (!payload) return null;
+        const nextRevision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
+        setCloudRevision(nextRevision);
+        setCloudServerTime(typeof payload.server_time === "string" ? payload.server_time : null);
+        return nextRevision;
+      } catch {
+        return null;
+      }
+    },
+    [handleUnauthorized]
+  );
+
   const markCloudSynced = useCallback(
-    (userId?: string | null, revision?: number | null) => {
+    (userId?: string | null, revision?: number | null, options?: { hasLocalChanges?: boolean }) => {
       const nextRevision =
         typeof revision === "number" && Number.isFinite(revision)
           ? revision
@@ -1480,7 +1641,7 @@ export function TimeArchive() {
         syncState: {
           ...current.syncState,
           lastSyncedAt: new Date().toISOString(),
-          hasLocalChanges: false,
+          hasLocalChanges: options?.hasLocalChanges === true,
           bindingRequired: false
         }
       }));
@@ -1913,6 +2074,9 @@ export function TimeArchive() {
   const refreshFromCloud = useCallback(
     async (preferredSpaceId?: string | null, userId?: string | null) => {
       const targetUserId = userId ?? sessionUser?.userId ?? null;
+      const targetOwnerKey = targetUserId ? getUserOwnerKey(targetUserId) : null;
+      setSyncPhase((current) => (current === "repairing" ? current : targetUserId ? "bootstrap" : current));
+      setLastCanonicalSyncError(null);
       updateOfflineMeta((current) => ({
         ...current,
         ownerMode: targetUserId ? "user" : current.ownerMode,
@@ -1921,56 +2085,74 @@ export function TimeArchive() {
       }));
       const payload = await fetchSyncSnapshot();
       if (!payload) {
+        setLastCanonicalSyncError("snapshot_unavailable");
+        setSyncPhase("error");
         updateOfflineMeta((current) => ({
           ...current,
           completeness: current.syncState.hasLocalChanges ? "partial" : "stale"
         }));
         return;
       }
-      const nextLifeStore = {
-        ...EMPTY_LIFE_STORE,
-        doubts: Array.isArray(payload.life?.doubts) ? payload.life.doubts.map(mapApiLifeDoubt) : [],
-        notes: Array.isArray(payload.life?.notes) ? payload.life.notes.map(mapApiLifeNote) : [],
-        meta: lifeStore.meta
-      };
-      const nextThinkingStore = {
-        ...mapSyncSnapshotThinking(payload.thinking),
-        timezone: thinkingStore.timezone,
-        fixedTopSpacesEnabled: thinkingStore.fixedTopSpacesEnabled,
-        fixedTopSpaceIds: thinkingStore.fixedTopSpaceIds
-      };
-      const nextThinkingViews = Object.fromEntries(
-        Object.entries(payload.thinking_views ?? {}).map(([spaceId, view]) => [spaceId, mapApiThinkingView(view)])
-      );
-      const nextActive =
-        (preferredSpaceId && nextThinkingStore.spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
-        pickDefaultSpaceId(nextThinkingStore.spaces);
-      applySnapshotToState({
-        lifeStore: nextLifeStore,
-        thinkingStore: nextThinkingStore,
-        activeSpaceId: nextActive,
-        thinkingViews: nextThinkingViews,
-        meta: createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
-          ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
-          boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
-          revision: Number.isFinite(payload.revision) ? Number(payload.revision) : offlineMeta?.revision ?? null,
-          completeness: "complete",
-          lastAppliedLogId: offlineMeta?.lastAppliedLogId ?? null,
-          syncState: {
-            lastSyncedAt: new Date().toISOString(),
-            hasLocalChanges: false,
-            bindingRequired: false
-          }
-        })
-      });
-      markCloudSynced(targetUserId, Number.isFinite(payload.revision) ? Number(payload.revision) : null);
-      if (targetUserId) {
-        setOfflineRuntimeState("user_sync_ready");
+      try {
+        const nextLifeStore = {
+          ...EMPTY_LIFE_STORE,
+          doubts: Array.isArray(payload.life?.doubts) ? payload.life.doubts.map(mapApiLifeDoubt) : [],
+          notes: Array.isArray(payload.life?.notes) ? payload.life.notes.map(mapApiLifeNote) : [],
+          meta: lifeStore.meta
+        };
+        const nextThinkingStore = {
+          ...mapSyncSnapshotThinking(payload.thinking),
+          timezone: thinkingStore.timezone,
+          fixedTopSpacesEnabled: thinkingStore.fixedTopSpacesEnabled,
+          fixedTopSpaceIds: thinkingStore.fixedTopSpaceIds
+        };
+        const nextThinkingViews = Object.fromEntries(
+          Object.entries(payload.thinking_views ?? {}).map(([spaceId, view]) => [spaceId, mapApiThinkingView(view)])
+        );
+        const nextActive =
+          (preferredSpaceId && nextThinkingStore.spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
+          pickDefaultSpaceId(nextThinkingStore.spaces);
+        const pendingCount = await refreshPendingMutationCount(targetOwnerKey, true);
+        const hasPendingLocalChanges = pendingCount > 0;
+        applySnapshotToState({
+          lifeStore: nextLifeStore,
+          thinkingStore: nextThinkingStore,
+          activeSpaceId: nextActive,
+          thinkingViews: nextThinkingViews,
+          meta: createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+            ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
+            boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
+            revision: Number.isFinite(payload.revision) ? Number(payload.revision) : offlineMeta?.revision ?? null,
+            completeness: hasPendingLocalChanges ? "partial" : "complete",
+            lastAppliedLogId: offlineMeta?.lastAppliedLogId ?? null,
+            syncState: {
+              lastSyncedAt: new Date().toISOString(),
+              hasLocalChanges: hasPendingLocalChanges,
+              bindingRequired: false
+            }
+          })
+        });
+        setCloudRevision(Number.isFinite(payload.revision) ? Number(payload.revision) : null);
+        markCloudSynced(targetUserId, Number.isFinite(payload.revision) ? Number(payload.revision) : null, {
+          hasLocalChanges: hasPendingLocalChanges
+        });
+        setSyncPhase(hasPendingLocalChanges ? "push" : "ready");
+        if (targetUserId) {
+          setOfflineRuntimeState("user_sync_ready");
+        }
+      } catch (error) {
+        setLastCanonicalSyncError(error instanceof Error ? error.message : String(error));
+        setSyncPhase("error");
+        updateOfflineMeta((current) => ({
+          ...current,
+          completeness: current.syncState.hasLocalChanges ? "partial" : "stale"
+        }));
       }
     },
     [
       applySnapshotToState,
       fetchSyncSnapshot,
+      refreshPendingMutationCount,
       lifeStore,
       markCloudSynced,
       offlineMeta?.boundUserId,
@@ -2185,6 +2367,277 @@ export function TimeArchive() {
     isOnline
   ]);
 
+  const runQueuedMutationSync = useCallback(
+    async (
+      ownerKey: OfflineOwnerKey | null,
+      options?: { includeDeferred?: boolean; preferredSpaceId?: string | null; repairDepth?: number }
+    ) => {
+      if (!ownerKey || !ownerKey.startsWith("user:")) {
+        return { ok: true as const, pendingCount: 0, deadLetterCount: 0 };
+      }
+      if (offlineSyncingRef.current || !isOnline) {
+        return { ok: false as const, pendingCount: pendingMutationCount, deadLetterCount: deadLetterMutations.length };
+      }
+      offlineSyncingRef.current = true;
+      setSyncPhase(options?.repairDepth ? "repairing" : "push");
+      try {
+        const mediaReady = await syncPendingOfflineMediaAssets(ownerKey);
+        if (!mediaReady) {
+          setSyncPhase("error");
+          return { ok: false as const, pendingCount: pendingMutationCount, deadLetterCount: deadLetterMutations.length };
+        }
+        const pending = await listOfflineMutationsByOwner(ownerKey, options?.includeDeferred ? Number.MAX_SAFE_INTEGER : Date.now());
+        setPendingMutationCount(pending.length);
+        if (!pending.length) {
+          await refreshCloudSyncState(ownerKey.slice(5));
+          setSyncPhase("ready");
+          return { ok: true as const, pendingCount: 0, deadLetterCount: deadLetterMutations.length };
+        }
+
+        const baseRevision = pending[0]?.baseRevision ?? latestRevisionRef.current ?? offlineMeta?.revision ?? 0;
+        try {
+          const response = await apiFetch("/v1/sync/mutations", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              baseRevision,
+              mutations: pending.map((item) => ({
+                clientMutationId: item.clientMutationId,
+                op: item.op,
+                payload: {
+                  ...(item.body ?? {}),
+                  client_mutation_id: item.clientMutationId,
+                  client_updated_at: item.clientUpdatedAt
+                },
+                clientTime: item.clientUpdatedAt
+              }))
+            })
+          });
+          if (handleUnauthorized(response)) {
+            setSyncPhase("error");
+            return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
+          }
+          if (response.status === 409) {
+            setSyncPhase("conflict");
+            const conflictBody = (await response.json().catch(() => ({}))) as { error?: string };
+            const conflictRevision = (() => {
+              const match =
+                typeof conflictBody.error === "string" ? conflictBody.error.match(/^revision_conflict:(\d+)$/) : null;
+              return match ? Number(match[1]) : null;
+            })();
+            await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+            const rebasedRevision =
+              typeof conflictRevision === "number" && Number.isFinite(conflictRevision)
+                ? conflictRevision
+                : await syncRevisionFromServer(ownerKey.slice(5));
+            if (typeof rebasedRevision === "number" && Number.isFinite(rebasedRevision)) {
+              setRevisionBaseline(ownerKey.slice(5), rebasedRevision);
+              const allPending = await listOfflineMutationsByOwner(ownerKey, Number.MAX_SAFE_INTEGER);
+              for (const item of allPending) {
+                await updateOfflineMutation(item.id, {
+                  baseRevision: rebasedRevision,
+                  status: "pending",
+                  lastError: null,
+                  deadLetterReason: null,
+                  nextRetryAt: Date.now()
+                });
+              }
+              const rebasedCount = await refreshPendingMutationCount(ownerKey, true);
+              if ((options?.repairDepth ?? 0) < 1) {
+                return await runQueuedMutationSync(ownerKey, {
+                  includeDeferred: true,
+                  preferredSpaceId: options?.preferredSpaceId ?? activeSpaceIdRef.current,
+                  repairDepth: (options?.repairDepth ?? 0) + 1
+                });
+              }
+              await refreshDeadLetterMutations(ownerKey);
+              return { ok: false as const, pendingCount: rebasedCount, deadLetterCount: deadLetterMutations.length };
+            }
+            setSyncPhase("error");
+            return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
+          }
+          if (!response.ok) {
+            const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+            for (const item of pending) {
+              await updateOfflineMutation(item.id, {
+                retryCount: item.retryCount + 1,
+                nextRetryAt: retryTime,
+                lastError: `status_${response.status}`,
+                status: "failed"
+              });
+            }
+            setSyncPhase("error");
+            return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
+          }
+          const payload = (await response.json()) as {
+            applied?: Array<{ clientMutationId?: string; status?: "applied" | "skipped"; revision?: number }>;
+            rejected?: Array<{ clientMutationId?: string; status?: "rejected"; reason?: string }>;
+            newRevision?: number;
+          };
+          const revisions = new Map(
+            (payload.applied ?? [])
+              .filter((item) => typeof item.clientMutationId === "string")
+              .map((item) => [item.clientMutationId as string, Number.isFinite(item.revision) ? Number(item.revision) : null])
+          );
+          const rejected = new Map(
+            (payload.rejected ?? [])
+              .filter((item) => typeof item.clientMutationId === "string" && typeof item.reason === "string")
+              .map((item) => [item.clientMutationId as string, item.reason as string])
+          );
+          const nextRevision = Number.isFinite(payload.newRevision) ? Number(payload.newRevision) : null;
+          let hasMissingAcknowledgements = false;
+          let hasRejectedMutations = false;
+          if (typeof nextRevision === "number" && Number.isFinite(nextRevision)) {
+            setRevisionBaseline(ownerKey.slice(5), nextRevision);
+          }
+          for (const item of pending) {
+            if (rejected.has(item.clientMutationId)) {
+              hasRejectedMutations = true;
+              const reason = rejected.get(item.clientMutationId) ?? "mutation_rejected";
+              await updateOfflineMutation(item.id, {
+                status: "dead_letter",
+                deadLetterReason: reason,
+                lastError: reason,
+                nextRetryAt: Number.MAX_SAFE_INTEGER
+              });
+              continue;
+            }
+            if (!revisions.has(item.clientMutationId)) {
+              hasMissingAcknowledgements = true;
+              await updateOfflineMutation(item.id, {
+                baseRevision: typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : item.baseRevision,
+                status: "pending",
+                lastError: "missing_ack",
+                deadLetterReason: null,
+                nextRetryAt: Date.now() + OFFLINE_RETRY_BASE_MS
+              });
+              continue;
+            }
+            await updateOfflineMutation(item.id, {
+              status: "acked",
+              ackedRevision: revisions.get(item.clientMutationId) ?? null,
+              lastError: null,
+              deadLetterReason: null
+            });
+            await removeOfflineMutation(item.id);
+          }
+          await refreshDeadLetterMutations(ownerKey);
+          const nextPendingCount = await refreshPendingMutationCount(ownerKey, true);
+          if (hasRejectedMutations) {
+            updateOfflineMeta((current) => ({
+              ...current,
+              completeness: "partial",
+              syncState: {
+                ...current.syncState,
+                hasLocalChanges: true
+              }
+            }));
+            showNotice("部分离线改动未被云端接受，已移入同步异常");
+          }
+          await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+          await refreshCloudSyncState(ownerKey.slice(5));
+          setSyncPhase(hasRejectedMutations || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
+          return {
+            ok: !hasRejectedMutations && !hasMissingAcknowledgements,
+            pendingCount: nextPendingCount,
+            deadLetterCount: rejected.size
+          };
+        } catch (error) {
+          const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+          for (const item of pending) {
+            await updateOfflineMutation(item.id, {
+              retryCount: item.retryCount + 1,
+              nextRetryAt: retryTime,
+              lastError: error instanceof Error ? error.message : String(error),
+              status: "failed"
+            });
+          }
+          setSyncPhase("error");
+          return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
+        }
+      } finally {
+        offlineSyncingRef.current = false;
+      }
+    },
+    [
+      deadLetterMutations.length,
+      handleUnauthorized,
+      isOnline,
+      offlineMeta?.revision,
+      pendingMutationCount,
+      refreshCloudSyncState,
+      refreshDeadLetterMutations,
+      refreshFromCloud,
+      refreshPendingMutationCount,
+      showNotice,
+      syncPendingOfflineMediaAssets,
+      syncRevisionFromServer,
+      setRevisionBaseline,
+      updateOfflineMeta
+    ]
+  );
+
+  const finalizeCloudWrite = useCallback(
+    async (preferredSpaceId?: string | null, userId?: string | null) => {
+      await refreshFromCloud(preferredSpaceId ?? activeSpaceIdRef.current, userId ?? sessionUser?.userId ?? null);
+      if (userId ?? sessionUser?.userId) {
+        await refreshCloudSyncState(userId ?? sessionUser?.userId ?? null);
+      }
+    },
+    [refreshCloudSyncState, refreshFromCloud, sessionUser?.userId]
+  );
+
+  const repairCloudSyncState = useCallback(
+    async (ownerKey: OfflineOwnerKey | null, preferredSpaceId?: string | null) => {
+      if (!ownerKey || !ownerKey.startsWith("user:")) {
+        return { ok: false as const, message: "当前不在账号同步模式" };
+      }
+      const startedAt = new Date().toISOString();
+      setSyncPhase("repairing");
+      await refreshFromCloud(preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+      const rebasedRevision = latestRevisionRef.current ?? offlineMeta?.revision ?? 0;
+      const allPending = await listOfflineMutationsByOwner(ownerKey, Number.MAX_SAFE_INTEGER);
+      for (const item of allPending) {
+        await updateOfflineMutation(item.id, {
+          baseRevision: rebasedRevision,
+          status: "pending",
+          lastError: null,
+          deadLetterReason: null,
+          nextRetryAt: Date.now()
+        });
+      }
+      const syncResult = await runQueuedMutationSync(ownerKey, {
+        includeDeferred: true,
+        preferredSpaceId: preferredSpaceId ?? activeSpaceIdRef.current,
+        repairDepth: 1
+      });
+      await refreshDeadLetterMutations(ownerKey);
+      const remainingPendingCount = await refreshPendingMutationCount(ownerKey, true);
+      const finishedAt = new Date().toISOString();
+      setLastRepairSummary({
+        startedAt,
+        finishedAt,
+        replayedCount: allPending.length,
+        pendingCount: remainingPendingCount,
+        deadLetterCount: deadLetterMutations.length,
+        cloudRevision: latestRevisionRef.current ?? null,
+        failedReason: syncResult.ok ? null : remainingPendingCount > 0 ? "pending_remaining" : "repair_incomplete"
+      });
+      if (!syncResult.ok && remainingPendingCount > 0) {
+        return { ok: false as const, message: "同步刷新已执行，但仍有待处理改动" };
+      }
+      return { ok: true as const, message: "已按云端快照重建并重放本地改动" };
+    },
+    [
+      deadLetterMutations.length,
+      offlineMeta?.revision,
+      refreshDeadLetterMutations,
+      refreshFromCloud,
+      refreshPendingMutationCount,
+      runQueuedMutationSync
+    ]
+  );
+
   const queueMutation = useCallback(
     async (route: string, body: Record<string, unknown> | null = null) => {
       if (!activeOwnerKey || !sessionUser || !activeOwnerKey.startsWith("user:")) {
@@ -2220,10 +2673,11 @@ export function TimeArchive() {
         lastError: null
       };
       await enqueueOfflineMutation(queued);
+      void refreshPendingMutationCount(activeOwnerKey, true);
       markLocalChange();
       return queued;
     },
-    [activeOwnerKey, markLocalChange, offlineMeta?.revision, offlineRuntimeState, sessionUser]
+    [activeOwnerKey, markLocalChange, offlineMeta?.revision, offlineRuntimeState, refreshPendingMutationCount, sessionUser]
   );
 
   const createLifeDoubt = useCallback(
@@ -2267,8 +2721,7 @@ export function TimeArchive() {
             showNotice("放入失败，请稍后再试");
             return false;
           }
-          void syncLifeFromApi(true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(null, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) {
@@ -2296,7 +2749,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, showNotice]
   );
 
   const saveLifeDoubtNote = useCallback(
@@ -2330,8 +2783,7 @@ export function TimeArchive() {
             showNotice("注记保存失败");
             return false;
           }
-          void syncLifeFromApi(true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(null, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) {
@@ -2352,7 +2804,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, showNotice]
   );
 
   const pruneDerivedThinkingByDoubt = useCallback((doubtId: string) => {
@@ -2381,13 +2833,12 @@ export function TimeArchive() {
             showNotice("删除失败，请稍后再试");
             return false;
           }
-          pruneDerivedThinkingByDoubt(doubtId);
-          void syncLifeFromApi(true);
-          void syncThinkingSpacesFromApi(true);
-          if (activeSpaceId && thinkingStore.spaces.some((space) => space.sourceTimeDoubtId === doubtId && space.id === activeSpaceId)) {
-            setThinkingView(null);
-          }
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(
+            activeSpaceId && thinkingStore.spaces.some((space) => space.sourceTimeDoubtId === doubtId && space.id === activeSpaceId)
+              ? null
+              : activeSpaceId,
+            sessionUser?.userId ?? null
+          );
           return true;
         } catch {
           showNotice("网络异常，请稍后再试");
@@ -2403,7 +2854,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [activeSpaceId, cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, pruneDerivedThinkingByDoubt, sessionUser?.userId, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces]
+    [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, pruneDerivedThinkingByDoubt, sessionUser?.userId, showNotice, thinkingStore.spaces]
   );
 
   const createThinkingSpaceApi = useCallback(
@@ -2489,12 +2940,8 @@ export function TimeArchive() {
           }
           const spaceId = typeof payload.space_id === "string" ? payload.space_id : null;
           if (!spaceId) return { ok: false, message: "创建空间失败" };
-          const spaces = await syncThinkingSpacesFromApi(true);
           setActiveSpaceId(spaceId);
-          if (spaces.some((space) => space.id === spaceId)) {
-            await loadThinkingViewFromApi(spaceId, true);
-          }
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
           return {
             ok: true,
             spaceId,
@@ -2571,7 +3018,7 @@ export function TimeArchive() {
         questionSuggestion: null
       }
     },
-    [cloudSyncReady, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi, thinkingStore.spaces]
+    [cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingStore.spaces]
   );
 
   useEffect(() => {
@@ -2768,7 +3215,7 @@ export function TimeArchive() {
       setOfflineRuntimeState("user_bootstrapping");
       await refreshFromCloud(activeSpaceIdRef.current, sessionUser.userId);
       if (cancelled) return;
-      await syncQueuedMutations(nextUserOwnerKey);
+      await runQueuedMutationSync(nextUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
       if (cancelled) return;
       setOfflineRuntimeState("user_sync_ready");
     })();
@@ -2778,6 +3225,7 @@ export function TimeArchive() {
     };
   }, [
     activeOwnerKey,
+    applySnapshotToState,
     authReady,
     bindingDialog,
     cloudSessionEnabled,
@@ -2790,7 +3238,7 @@ export function TimeArchive() {
     offlineRuntimeState,
     refreshFromCloud,
     sessionUser,
-    syncQueuedMutations,
+    runQueuedMutationSync,
     thinkingStore,
     updateOfflineMeta
   ]);
@@ -2848,17 +3296,17 @@ export function TimeArchive() {
     if (!hydrated || !authReady || !sessionUser || !currentUserOwnerKey || !isOnline) return;
     if (offlineRuntimeState !== "user_sync_ready") return;
     const onOnline = () => {
-      void syncQueuedMutations(currentUserOwnerKey);
+      void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
     };
     window.addEventListener("online", onOnline);
     const timer = window.setInterval(() => {
-      void syncQueuedMutations(currentUserOwnerKey);
+      void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
     }, 15000);
     return () => {
       window.removeEventListener("online", onOnline);
       window.clearInterval(timer);
     };
-  }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, sessionUser, syncQueuedMutations]);
+  }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, runQueuedMutationSync, sessionUser]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !hydrated || isOnline) return;
@@ -2876,6 +3324,28 @@ export function TimeArchive() {
     if (!hydrated) return;
     void refreshDeadLetterMutations(activeOwnerKey);
   }, [activeOwnerKey, hydrated, refreshDeadLetterMutations]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    void refreshPendingMutationCount(activeOwnerKey, true);
+  }, [activeOwnerKey, hydrated, refreshPendingMutationCount]);
+
+  useEffect(() => {
+    if (!authReady || !cloudSyncReady || !sessionUser || !isOnline) {
+      if (!sessionUser) {
+        setCloudRevision(null);
+        setCloudServerTime(null);
+      }
+      return;
+    }
+    void refreshCloudSyncState(sessionUser.userId);
+    const timer = window.setInterval(() => {
+      void refreshCloudSyncState(sessionUser.userId);
+    }, 30000);
+    return () => {
+      window.clearInterval(timer);
+    };
+  }, [authReady, cloudSyncReady, isOnline, refreshCloudSyncState, sessionUser]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2942,10 +3412,7 @@ export function TimeArchive() {
     }
     const cached = getLocalSpaceView(activeSpaceId);
     setThinkingView(cached);
-    if (!authReady || !cloudSyncReady || !sessionUser) return;
-    if (!isOnline) return;
-    void loadThinkingViewFromApi(activeSpaceId, true);
-  }, [activeSpaceId, authReady, cloudSyncReady, getLocalSpaceView, hydrated, isOnline, loadThinkingViewFromApi, sessionUser]);
+  }, [activeSpaceId, getLocalSpaceView, hydrated]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -2976,7 +3443,7 @@ export function TimeArchive() {
           const response = await apiFetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          void syncLifeFromApi(true);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -2991,7 +3458,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markLocalChange, queueMutation, syncLifeFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
   );
 
   const handleImportToThinking = useCallback(
@@ -3015,11 +3482,8 @@ export function TimeArchive() {
               showNotice("恢复思考失败");
               return;
             }
-            const spaces = await syncThinkingSpacesFromApi(true);
             setActiveSpaceId(spaceId);
-            if (spaces.some((space) => space.id === spaceId)) {
-              await loadThinkingViewFromApi(spaceId, true);
-            }
+            await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
             const hidden = await hideLifeDoubtFromTimeline(doubt.id);
             if (!hidden) {
               showNotice("已进入思路，但时间卡片隐藏失败");
@@ -3064,7 +3528,7 @@ export function TimeArchive() {
         }
       })();
     },
-    [cloudSyncReady, createThinkingSpaceApi, handleUnauthorized, hideLifeDoubtFromTimeline, loadThinkingViewFromApi, showNotice, syncThinkingSpacesFromApi]
+    [cloudSyncReady, createThinkingSpaceApi, finalizeCloudWrite, handleUnauthorized, hideLifeDoubtFromTimeline, sessionUser?.userId, showNotice]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -3101,8 +3565,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await syncThinkingScratchFromApi(true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3128,7 +3591,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingScratchFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
   );
 
   const feedThinkingScratchToTimeLocal = useCallback(
@@ -3207,9 +3670,7 @@ export function TimeArchive() {
           const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await syncLifeFromApi(true);
-          await syncThinkingScratchFromApi(true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3221,12 +3682,10 @@ export function TimeArchive() {
     [
       cloudSyncReady,
       feedThinkingScratchToTimeLocal,
+      finalizeCloudWrite,
       handleUnauthorized,
-      markCloudSynced,
       queueMutation,
       sessionUser?.userId,
-      syncLifeFromApi,
-      syncThinkingScratchFromApi
     ]
   );
 
@@ -3237,8 +3696,7 @@ export function TimeArchive() {
           const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await syncThinkingScratchFromApi(true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3252,7 +3710,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [cloudSyncReady, handleUnauthorized, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, syncThinkingScratchFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
   );
 
   const handleScratchToSpace = useCallback(
@@ -3268,13 +3726,8 @@ export function TimeArchive() {
         if (!response.ok || typeof body.space_id !== "string") return { ok: false as const, message: "转为空间失败" };
 
         const spaceId = body.space_id;
-        const spaces = await syncThinkingSpacesFromApi(true);
-        await syncThinkingScratchFromApi(true);
         setActiveSpaceId(spaceId);
-        if (spaces.some((space) => space.id === spaceId)) {
-          await loadThinkingViewFromApi(spaceId, true);
-        }
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
         return { ok: true as const, spaceId };
       } catch (error) {
         if (!isOfflineNetworkError(error)) {
@@ -3287,13 +3740,10 @@ export function TimeArchive() {
     [
       cloudSyncReady,
       convertScratchToSpaceLocal,
+      finalizeCloudWrite,
       handleUnauthorized,
-      loadThinkingViewFromApi,
-      markCloudSynced,
       queueMutation,
       sessionUser?.userId,
-      syncThinkingScratchFromApi,
-      syncThinkingSpacesFromApi
     ]
   );
 
@@ -3336,8 +3786,7 @@ export function TimeArchive() {
           if (typeof body.node_id !== "string" || !body.node_id.trim()) {
             return { ok: false as const, message: "放入结构失败：未返回节点标识" };
           }
-          await loadThinkingViewFromApi(spaceId, true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
           return {
             ok: true as const,
             converted: body.converted === true,
@@ -3463,7 +3912,7 @@ export function TimeArchive() {
         suggestedQuestions: []
       };
     },
-    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
   );
 
   const handleThinkingOrganizePreview = useCallback(
@@ -3545,14 +3994,13 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
         const body = (await response.json().catch(() => ({}))) as { moved_count?: number; error?: string };
         if (!response.ok) return { ok: false as const, message: typeof body.error === "string" ? body.error : "整理失败" };
-        await loadThinkingViewFromApi(spaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
         return { ok: true as const, movedCount: Number.isFinite(body.moved_count) ? Number(body.moved_count) : 0 };
       } catch {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
+    [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingMoveNode = useCallback(
@@ -3585,14 +4033,13 @@ export function TimeArchive() {
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingDeleteNode = useCallback(
@@ -3630,8 +4077,7 @@ export function TimeArchive() {
         const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/delete`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
@@ -3642,9 +4088,8 @@ export function TimeArchive() {
       cloudSyncReady,
       commitLocalSpaceView,
       getLocalSpaceView,
+      finalizeCloudWrite,
       handleUnauthorized,
-      loadThinkingViewFromApi,
-      markCloudSynced,
       markLocalChange,
       markMediaAssetsDeletedLocally,
       sessionUser?.userId,
@@ -3665,8 +4110,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3694,7 +4138,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
+    [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
   );
 
   const handleThinkingCopyNode = useCallback(
@@ -3736,14 +4180,13 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return null;
         const body = (await response.json().catch(() => ({}))) as { node_id?: string };
         if (!response.ok) return null;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
         return typeof body.node_id === "string" ? body.node_id : null;
       } catch {
         return null;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodes]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId, thinkingStore.nodes]
   );
 
   const handleThinkingSaveNodeAnswer = useCallback(
@@ -3759,8 +4202,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3782,7 +4224,7 @@ export function TimeArchive() {
       markLocalChange();
       return true;
     },
-    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
+    [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
   );
 
   const applyLocalNodeImageAsset = useCallback(
@@ -3903,8 +4345,7 @@ export function TimeArchive() {
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
           await persistOfflineAsset("uploaded", uploadedAsset.uploadedAt);
-          await applyLocalNodeImageAsset(nodeId, uploadedAsset);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3921,7 +4362,7 @@ export function TimeArchive() {
       applyLocalNodeImageAsset,
       cloudSyncReady,
       handleUnauthorized,
-      markCloudSynced,
+      finalizeCloudWrite,
       queueMutation,
       refreshOfflineMediaAssets,
       sessionUser?.userId,
@@ -3943,8 +4384,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await applyLocalNodeImageAsset(nodeId, null);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -3955,7 +4395,7 @@ export function TimeArchive() {
       await applyLocalNodeImageAsset(nodeId, null);
       return true;
     },
-    [applyLocalNodeImageAsset, cloudSyncReady, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId, thinkingStore.nodes]
+    [applyLocalNodeImageAsset, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, queueMutation, sessionUser?.userId, thinkingStore.nodes]
   );
 
   const handleThinkingMisplacedNode = useCallback(
@@ -4006,14 +4446,13 @@ export function TimeArchive() {
         const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/misplaced`, { method: "POST" });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingSetActiveTrack = useCallback(
@@ -4039,14 +4478,13 @@ export function TimeArchive() {
         });
         if (handleUnauthorized(response)) return false;
         if (!response.ok) return false;
-        await loadThinkingViewFromApi(spaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
         return true;
       } catch {
         return false;
       }
     },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, sessionUser?.userId]
+    [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, sessionUser?.userId]
   );
 
   const handleThinkingCreateTrack = useCallback(
@@ -4087,14 +4525,13 @@ export function TimeArchive() {
         if (handleUnauthorized(response)) return null;
         const body = (await response.json().catch(() => ({}))) as { track_id?: string };
         if (!response.ok) return null;
-        await loadThinkingViewFromApi(spaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
+        await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
         return typeof body.track_id === "string" ? body.track_id : null;
       } catch {
         return null;
       }
     },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
+    [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
   );
 
   const applyLocalSpaceGalleryState = useCallback(
@@ -4252,8 +4689,7 @@ export function TimeArchive() {
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
           await persistOfflineAsset("uploaded", uploadedAsset.uploadedAt);
-          await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, uploadedAsset);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -4271,7 +4707,7 @@ export function TimeArchive() {
       cloudSyncReady,
       getLocalSpaceView,
       handleUnauthorized,
-      markCloudSynced,
+      finalizeCloudWrite,
       queueMutation,
       refreshOfflineMediaAssets,
       sessionUser?.userId,
@@ -4305,8 +4741,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, null);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -4317,7 +4752,7 @@ export function TimeArchive() {
       await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, null);
       return true;
     },
-    [applyLocalSpaceGalleryState, cloudSyncReady, getLocalSpaceView, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId]
+    [applyLocalSpaceGalleryState, cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, queueMutation, sessionUser?.userId]
   );
 
   const handleThinkingSelectSpaceBackgroundImage = useCallback(
@@ -4341,8 +4776,7 @@ export function TimeArchive() {
           });
           if (handleUnauthorized(response)) return false;
           if (!response.ok) return false;
-          await applyLocalSpaceGalleryState(spaceId, currentView.backgroundAssetIds, assetId, null);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
           return true;
         } catch (error) {
           if (!isOfflineNetworkError(error)) return false;
@@ -4353,7 +4787,7 @@ export function TimeArchive() {
       await applyLocalSpaceGalleryState(spaceId, currentView.backgroundAssetIds, assetId, null);
       return true;
     },
-    [applyLocalSpaceGalleryState, cloudSyncReady, getLocalSpaceView, handleUnauthorized, markCloudSynced, queueMutation, sessionUser?.userId]
+    [applyLocalSpaceGalleryState, cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, queueMutation, sessionUser?.userId]
   );
 
   const handleThinkingWriteToTime = useCallback(
@@ -4376,13 +4810,7 @@ export function TimeArchive() {
             if (response.status === 404) return { ok: false as const, message: "空间不存在" };
             return { ok: false as const, message: "写入时间失败" };
           }
-          await syncLifeFromApi(true);
-          const spaces = await syncThinkingSpacesFromApi(true);
-          const nextActive = pickDefaultSpaceId(spaces);
-          setActiveSpaceId(nextActive);
-          if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-          else setThinkingView(null);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(null, sessionUser?.userId ?? null);
           return { ok: true as const };
         } catch (error) {
           if (!isOfflineNetworkError(error)) {
@@ -4478,7 +4906,7 @@ export function TimeArchive() {
       markLocalChange();
       return { ok: true as const };
     },
-    [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncLifeFromApi, syncThinkingSpacesFromApi, thinkingStore.spaces, thinkingView]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, lifeStore.doubts, markLocalChange, queueMutation, sessionUser?.userId, thinkingStore.spaces, thinkingView]
   );
 
   const handleThinkingDeleteSpace = useCallback(
@@ -4491,12 +4919,7 @@ export function TimeArchive() {
             const payload = (await response.json().catch(() => ({}))) as { error?: string };
             return { ok: false as const, message: typeof payload.error === "string" ? payload.error : "删除空间失败" };
           }
-          const spaces = await syncThinkingSpacesFromApi(true);
-          const nextActive = pickDefaultSpaceId(spaces);
-          setActiveSpaceId(nextActive);
-          if (nextActive) await loadThinkingViewFromApi(nextActive, true);
-          else setThinkingView(null);
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(null, sessionUser?.userId ?? null);
           return { ok: true as const };
         } catch {
           return { ok: false as const, message: "网络异常，请稍后再试" };
@@ -4533,13 +4956,11 @@ export function TimeArchive() {
     },
     [
       cloudSyncReady,
+      finalizeCloudWrite,
       handleUnauthorized,
-      loadThinkingViewFromApi,
-      markCloudSynced,
       markLocalChange,
       markMediaAssetsDeletedLocally,
       sessionUser?.userId,
-      syncThinkingSpacesFromApi,
       thinkingStore.spaces
     ]
   );
@@ -4572,11 +4993,7 @@ export function TimeArchive() {
           if (!response.ok) {
             return { ok: false as const, message: typeof responseBody.error === "string" ? responseBody.error : "重命名失败" };
           }
-          const spaces = await syncThinkingSpacesFromApi(true);
-          if (activeSpaceId && spaces.some((space) => space.id === activeSpaceId)) {
-            await loadThinkingViewFromApi(activeSpaceId, true);
-          }
-          markCloudSynced(sessionUser?.userId ?? null);
+          await finalizeCloudWrite(activeSpaceIdRef.current, sessionUser?.userId ?? null);
           return {
             ok: true as const,
             rootQuestionText: typeof responseBody.root_question_text === "string" ? responseBody.root_question_text : rootQuestionText
@@ -4596,7 +5013,7 @@ export function TimeArchive() {
       markLocalChange();
       return { ok: true as const, rootQuestionText: nextText };
     },
-    [activeSpaceId, cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, syncThinkingSpacesFromApi]
+    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
   );
 
   const handleSystemExport = useCallback(
@@ -4779,10 +5196,31 @@ export function TimeArchive() {
     async (mutationId: string) => {
       await removeOfflineMutation(mutationId);
       await refreshDeadLetterMutations(activeOwnerKey);
+      await refreshPendingMutationCount(activeOwnerKey, true);
       showNotice("已移除同步异常");
     },
-    [activeOwnerKey, refreshDeadLetterMutations, showNotice]
+    [activeOwnerKey, refreshDeadLetterMutations, refreshPendingMutationCount, showNotice]
   );
+
+  const handleSyncRepair = useCallback(async () => {
+    if (!currentUserOwnerKey || !sessionUser) {
+      return { ok: false as const, error: "请先登录账号后再执行同步刷新" };
+    }
+    const previousRuntimeState = offlineRuntimeState;
+    setOfflineRuntimeState("user_syncing");
+    try {
+      const result = await repairCloudSyncState(currentUserOwnerKey, activeSpaceIdRef.current);
+      await refreshCloudSyncState(sessionUser.userId);
+      if (result.ok) {
+        showNotice(result.message);
+        return { ok: true as const };
+      }
+      showNotice(result.message);
+      return { ok: false as const, error: result.message };
+    } finally {
+      setOfflineRuntimeState(isOnline ? "user_sync_ready" : previousRuntimeState === "user_offline_ready" ? "user_offline_ready" : "user_sync_ready");
+    }
+  }, [currentUserOwnerKey, isOnline, offlineRuntimeState, repairCloudSyncState, refreshCloudSyncState, sessionUser, showNotice]);
 
   void pinTick;
 
@@ -4963,6 +5401,20 @@ export function TimeArchive() {
                 onChangePin={handleChangePin}
                 onForgotPin={handleForgotPin}
                 onOpenAuth={openAuthDialog}
+                syncStatus={{
+                  modeLabel: syncModeLabel,
+                  phase: syncPhaseLabel,
+                  localRevision: offlineMeta?.revision ?? null,
+                  cloudRevision,
+                  cloudServerTime,
+                  pendingMutationCount,
+                  lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
+                  warning: syncWarning,
+                  lastRepairSummary
+                }}
+                syncDiagnosticsReport={syncDiagnosticsReport}
+                syncRepairing={syncPhase === "repairing" || offlineRuntimeState === "user_syncing"}
+                onSyncRepair={handleSyncRepair}
                 deadLetterMutations={deadLetterMutations}
                 onDismissDeadLetter={dismissDeadLetterMutation}
                 setFixedTopSpacesEnabled={(enabled) =>

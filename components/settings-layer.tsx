@@ -37,6 +37,28 @@ export function SettingsLayer(props: {
   onOpenAuth: () => void;
   onClearAll: () => void;
   onLogout: () => void;
+  syncStatus: {
+    modeLabel: string;
+    phase: string;
+    localRevision: number | null;
+    cloudRevision: number | null;
+    cloudServerTime: string | null;
+    pendingMutationCount: number;
+    lastSyncedAt: string | null;
+    warning: string | null;
+    lastRepairSummary: {
+      startedAt: string;
+      finishedAt: string;
+      replayedCount: number;
+      pendingCount: number;
+      deadLetterCount: number;
+      cloudRevision: number | null;
+      failedReason: string | null;
+    } | null;
+  };
+  syncDiagnosticsReport: string;
+  syncRepairing: boolean;
+  onSyncRepair: () => Promise<{ ok: boolean; error?: string }>;
   deadLetterMutations: QueuedMutation[];
   onDismissDeadLetter: (mutationId: string) => Promise<void> | void;
   showNotice: (message: string) => void;
@@ -76,6 +98,14 @@ export function SettingsLayer(props: {
   };
 
   const normalizePin = (value: string) => value.replace(/\D+/g, "").slice(0, 12);
+
+  const runSyncRepair = () => {
+    if (props.syncRepairing) return;
+    void (async () => {
+      const result = await props.onSyncRepair();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
 
   const submitPin = () => {
     if (pinLoading) return;
@@ -427,6 +457,82 @@ export function SettingsLayer(props: {
                 登录 / 注册
               </Button>
             )}
+          </CardFooter>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>同步与修复</CardTitle>
+            <CardDescription>用于查看当前同步健康度，并在发现双端不一致时执行云端优先的同步刷新。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="grid gap-3 rounded-xl border border-slate-300 bg-white p-4 text-sm text-slate-700 md:grid-cols-2">
+              <div>
+                <p className="text-xs text-slate-500">当前同步模式</p>
+                <p className="mt-1">{props.syncStatus.modeLabel}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">同步阶段</p>
+                <p className="mt-1">{props.syncStatus.phase}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">本地 revision</p>
+                <p className="mt-1">{props.syncStatus.localRevision ?? "未记录"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">云端 revision</p>
+                <p className="mt-1">{props.syncStatus.cloudRevision ?? "未获取"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">待同步改动</p>
+                <p className="mt-1">{props.syncStatus.pendingMutationCount}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">同步异常</p>
+                <p className="mt-1">{props.deadLetterMutations.length}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">最后成功同步</p>
+                <p className="mt-1">{props.syncStatus.lastSyncedAt ? new Date(props.syncStatus.lastSyncedAt).toLocaleString("zh-CN") : "暂无"}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">云端时间</p>
+                <p className="mt-1">{props.syncStatus.cloudServerTime ? new Date(props.syncStatus.cloudServerTime).toLocaleString("zh-CN") : "暂无"}</p>
+              </div>
+            </div>
+            {props.syncStatus.warning ? (
+              <div className="rounded-xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                {props.syncStatus.warning}
+              </div>
+            ) : null}
+            {props.syncStatus.lastRepairSummary ? (
+              <div className="rounded-xl border border-slate-300 bg-white px-4 py-3 text-xs leading-6 text-slate-600">
+                最近一次同步刷新：{new Date(props.syncStatus.lastRepairSummary.finishedAt).toLocaleString("zh-CN")}
+                ，重放 {props.syncStatus.lastRepairSummary.replayedCount} 条，剩余待同步 {props.syncStatus.lastRepairSummary.pendingCount} 条，
+                同步异常 {props.syncStatus.lastRepairSummary.deadLetterCount} 条。
+              </div>
+            ) : null}
+          </CardContent>
+          <CardFooter className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={runSyncRepair}
+              disabled={props.syncRepairing}
+            >
+              {props.syncRepairing ? "同步刷新中..." : "同步刷新"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={() => void copyText(props.syncDiagnosticsReport, () => props.showNotice("已复制同步诊断"))}
+            >
+              复制诊断
+            </Button>
           </CardFooter>
         </Card>
 

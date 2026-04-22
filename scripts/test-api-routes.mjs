@@ -102,6 +102,11 @@ async function run() {
   assert(me.status === 200, `me failed: ${me.status}`);
   assert(typeof me.json?.user_id === "string", "me missing user_id");
 
+  const syncState = await request("GET", "/v1/sync/state");
+  assert(syncState.status === 200, `sync state failed: ${syncState.status}`);
+  assert(typeof syncState.json?.revision === "number", "sync state should include revision");
+  assert(typeof syncState.json?.server_time === "string", "sync state should include server_time");
+
   const monitor = await request("GET", "/v1/system/monitor");
   assert(monitor.status === 200, `monitor failed: ${monitor.status}`);
   assert(typeof monitor.json?.users?.total === "number", "monitor users.total missing");
