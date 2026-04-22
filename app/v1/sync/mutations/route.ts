@@ -173,7 +173,10 @@ export const POST = withApiRoute(
               const updateNodeMatch = item.op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/update$/);
               const answerNodeMatch = item.op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/answer$/);
               const writeToTimeMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/write-to-time$/);
+              const freezeMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/freeze$/);
               const renameSpaceMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/rename$/);
+              const trackDirectionMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/track-direction$/);
+              const linkNodeMatch = item.op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/link$/);
 
               if (noteMatch) {
                 const noteText = typeof payload.note_text === "string" ? payload.note_text : "";
@@ -229,10 +232,18 @@ export const POST = withApiRoute(
                   db,
                   userId,
                   writeToTimeMatch[1]!,
-                  typeof payload.freeze_note === "string" ? payload.freeze_note : null,
+                  typeof payload.note_text === "string"
+                    ? payload.note_text
+                    : typeof payload.freeze_note === "string"
+                      ? payload.freeze_note
+                      : null,
                   { preserveOriginalTime: payload.preserve_original_time !== false }
                 );
                 if (written.kind !== "ok") throw new Error("failed to write space to time");
+                break;
+              }
+
+              if (freezeMatch || trackDirectionMatch || linkNodeMatch) {
                 break;
               }
 

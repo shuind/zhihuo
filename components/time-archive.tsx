@@ -51,9 +51,7 @@ import {
   type ThinkingMediaAsset,
   type ThinkingSpace,
   type ThinkingScratchItem,
-  type ThinkingNodeLink,
   type ThinkingSpaceMeta,
-  type TrackDirectionHint,
   type ThinkingStore,
   EMPTY_LIFE_STORE,
   EMPTY_THINKING_STORE,
@@ -96,7 +94,8 @@ type ApiThinkingSpace = {
   status: "active" | "hidden";
   created_at: string;
   last_activity_at?: string;
-  frozen_at: string | null;
+  written_to_time_at?: string | null;
+  frozen_at?: string | null;
   source_time_doubt_id: string | null;
 };
 
@@ -113,7 +112,6 @@ type ApiThinkingScratch = {
 
 type ApiThinkingSpaceMeta = {
   space_id: string;
-  user_freeze_note: string | null;
   export_version: number;
   background_text?: string | null;
   background_version?: number;
@@ -125,8 +123,9 @@ type ApiThinkingSpaceMeta = {
   parking_track_id?: string | null;
   pending_track_id?: string | null;
   empty_track_ids?: string[];
+  user_freeze_note?: string | null;
   milestone_node_ids?: string[];
-  track_direction_hints?: Record<string, TrackDirectionHint | null>;
+  track_direction_hints?: Record<string, string | null>;
 };
 
 type ApiThinkingTrackNode = {
@@ -137,8 +136,6 @@ type ApiThinkingTrackNode = {
   answer_text?: string | null;
   created_at: string;
   is_suggested: boolean;
-  is_milestone?: boolean;
-  has_related_link?: boolean;
   echo_track_id?: string | null;
   echo_node_id?: string | null;
 };
@@ -146,7 +143,6 @@ type ApiThinkingTrackNode = {
 type ApiThinkingTrack = {
   id: string;
   title_question_text: string;
-  direction_hint?: TrackDirectionHint | null;
   is_parking?: boolean;
   is_empty?: boolean;
   node_count: number;
@@ -158,7 +154,6 @@ type ApiThinkingSpaceView = {
   current_track_id?: string | null;
   tracks?: ApiThinkingTrack[];
   suggested_questions?: string[];
-  freeze_note?: string | null;
   background_text?: string | null;
   background_version?: number;
   background_asset_ids?: string[];
@@ -166,7 +161,6 @@ type ApiThinkingSpaceView = {
   parking_track_id?: string | null;
   pending_track_id?: string | null;
   empty_track_ids?: string[];
-  milestone_node_ids?: string[];
 };
 
 type ApiThinkingMediaAsset = {
@@ -190,7 +184,7 @@ type SessionUser = {
 
 type ThinkingJumpTarget = {
   spaceId: string;
-  mode: "root" | "freeze" | "milestone";
+  mode: "root";
   trackId?: string | null;
   nodeId?: string | null;
   doubtId?: string;
@@ -225,7 +219,7 @@ type UserExportPayload = {
       rootQuestionText: string;
       status: "active" | "hidden";
       createdAt: string;
-      frozenAt: string | null;
+      writtenToTimeAt: string | null;
       sourceTimeDoubtId: string | null;
     }>;
     nodes: Array<{
@@ -244,7 +238,6 @@ type UserExportPayload = {
     }>;
     space_meta: Array<{
       spaceId: string;
-      userFreezeNote: string | null;
       exportVersion: number;
       backgroundText?: string | null;
       backgroundVersion?: number;
@@ -256,17 +249,6 @@ type UserExportPayload = {
       parkingTrackId?: string | null;
       pendingTrackId?: string | null;
       emptyTrackIds?: string[];
-      milestoneNodeIds?: string[];
-      trackDirectionHints?: Record<string, TrackDirectionHint | null>;
-    }>;
-    node_links: Array<{
-      id: string;
-      spaceId: string;
-      sourceNodeId: string;
-      targetNodeId: string;
-      linkType: "related";
-      score: number;
-      createdAt: string;
     }>;
     inbox: Record<string, Array<{ id: string; rawText: string; createdAt: string }>>;
     scratch?: Array<{
@@ -316,6 +298,7 @@ type SyncSnapshotResponse = {
       rootQuestionText?: string;
       status?: "active" | "hidden";
       createdAt?: string;
+      writtenToTimeAt?: string | null;
       frozenAt?: string | null;
       sourceTimeDoubtId?: string | null;
     }>;
@@ -331,33 +314,25 @@ type SyncSnapshotResponse = {
       state?: "normal" | "hidden";
       dimension?: string;
     }>;
-      spaceMeta?: Array<{
-        spaceId?: string;
-        userFreezeNote?: string | null;
-        exportVersion?: number;
-        backgroundText?: string | null;
-        backgroundVersion?: number;
-        backgroundAssetIds?: string[];
-        backgroundSelectedAssetId?: string | null;
-        suggestionDecay?: number;
-        lastTrackId?: string | null;
-        lastOrganizedOrder?: number;
+    spaceMeta?: Array<{
+      spaceId?: string;
+      exportVersion?: number;
+      backgroundText?: string | null;
+      backgroundVersion?: number;
+      backgroundAssetIds?: string[];
+      backgroundSelectedAssetId?: string | null;
+      suggestionDecay?: number;
+      lastTrackId?: string | null;
+      lastOrganizedOrder?: number;
       parkingTrackId?: string | null;
       pendingTrackId?: string | null;
       emptyTrackIds?: string[];
+      userFreezeNote?: string | null;
       milestoneNodeIds?: string[];
-      trackDirectionHints?: Record<string, TrackDirectionHint | null>;
+      trackDirectionHints?: Record<string, string | null>;
     }>;
-      nodeLinks?: Array<{
-        id?: string;
-        spaceId?: string;
-      sourceNodeId?: string;
-      targetNodeId?: string;
-      linkType?: "related";
-      score?: number;
-        createdAt?: string;
-      }>;
-      mediaAssets?: Array<{
+    nodeLinks?: Array<Record<string, unknown>>;
+    mediaAssets?: Array<{
         id?: string;
         userId?: string;
         fileName?: string;
@@ -517,7 +492,6 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
   const rawSpaces = Array.isArray(payload.thinking.spaces) ? (payload.thinking.spaces as Array<Record<string, unknown>>) : [];
   const rawNodes = Array.isArray(payload.thinking.nodes) ? (payload.thinking.nodes as Array<Record<string, unknown>>) : [];
   const rawMeta = Array.isArray(payload.thinking.space_meta) ? (payload.thinking.space_meta as Array<Record<string, unknown>>) : [];
-  const rawNodeLinks = Array.isArray(payload.thinking.node_links) ? (payload.thinking.node_links as Array<Record<string, unknown>>) : [];
   const rawScratch = Array.isArray(payload.thinking.scratch) ? (payload.thinking.scratch as Array<Record<string, unknown>>) : [];
   const rawMediaAssets = Array.isArray(payload.thinking.media_assets)
     ? (payload.thinking.media_assets as Array<Record<string, unknown>>)
@@ -572,8 +546,16 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
                 : "",
           status: item.status,
           createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : "",
-          frozenAt:
-            typeof item.frozenAt === "string" ? item.frozenAt : typeof item.frozen_at === "string" ? item.frozen_at : null,
+          writtenToTimeAt:
+            typeof item.writtenToTimeAt === "string"
+              ? item.writtenToTimeAt
+              : typeof item.written_to_time_at === "string"
+                ? item.written_to_time_at
+                : typeof item.frozenAt === "string"
+                  ? item.frozenAt
+                  : typeof item.frozen_at === "string"
+                    ? item.frozen_at
+                    : null,
           sourceTimeDoubtId:
             typeof item.sourceTimeDoubtId === "string"
               ? item.sourceTimeDoubtId
@@ -627,12 +609,6 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
       space_meta: rawMeta
         .map((item) => ({
           spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
-          userFreezeNote:
-            typeof item.userFreezeNote === "string"
-              ? item.userFreezeNote
-              : typeof item.user_freeze_note === "string"
-                ? item.user_freeze_note
-                : null,
           exportVersion:
             typeof item.exportVersion === "number"
               ? item.exportVersion
@@ -688,37 +664,9 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
               : typeof item.pending_track_id === "string"
                 ? item.pending_track_id
                 : null,
-          emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort(),
-          milestoneNodeIds: [...(((item.milestoneNodeIds ?? item.milestone_node_ids ?? []) as string[]) ?? [])].sort(),
-          trackDirectionHints: Object.fromEntries(
-            Object.entries(((item.trackDirectionHints ?? item.track_direction_hints ?? {}) as Record<string, TrackDirectionHint | null>) ?? {}).sort(
-              ([a], [b]) => a.localeCompare(b)
-            )
-          )
+          emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort()
         }))
         .sort((a, b) => a.spaceId.localeCompare(b.spaceId)),
-      node_links: rawNodeLinks
-        .map((item) => ({
-          id: item.id,
-          spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
-          sourceNodeId:
-            typeof item.sourceNodeId === "string"
-              ? item.sourceNodeId
-              : typeof item.source_node_id === "string"
-                ? item.source_node_id
-                : "",
-          targetNodeId:
-            typeof item.targetNodeId === "string"
-              ? item.targetNodeId
-              : typeof item.target_node_id === "string"
-                ? item.target_node_id
-                : "",
-          linkType:
-            (typeof item.linkType === "string" ? item.linkType : typeof item.link_type === "string" ? item.link_type : "related") as "related",
-          score: item.score,
-          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
-        }))
-        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
       media_assets: rawMediaAssets
         .map((item) => ({
           id: item.id,
@@ -810,24 +758,10 @@ function fromTrackParentId(parentNodeId: string | null | undefined) {
   return parentNodeId.startsWith("track:") ? parentNodeId.slice(6) : parentNodeId;
 }
 
-function normalizeTrackListWithLinks(
-  tracks: ThinkingSpaceView["tracks"],
-  nodeLinks: ThinkingNodeLink[],
-  spaceId: string
-): ThinkingSpaceView["tracks"] {
-  const linkedNodeIds = new Set<string>();
-  for (const link of nodeLinks) {
-    if (link.spaceId !== spaceId) continue;
-    linkedNodeIds.add(link.sourceNodeId);
-    linkedNodeIds.add(link.targetNodeId);
-  }
+function normalizeTrackList(tracks: ThinkingSpaceView["tracks"]): ThinkingSpaceView["tracks"] {
   return tracks.map((track) => ({
     ...track,
-    nodeCount: track.nodes.length,
-    nodes: track.nodes.map((node) => ({
-      ...node,
-      hasRelatedLink: linkedNodeIds.has(node.id)
-    }))
+    nodeCount: track.nodes.length
   }));
 }
 
@@ -882,8 +816,6 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
       noteText: null,
       answerText: null,
       isSuggested: node.isSuggested,
-      isMilestone: (meta?.milestoneNodeIds ?? []).includes(node.id),
-      hasRelatedLink: false,
       createdAt: node.createdAt,
       echoTrackId: null,
       echoNodeId: null
@@ -909,7 +841,6 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
       return {
         id: trackId,
         titleQuestionText: isParking ? "????" : nodes[0]?.questionText ?? "???",
-        directionHint: meta?.trackDirectionHints?.[trackId] ?? null,
         isParking,
         isEmpty: nodes.length === 0,
         nodeCount: nodes.length,
@@ -922,10 +853,8 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
     currentTrackId: meta?.lastTrackId ?? tracks.find((track) => !track.isParking)?.id ?? parkingTrackId ?? tracks[0]?.id ?? null,
     parkingTrackId,
     pendingTrackId: meta?.pendingTrackId ?? null,
-    milestoneNodeIds: meta?.milestoneNodeIds ?? [],
-    tracks: normalizeTrackListWithLinks(tracks, store.nodeLinks, spaceId),
+    tracks: normalizeTrackList(tracks),
     suggestedQuestions: [],
-    freezeNote: meta?.userFreezeNote ?? null,
     backgroundText: meta?.backgroundText ?? null,
     backgroundVersion: meta?.backgroundVersion ?? 0,
     backgroundAssetIds: meta?.backgroundAssetIds ?? [],
@@ -991,7 +920,12 @@ function mapApiThinkingSpace(item: ApiThinkingSpace): ThinkingSpace {
     status: item.status,
     createdAt: item.created_at,
     lastActivityAt: typeof item.last_activity_at === "string" ? item.last_activity_at : item.created_at,
-    frozenAt: item.frozen_at,
+    writtenToTimeAt:
+      typeof item.written_to_time_at === "string"
+        ? item.written_to_time_at
+        : typeof item.frozen_at === "string"
+          ? item.frozen_at
+          : null,
     sourceTimeDoubtId: item.source_time_doubt_id
   };
 }
@@ -1012,7 +946,6 @@ function mapApiThinkingScratch(item: ApiThinkingScratch): ThinkingScratchItem {
 function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
   return {
     spaceId: item.space_id,
-    userFreezeNote: item.user_freeze_note,
     exportVersion: item.export_version,
     backgroundText: typeof item.background_text === "string" ? item.background_text : null,
     backgroundVersion: Number.isFinite(item.background_version) ? Number(item.background_version) : 0,
@@ -1024,24 +957,7 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
     lastOrganizedOrder: Number.isFinite(item.last_organized_order) ? Number(item.last_organized_order) : -1,
     parkingTrackId: typeof item.parking_track_id === "string" ? item.parking_track_id : null,
     pendingTrackId: typeof item.pending_track_id === "string" ? item.pending_track_id : null,
-    emptyTrackIds: Array.isArray(item.empty_track_ids) ? item.empty_track_ids.filter((id) => typeof id === "string") : [],
-    milestoneNodeIds: Array.isArray(item.milestone_node_ids) ? item.milestone_node_ids.filter((id) => typeof id === "string") : [],
-    trackDirectionHints:
-      item.track_direction_hints && typeof item.track_direction_hints === "object" && !Array.isArray(item.track_direction_hints)
-        ? Object.fromEntries(
-            Object.entries(item.track_direction_hints).filter(
-              ([trackId, hint]) =>
-                typeof trackId === "string" &&
-                (hint === null ||
-                  hint === "hypothesis" ||
-                  hint === "memory" ||
-                  hint === "counterpoint" ||
-                  hint === "worry" ||
-                  hint === "constraint" ||
-                  hint === "aside")
-            )
-          )
-        : {}
+    emptyTrackIds: Array.isArray(item.empty_track_ids) ? item.empty_track_ids.filter((id) => typeof id === "string") : []
   };
 }
 
@@ -1052,15 +968,6 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
     tracks: (payload.tracks ?? []).map((track) => ({
       id: track.id,
       titleQuestionText: track.title_question_text,
-      directionHint:
-        track.direction_hint === "hypothesis" ||
-        track.direction_hint === "memory" ||
-        track.direction_hint === "counterpoint" ||
-        track.direction_hint === "worry" ||
-        track.direction_hint === "constraint" ||
-        track.direction_hint === "aside"
-          ? track.direction_hint
-          : null,
       isParking: track.is_parking === true,
       isEmpty: track.is_empty === true,
       nodes: (track.nodes ?? []).map((node) => ({
@@ -1070,8 +977,6 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
         noteText: typeof node.note_text === "string" ? node.note_text : null,
         answerText: typeof node.answer_text === "string" ? node.answer_text : null,
         isSuggested: Boolean(node.is_suggested),
-        isMilestone: node.is_milestone === true,
-        hasRelatedLink: node.has_related_link === true,
         createdAt: node.created_at,
         echoTrackId: typeof node.echo_track_id === "string" ? node.echo_track_id : null,
         echoNodeId: typeof node.echo_node_id === "string" ? node.echo_node_id : null
@@ -1080,9 +985,7 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
     })),
     parkingTrackId: typeof payload.parking_track_id === "string" ? payload.parking_track_id : null,
     pendingTrackId: typeof payload.pending_track_id === "string" ? payload.pending_track_id : null,
-    milestoneNodeIds: Array.isArray(payload.milestone_node_ids) ? payload.milestone_node_ids.filter((id) => typeof id === "string") : [],
     suggestedQuestions: (payload.suggested_questions ?? []).filter((item) => typeof item === "string"),
-    freezeNote: payload.freeze_note ?? null,
     backgroundText: typeof payload.background_text === "string" ? payload.background_text : null,
     backgroundVersion: Number.isFinite(payload.background_version) ? Number(payload.background_version) : 0,
     backgroundAssetIds: Array.isArray(payload.background_asset_ids) ? payload.background_asset_ids.filter((id) => typeof id === "string") : [],
@@ -1103,7 +1006,12 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             rootQuestionText: typeof item.rootQuestionText === "string" ? item.rootQuestionText : "",
             status: item.status === "hidden" ? "hidden" : "active",
             createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
-            frozenAt: typeof item.frozenAt === "string" ? item.frozenAt : null,
+            writtenToTimeAt:
+              typeof item.writtenToTimeAt === "string"
+                ? item.writtenToTimeAt
+                : typeof item.frozenAt === "string"
+                  ? item.frozenAt
+                  : null,
             sourceTimeDoubtId: typeof item.sourceTimeDoubtId === "string" ? item.sourceTimeDoubtId : null
           }))
       : [],
@@ -1135,7 +1043,6 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
           .filter((item) => item && typeof item.spaceId === "string")
           .map((item) => ({
             spaceId: item.spaceId as string,
-            userFreezeNote: typeof item.userFreezeNote === "string" ? item.userFreezeNote : null,
             exportVersion: Number.isFinite(item.exportVersion) ? Number(item.exportVersion) : 1,
             backgroundText: typeof item.backgroundText === "string" ? item.backgroundText : null,
             backgroundVersion: Number.isFinite(item.backgroundVersion) ? Number(item.backgroundVersion) : 0,
@@ -1146,25 +1053,7 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             lastOrganizedOrder: Number.isFinite(item.lastOrganizedOrder) ? Number(item.lastOrganizedOrder) : -1,
             parkingTrackId: typeof item.parkingTrackId === "string" ? item.parkingTrackId : null,
             pendingTrackId: typeof item.pendingTrackId === "string" ? item.pendingTrackId : null,
-            emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : [],
-            milestoneNodeIds: Array.isArray(item.milestoneNodeIds)
-              ? item.milestoneNodeIds.filter((value) => typeof value === "string")
-              : [],
-            trackDirectionHints:
-              item.trackDirectionHints && typeof item.trackDirectionHints === "object" ? item.trackDirectionHints : {}
-          }))
-      : [],
-    nodeLinks: Array.isArray(payload?.nodeLinks)
-      ? payload.nodeLinks
-          .filter((item) => item && typeof item.id === "string" && typeof item.spaceId === "string")
-          .map((item) => ({
-            id: item.id as string,
-            spaceId: item.spaceId as string,
-            sourceNodeId: typeof item.sourceNodeId === "string" ? item.sourceNodeId : "",
-            targetNodeId: typeof item.targetNodeId === "string" ? item.targetNodeId : "",
-            linkType: "related" as const,
-            score: Number.isFinite(item.score) ? Number(item.score) : 0,
-            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+            emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : []
           }))
       : [],
     inbox:
@@ -1289,22 +1178,6 @@ export function TimeArchive() {
   const latestRevisionRef = useRef<number | null>(null);
   const mediaObjectUrlsRef = useRef<string[]>([]);
   const [stars] = useState(() => createStars(36));
-  const freezeNoteByDoubtId = useMemo(() => {
-    const metaBySpaceId = new Map(thinkingStore.spaceMeta.map((meta) => [meta.spaceId, meta]));
-    const grouped = new Map<string, { note: string; timestamp: number }>();
-    for (const space of thinkingStore.spaces) {
-      const doubtId = space.sourceTimeDoubtId;
-      if (!doubtId) continue;
-      const note = (metaBySpaceId.get(space.id)?.userFreezeNote ?? "").trim();
-      if (!note) continue;
-      const timestamp = new Date(space.lastActivityAt ?? space.createdAt).getTime();
-      const previous = grouped.get(doubtId);
-      if (!previous || timestamp >= previous.timestamp) {
-        grouped.set(doubtId, { note, timestamp });
-      }
-    }
-    return Object.fromEntries(Array.from(grouped.entries(), ([doubtId, payload]) => [doubtId, payload.note]));
-  }, [thinkingStore.spaceMeta, thinkingStore.spaces]);
 
   const activeThinkingSpaceOptions = useMemo(
     () =>
@@ -1761,7 +1634,7 @@ export function TimeArchive() {
             rootQuestionText: item.rootQuestionText,
             status: item.status,
             createdAt: item.createdAt,
-            frozenAt: item.frozenAt,
+            writtenToTimeAt: item.writtenToTimeAt,
             sourceTimeDoubtId: item.sourceTimeDoubtId
           })),
           nodes: thinkingStore.nodes.map((item) => ({
@@ -1778,7 +1651,6 @@ export function TimeArchive() {
           })),
           space_meta: thinkingStore.spaceMeta.map((item) => ({
             spaceId: item.spaceId,
-            userFreezeNote: item.userFreezeNote,
             exportVersion: item.exportVersion,
             backgroundText: item.backgroundText ?? null,
             backgroundVersion: item.backgroundVersion ?? 0,
@@ -1789,18 +1661,7 @@ export function TimeArchive() {
             lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
             parkingTrackId: item.parkingTrackId ?? null,
             pendingTrackId: item.pendingTrackId ?? null,
-            emptyTrackIds: item.emptyTrackIds ?? [],
-            milestoneNodeIds: item.milestoneNodeIds ?? [],
-            trackDirectionHints: item.trackDirectionHints ?? {}
-          })),
-          node_links: thinkingStore.nodeLinks.map((item) => ({
-            id: item.id,
-            spaceId: item.spaceId,
-            sourceNodeId: item.sourceNodeId,
-            targetNodeId: item.targetNodeId,
-            linkType: item.linkType,
-            score: item.score,
-            createdAt: item.createdAt
+            emptyTrackIds: item.emptyTrackIds ?? []
           })),
           inbox: thinkingStore.inbox,
           scratch: thinkingStore.scratch.map((item) => ({
@@ -1821,7 +1682,7 @@ export function TimeArchive() {
         audit: []
       };
     },
-    [lifeStore.doubts, lifeStore.notes, offlineMediaAssets, thinkingStore.inbox, thinkingStore.nodeLinks, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
+    [lifeStore.doubts, lifeStore.notes, offlineMediaAssets, thinkingStore.inbox, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
   );
 
   const getLocalSpaceView = useCallback(
@@ -2656,12 +2517,11 @@ export function TimeArchive() {
         status: "active",
         createdAt: now,
         lastActivityAt: now,
-        frozenAt: null,
+        writtenToTimeAt: null,
         sourceTimeDoubtId: sourceTimeDoubtId ?? null
       };
       const localMeta: ThinkingSpaceMeta = {
         spaceId: localSpaceId,
-        userFreezeNote: null,
         exportVersion: 1,
         backgroundText: null,
         backgroundVersion: 0,
@@ -2670,21 +2530,17 @@ export function TimeArchive() {
         lastOrganizedOrder: -1,
         parkingTrackId: localParkingTrackId,
         pendingTrackId: null,
-        emptyTrackIds: [],
-        milestoneNodeIds: [],
-        trackDirectionHints: {}
+        emptyTrackIds: []
       };
       const localView: ThinkingSpaceView = {
         spaceId: localSpaceId,
         currentTrackId: localParkingTrackId,
         parkingTrackId: localParkingTrackId,
         pendingTrackId: null,
-        milestoneNodeIds: [],
         tracks: [
           {
             id: localParkingTrackId,
             titleQuestionText: "先放这里",
-            directionHint: null,
             isParking: true,
             isEmpty: false,
             nodeCount: 0,
@@ -2692,7 +2548,6 @@ export function TimeArchive() {
           }
         ],
         suggestedQuestions: [],
-        freezeNote: null,
         backgroundText: null,
         backgroundVersion: 0,
         backgroundAssetIds: [],
@@ -3489,15 +3344,7 @@ export function TimeArchive() {
             noteText: typeof body.note_text === "string" ? body.note_text : null,
             trackId: typeof body.track_id === "string" ? body.track_id : payload.trackId ?? "",
             nodeId: body.node_id,
-            suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : [],
-            relatedCandidate:
-              body.related_candidate && typeof body.related_candidate.node_id === "string"
-                ? {
-                    nodeId: body.related_candidate.node_id,
-                    preview: typeof body.related_candidate.preview === "string" ? body.related_candidate.preview : "",
-                    score: Number.isFinite(body.related_candidate.score) ? Number(body.related_candidate.score) : 0
-                  }
-                : null
+            suggestedQuestions: Array.isArray(body.suggested_questions) ? body.suggested_questions : []
           };
         } catch (error) {
           if (!isOfflineNetworkError(error)) {
@@ -3536,8 +3383,6 @@ export function TimeArchive() {
         noteText: null,
         answerText: null,
         isSuggested: payload.fromSuggestion === true,
-        isMilestone: false,
-        hasRelatedLink: false,
         createdAt: now,
         echoTrackId: null,
         echoNodeId: null
@@ -3567,7 +3412,6 @@ export function TimeArchive() {
               const createdTrack = {
                 id: normalizedTrackId,
                 titleQuestionText: patchNode.questionText,
-                directionHint: null,
                 isParking: false,
                 isEmpty: false,
                 nodeCount: 1,
@@ -3616,8 +3460,7 @@ export function TimeArchive() {
         noteText: null,
         trackId: normalizedTrackId,
         nodeId: localNodeId,
-        suggestedQuestions: [],
-        relatedCandidate: null
+        suggestedQuestions: []
       };
     },
     [cloudSyncReady, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, queueMutation, sessionUser?.userId, showNotice, thinkingView]
@@ -3667,7 +3510,6 @@ export function TimeArchive() {
           const createdTrack = {
             id: resolvedTargetTrackId,
             titleQuestionText: movedNodes[0]?.questionText ?? "新方向",
-            directionHint: null,
             isParking: false,
             isEmpty: false,
             nodeCount: movedNodes.length,
@@ -3682,7 +3524,7 @@ export function TimeArchive() {
             track.id === resolvedTargetTrackId ? { ...track, nodes: [...track.nodes, ...movedNodes], isEmpty: false } : track
           );
         }
-        const linkedTracks = normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, spaceId);
+        const linkedTracks = normalizeTrackList(nextTracks);
         const nextView: ThinkingSpaceView = {
           ...currentView,
           tracks: linkedTracks
@@ -3710,64 +3552,7 @@ export function TimeArchive() {
         return { ok: false as const, message: "网络异常，请稍后再试" };
       }
     },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
-  );
-
-  const handleThinkingLinkNodes = useCallback(
-    async (nodeId: string, targetNodeId: string) => {
-      if (!cloudSyncReady) {
-        const source = thinkingStore.nodes.find((node) => node.id === nodeId);
-        const target = thinkingStore.nodes.find((node) => node.id === targetNodeId);
-        if (!source || !target || source.spaceId !== target.spaceId || source.id === target.id) return false;
-        const sourceNodeId = [source.id, target.id].sort()[0];
-        const targetNodeIdSorted = [source.id, target.id].sort()[1];
-        const exists = thinkingStore.nodeLinks.some(
-          (link) =>
-            link.spaceId === source.spaceId &&
-            link.sourceNodeId === sourceNodeId &&
-            link.targetNodeId === targetNodeIdSorted &&
-            link.linkType === "related"
-        );
-        if (exists) return true;
-        const nextLink: ThinkingNodeLink = {
-          id: createId(),
-          spaceId: source.spaceId,
-          sourceNodeId,
-          targetNodeId: targetNodeIdSorted,
-          linkType: "related",
-          score: 1,
-          createdAt: new Date().toISOString()
-        };
-        setThinkingStore((prev) => ({
-          ...prev,
-          nodeLinks: [...prev.nodeLinks, nextLink]
-        }));
-        const currentView = getLocalSpaceView(source.spaceId);
-        if (currentView) {
-          commitLocalSpaceView(source.spaceId, {
-            ...currentView,
-            tracks: normalizeTrackListWithLinks(currentView.tracks, [...thinkingStore.nodeLinks, nextLink], source.spaceId)
-          });
-        }
-        markLocalChange();
-        return true;
-      }
-      try {
-        const response = await apiFetch(`/v1/thinking/nodes/${nodeId}/link`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ target_node_id: targetNodeId })
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) return false;
-        if (activeSpaceId) await loadThinkingViewFromApi(activeSpaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks, thinkingStore.nodes]
+    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingMoveNode = useCallback(
@@ -3785,7 +3570,7 @@ export function TimeArchive() {
         );
         const nextView = {
           ...currentView,
-          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+          tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(activeSpaceId, nextView);
         setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
@@ -3807,7 +3592,7 @@ export function TimeArchive() {
         return false;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingDeleteNode = useCallback(
@@ -3817,26 +3602,19 @@ export function TimeArchive() {
         const currentView = getLocalSpaceView(activeSpaceId);
         if (!currentView) return false;
         const removedNode = thinkingStore.nodes.find((node) => node.id === nodeId) ?? null;
-        const nextLinks = thinkingStore.nodeLinks.filter((link) => link.sourceNodeId !== nodeId && link.targetNodeId !== nodeId);
         const nextTracks = currentView.tracks.map((track) => ({
           ...track,
           nodes: track.nodes.filter((node) => node.id !== nodeId)
         }));
         const nextView = {
           ...currentView,
-          tracks: normalizeTrackListWithLinks(nextTracks, nextLinks, activeSpaceId)
+          tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(activeSpaceId, nextView);
         let removedAssetIds: string[] = [];
         setThinkingStore((prev) => {
           const nextStore = {
-            ...syncStoreNodesFromView(prev, activeSpaceId, nextView),
-            nodeLinks: nextLinks,
-            spaceMeta: prev.spaceMeta.map((meta) =>
-              meta.spaceId === activeSpaceId
-                ? { ...meta, milestoneNodeIds: (meta.milestoneNodeIds ?? []).filter((id) => id !== nodeId) }
-                : meta
-            )
+            ...syncStoreNodesFromView(prev, activeSpaceId, nextView)
           };
           removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, removedNode?.imageAssetId ? [removedNode.imageAssetId] : []);
           if (removedAssetIds.length) {
@@ -3870,7 +3648,6 @@ export function TimeArchive() {
       markLocalChange,
       markMediaAssetsDeletedLocally,
       sessionUser?.userId,
-      thinkingStore.nodeLinks,
       thinkingStore.nodes
     ]
   );
@@ -3943,7 +3720,7 @@ export function TimeArchive() {
         );
         const nextView = {
           ...currentView,
-          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+          tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(activeSpaceId, nextView);
         setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
@@ -3966,7 +3743,7 @@ export function TimeArchive() {
         return null;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks, thinkingStore.nodes]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodes]
   );
 
   const handleThinkingSaveNodeAnswer = useCallback(
@@ -4194,7 +3971,6 @@ export function TimeArchive() {
           nextTracks.push({
             id: parkingTrackId,
             titleQuestionText: "先放这里",
-            directionHint: null,
             isParking: true,
             isEmpty: false,
             nodeCount: 0,
@@ -4211,7 +3987,7 @@ export function TimeArchive() {
         const nextView = {
           ...currentView,
           parkingTrackId,
-          tracks: normalizeTrackListWithLinks(nextTracks, thinkingStore.nodeLinks, activeSpaceId)
+          tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(activeSpaceId, nextView);
         setThinkingStore((prev) => {
@@ -4237,7 +4013,7 @@ export function TimeArchive() {
         return false;
       }
     },
-    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId, thinkingStore.nodeLinks]
+    [activeSpaceId, cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
   );
 
   const handleThinkingSetActiveTrack = useCallback(
@@ -4282,7 +4058,6 @@ export function TimeArchive() {
         const nextTrack = {
           id: trackId,
           titleQuestionText: "新方向",
-          directionHint: null,
           isParking: false,
           isEmpty: true,
           nodeCount: 0,
@@ -4317,53 +4092,6 @@ export function TimeArchive() {
         return typeof body.track_id === "string" ? body.track_id : null;
       } catch {
         return null;
-      }
-    },
-    [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
-  );
-
-  const handleThinkingTrackDirection = useCallback(
-    async (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => {
-      if (!cloudSyncReady) {
-        const currentView = getLocalSpaceView(spaceId);
-        if (!currentView) return false;
-        commitLocalSpaceView(spaceId, {
-          ...currentView,
-          tracks: currentView.tracks.map((track) => (track.id === trackId ? { ...track, directionHint } : track))
-        });
-        setThinkingStore((prev) => ({
-          ...prev,
-          spaceMeta: prev.spaceMeta.map((meta) =>
-            meta.spaceId === spaceId
-              ? {
-                  ...meta,
-                  trackDirectionHints: {
-                    ...(meta.trackDirectionHints ?? {}),
-                    [trackId]: directionHint
-                  }
-                }
-              : meta
-          )
-        }));
-        markLocalChange();
-        return true;
-      }
-      try {
-        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/track-direction`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ track_id: trackId, direction_hint: directionHint })
-        });
-        if (handleUnauthorized(response)) return false;
-        if (!response.ok) {
-          await loadThinkingViewFromApi(spaceId, true);
-          return false;
-        }
-        await loadThinkingViewFromApi(spaceId, true);
-        markCloudSynced(sessionUser?.userId ?? null);
-        return true;
-      } catch {
-        return false;
       }
     },
     [cloudSyncReady, commitLocalSpaceView, getLocalSpaceView, handleUnauthorized, loadThinkingViewFromApi, markCloudSynced, markLocalChange, sessionUser?.userId]
@@ -4413,7 +4141,6 @@ export function TimeArchive() {
             }
           : {
               spaceId,
-              userFreezeNote: null,
               exportVersion: 1,
               backgroundText: null,
               backgroundVersion: nextBackgroundVersion,
@@ -4425,8 +4152,6 @@ export function TimeArchive() {
               parkingTrackId: currentView?.parkingTrackId ?? createId(),
               pendingTrackId: currentView?.pendingTrackId ?? null,
               emptyTrackIds: [],
-              milestoneNodeIds: currentView?.milestoneNodeIds ?? [],
-              trackDirectionHints: {}
             };
 
         const nextSpaceMeta = existingMeta
@@ -4632,17 +4357,15 @@ export function TimeArchive() {
   );
 
   const handleThinkingWriteToTime = useCallback(
-    async (spaceId: string, freezeNote?: string, options?: { preserveOriginalTime?: boolean }) => {
+    async (spaceId: string, options?: { preserveOriginalTime?: boolean }) => {
       const now = new Date().toISOString();
-      const normalizedNote = typeof freezeNote === "string" ? freezeNote.trim() : "";
       const preserveOriginalTime = options?.preserveOriginalTime !== false;
       if (cloudSyncReady) {
         try {
-          const requestBody: Record<string, unknown> = {
+          const requestBody = {
             client_updated_at: now,
             preserve_original_time: preserveOriginalTime
           };
-          if (normalizedNote) requestBody.freeze_note = normalizedNote;
           const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -4683,7 +4406,6 @@ export function TimeArchive() {
       const writtenAt = preserveOriginalTime ? sourceTimeDoubt?.createdAt ?? currentSpace.createdAt : now;
 
       await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
-        ...(normalizedNote ? { freeze_note: normalizedNote } : {}),
         preserve_original_time: preserveOriginalTime
       });
 
@@ -4707,7 +4429,7 @@ export function TimeArchive() {
             ? {
                 ...space,
                 status: "hidden" as const,
-                frozenAt: writtenAt,
+                writtenToTimeAt: writtenAt,
                 sourceTimeDoubtId: doubtId,
                 lastActivityAt: now
               }
@@ -4715,19 +4437,11 @@ export function TimeArchive() {
         );
         const existingMeta = prev.spaceMeta.find((meta) => meta.spaceId === spaceId);
         const nextMeta = existingMeta
-          ? prev.spaceMeta.map((meta) =>
-              meta.spaceId === spaceId
-                ? {
-                    ...meta,
-                    userFreezeNote: normalizedNote || meta.userFreezeNote
-                  }
-                : meta
-            )
+          ? prev.spaceMeta
           : [
               ...prev.spaceMeta,
               {
                 spaceId,
-                userFreezeNote: normalizedNote || null,
                 exportVersion: 1,
                 backgroundText: null,
                 backgroundVersion: 0,
@@ -4738,9 +4452,7 @@ export function TimeArchive() {
                 lastOrganizedOrder: -1,
                 parkingTrackId: createId(),
                 pendingTrackId: null,
-                emptyTrackIds: [],
-                milestoneNodeIds: [],
-                trackDirectionHints: {}
+                emptyTrackIds: []
               }
             ];
         return {
@@ -5162,7 +4874,6 @@ export function TimeArchive() {
                 store={lifeStore}
                 setStore={setLifeStore}
                 timezone={thinkingStore.timezone}
-                freezeNoteByDoubtId={freezeNoteByDoubtId}
                 ready={lifeReady}
                 openingPhase={openingPhase}
                 stars={stars}
@@ -5196,7 +4907,6 @@ export function TimeArchive() {
                 onAddQuestion={handleThinkingAddQuestion}
                 onOrganizePreview={handleThinkingOrganizePreview}
                 onOrganizeApply={handleThinkingOrganizeApply}
-                onLinkNodes={handleThinkingLinkNodes}
                 onMoveNode={handleThinkingMoveNode}
                 onMarkMisplaced={handleThinkingMisplacedNode}
                 onDeleteNode={handleThinkingDeleteNode}
@@ -5214,7 +4924,6 @@ export function TimeArchive() {
                 onDeleteSpace={handleThinkingDeleteSpace}
                 onRenameSpace={handleThinkingRenameSpace}
                 onExportSpace={handleThinkingExport}
-                onUpdateTrackDirection={handleThinkingTrackDirection}
                 scratchItems={thinkingStore.scratch.filter((item) => !item.derivedSpaceId && !item.fedTimeDoubtId)}
                 onCreateScratch={handleCreateThinkingScratch}
                 onFeedScratchToTime={handleFeedThinkingScratchToTime}

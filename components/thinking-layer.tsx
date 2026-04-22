@@ -22,24 +22,10 @@ import {
   type ThinkingScratchItem,
   type ThinkingSpaceStatus,
   type ThinkingStore,
-  type TrackDirectionHint
 } from "@/components/zhihuo-model";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
-const DIRECTION_HINT_OPTIONS: Array<{ value: TrackDirectionHint; label: string }> = [
-  { value: "hypothesis", label: "假设" },
-  { value: "memory", label: "回忆" },
-  { value: "counterpoint", label: "反驳" },
-  { value: "worry", label: "担忧" },
-  { value: "constraint", label: "现实限制" },
-  { value: "aside", label: "旁支念头" }
-];
-
-function directionHintLabel(value: TrackDirectionHint | null) {
-  return DIRECTION_HINT_OPTIONS.find((item) => item.value === value)?.label ?? null;
-}
-
 function formatRelativeNodeTime(createdAt?: string) {
   if (!createdAt) return "";
   const time = new Date(createdAt).getTime();
@@ -80,8 +66,6 @@ export type ThinkingTrackNodeView = {
   answerText: string | null;
   createdAt?: string;
   isSuggested: boolean;
-  isMilestone?: boolean;
-  hasRelatedLink?: boolean;
   echoTrackId: string | null;
   echoNodeId: string | null;
 };
@@ -89,7 +73,6 @@ export type ThinkingTrackNodeView = {
 export type ThinkingTrackView = {
   id: string;
   titleQuestionText: string;
-  directionHint: TrackDirectionHint | null;
   isParking: boolean;
   isEmpty?: boolean;
   nodeCount: number;
@@ -101,10 +84,8 @@ export type ThinkingSpaceView = {
   currentTrackId: string | null;
   parkingTrackId: string | null;
   pendingTrackId?: string | null;
-  milestoneNodeIds: string[];
   tracks: ThinkingTrackView[];
   suggestedQuestions: string[];
-  freezeNote: string | null;
   backgroundText: string | null;
   backgroundVersion: number;
   backgroundAssetIds: string[];
@@ -170,7 +151,6 @@ export function ThinkingLayer(props: {
         trackId: string;
         nodeId: string;
         suggestedQuestions?: string[];
-        relatedCandidate?: { nodeId: string; preview: string; score: number } | null;
       }
     | { ok: false; message: string; suggestedQuestions?: string[] }
   >;
@@ -179,7 +159,6 @@ export function ThinkingLayer(props: {
     spaceId: string,
     moves: Array<{ nodeId: string; targetTrackId: string }>
   ) => Promise<{ ok: true; movedCount: number } | { ok: false; message: string }>;
-  onLinkNodes: (nodeId: string, targetNodeId: string) => Promise<boolean>;
   onMoveNode: (nodeId: string, targetTrackId: string) => Promise<boolean>;
   onMarkMisplaced: (nodeId: string) => Promise<boolean>;
   onDeleteNode: (nodeId: string) => Promise<boolean>;
@@ -190,13 +169,11 @@ export function ThinkingLayer(props: {
   onRemoveNodeImage: (nodeId: string) => Promise<boolean>;
   onSetActiveTrack: (spaceId: string, trackId: string) => Promise<boolean>;
   onCreateTrack: (spaceId: string) => Promise<string | null>;
-  onUpdateTrackDirection: (spaceId: string, trackId: string, directionHint: TrackDirectionHint | null) => Promise<boolean>;
   onAddSpaceGalleryImage: (spaceId: string, file: File) => Promise<boolean>;
   onRemoveSpaceGalleryImage: (spaceId: string, assetId: string) => Promise<boolean>;
   onSelectSpaceBackgroundImage: (spaceId: string, assetId: string | null) => Promise<boolean>;
   onWriteSpaceToTime: (
     spaceId: string,
-    freezeNote?: string,
     options?: { preserveOriginalTime?: boolean }
   ) => Promise<{ ok: true } | { ok: false; message: string }>;
   onDeleteSpace: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
@@ -210,7 +187,7 @@ export function ThinkingLayer(props: {
   focusMode: boolean;
   onFocusModeChange: (enabled: boolean) => void;
   onViewModeChange?: (mode: "spaces" | "detail") => void;
-  reentryTarget: { spaceId: string; mode: "root" | "freeze" | "milestone"; trackId?: string | null; nodeId?: string | null } | null;
+  reentryTarget: { spaceId: string; mode: "root"; trackId?: string | null; nodeId?: string | null } | null;
   onReentryHandled: () => void;
   writeEnabled?: boolean;
   mediaAssetSources?: Record<string, string>;
@@ -266,8 +243,6 @@ export function ThinkingLayer(props: {
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
   const [scratchDrawerOpen, setScratchDrawerOpen] = useState(false);
   const [writeToTimeOpen, setWriteToTimeOpen] = useState(false);
-  const [writeToTimeDraft, setWriteToTimeDraft] = useState("");
-  const [writeToTimeHint, setWriteToTimeHint] = useState("");
   const [writeToTimePreserveOriginal, setWriteToTimePreserveOriginal] = useState(true);
   const [isWritingToTime, setIsWritingToTime] = useState(false);
 
@@ -349,14 +324,6 @@ export function ThinkingLayer(props: {
     return fallbackTrackId;
   }, [fallbackTrackId, localPendingTrackId, props.spaceView, tracks]);
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
-  const activeSpaceFreezeNote = useMemo(() => {
-    if (!activeSpace) return "";
-    if (props.spaceView?.spaceId === activeSpace.id) {
-      return (props.spaceView.freezeNote ?? "").trim();
-    }
-    const meta = props.store.spaceMeta.find((item) => item.spaceId === activeSpace.id);
-    return (meta?.userFreezeNote ?? "").trim();
-  }, [activeSpace, props.spaceView, props.store.spaceMeta]);
   const pendingTrackId = props.spaceView?.pendingTrackId ?? null;
   const otherTracks = useMemo(
     () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
@@ -470,8 +437,6 @@ export function ThinkingLayer(props: {
     setClipboardSourceTrackId(null);
     setScratchDrawerOpen(false);
     setWriteToTimeOpen(false);
-    setWriteToTimeDraft("");
-    setWriteToTimeHint("");
     setWriteToTimePreserveOriginal(true);
     setIsWritingToTime(false);
   }, [props.activeSpaceId]);
@@ -1094,38 +1059,29 @@ export function ThinkingLayer(props: {
   const openWriteToTimeDialog = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
     setMoreOpen(false);
-    setWriteToTimeDraft(activeSpaceFreezeNote.slice(0, 48));
-    setWriteToTimeHint("");
     setWriteToTimePreserveOriginal(true);
     setWriteToTimeOpen(true);
-  }, [activeSpace, activeSpaceFreezeNote]);
+  }, [activeSpace]);
 
   const submitWriteToTime = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active" || isWritingToTime) return;
-    const normalizedNote = writeToTimeDraft.trim();
-    if (normalizedNote.length > 48) {
-      setWriteToTimeHint("批注最多 48 字");
-      return;
-    }
     setIsWritingToTime(true);
     void (async () => {
-      const result = await props.onWriteSpaceToTime(activeSpace.id, normalizedNote || undefined, {
+      const result = await props.onWriteSpaceToTime(activeSpace.id, {
         preserveOriginalTime: writeToTimePreserveOriginal
       });
       setIsWritingToTime(false);
       if (!result.ok) {
-        setWriteToTimeHint(result.message);
+        props.showNotice(result.message);
         return;
       }
       setWriteToTimeOpen(false);
-      setWriteToTimeDraft("");
-      setWriteToTimeHint("");
       setMoreOpen(false);
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
-      props.showNotice("已写入时间");
+      props.showNotice("?????");
     })();
-  }, [activeSpace, isWritingToTime, props, writeToTimeDraft, writeToTimePreserveOriginal]);
+  }, [activeSpace, isWritingToTime, props, writeToTimePreserveOriginal]);
 
   const openExport = useCallback(() => {
     if (!activeSpace) return;
@@ -1193,6 +1149,35 @@ export function ThinkingLayer(props: {
       }
     })();
   }, [exportLoading, exportMarkdown, props]);
+
+  const downloadExportMarkdown = useCallback(() => {
+    if (exportLoading) return;
+    const text = exportMarkdown.trim();
+    if (!text) {
+      props.showNotice("暂无可下载的导出内容");
+      return;
+    }
+    try {
+      const safeTitle = (activeSpace?.rootQuestionText ?? "zhihuo-space")
+        .replace(/[<>:"/\\|?*\x00-\x1F]+/g, " ")
+        .replace(/\s+/g, " ")
+        .trim()
+        .slice(0, 64);
+      const fileName = `${safeTitle || "zhihuo-space"}.md`;
+      const blob = new Blob([exportMarkdown], { type: "text/markdown;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = fileName;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+      props.showNotice("已开始下载导出文件");
+    } catch {
+      props.showNotice("下载失败，请稍后再试");
+    }
+  }, [activeSpace?.rootQuestionText, exportLoading, exportMarkdown, props]);
 
   const switchTrack = useCallback(
     (trackId: string) => {
@@ -1736,7 +1721,6 @@ export function ThinkingLayer(props: {
                                       <span>{formatRelativeNodeTime(node.createdAt)}</span>
                                     </div>
                                     <div className="flex items-center gap-2">
-                                      {node.isMilestone ? <span className="text-[13px] text-[#a96f55]">★</span> : null}
                                       {!props.focusMode || focusMenuNodeId === node.id ? (
                                         <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
                                           <NodeMenu
@@ -1811,7 +1795,6 @@ export function ThinkingLayer(props: {
                                   </div>
                                   <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400/90">
                                     <div className="flex flex-wrap items-center gap-2">
-                                      <span>{node.hasRelatedLink ? "有关联" : ""}</span>
                                     </div>
                                     {node.echoTrackId ? (
                                       <button
@@ -2077,32 +2060,8 @@ export function ThinkingLayer(props: {
       {writeToTimeOpen && activeSpace ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
           <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">写入时间</p>
-            <p className="mt-1 text-xs text-slate-500">留一句批注，之后会在时间层右栏出现。（可选）</p>
-            <Textarea
-              value={writeToTimeDraft}
-              maxLength={48}
-              autoResize
-              maxAutoHeight={120}
-              data-zh-input="multiline"
-              rows={1}
-              className="mt-3 min-h-[2.75rem] max-h-[120px] w-full rounded-xl border border-black/12 bg-white px-3 py-2 text-sm leading-[1.65] text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-              placeholder=""
-              onChange={(event) => {
-                setWriteToTimeDraft(event.target.value);
-                if (writeToTimeHint) setWriteToTimeHint("");
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" && !event.shiftKey) {
-                  event.preventDefault();
-                  submitWriteToTime();
-                }
-              }}
-            />
-            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
-              <span>留空将保留原批注</span>
-              <span>{writeToTimeDraft.trim().length}/48</span>
-            </div>
+            <p className="text-sm text-slate-800">????</p>
+            <p className="mt-1 text-xs text-slate-500">????????????????????????</p>
             <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -2110,9 +2069,8 @@ export function ThinkingLayer(props: {
                 checked={writeToTimePreserveOriginal}
                 onChange={(event) => setWriteToTimePreserveOriginal(event.target.checked)}
               />
-              <span>按原时间写入</span>
+              <span>??????</span>
             </label>
-            <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", writeToTimeHint ? "opacity-100" : "opacity-0")}>{writeToTimeHint}</p>
             <div className="mt-4 flex justify-end gap-2">
               <Button
                 type="button"
@@ -2122,12 +2080,10 @@ export function ThinkingLayer(props: {
                 onClick={() => {
                   if (isWritingToTime) return;
                   setWriteToTimeOpen(false);
-                  setWriteToTimeDraft("");
-                  setWriteToTimeHint("");
                   setWriteToTimePreserveOriginal(true);
                 }}
               >
-                关闭
+                ??
               </Button>
               <Button
                 type="button"
@@ -2136,7 +2092,7 @@ export function ThinkingLayer(props: {
                 onClick={submitWriteToTime}
                 disabled={isWritingToTime}
               >
-                {isWritingToTime ? "写入中..." : "写入时间"}
+                {isWritingToTime ? "???..." : "????"}
               </Button>
             </div>
           </div>
@@ -2748,10 +2704,23 @@ export function ThinkingLayer(props: {
 
       {exportOpen ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[760px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <div className="mb-3 flex items-center justify-between">
-              <p className="text-sm text-slate-800">Markdown 导出</p>
+          <div className="flex max-h-[calc(100vh-2rem)] w-[920px] max-w-[calc(100vw-2rem)] min-h-0 flex-col rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+            <div className="mb-3 flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm text-slate-800">Markdown 导出</p>
+                <p className="mt-1 text-xs text-slate-500">长内容可直接滚动查看，也可下载为 `.md` 文件。</p>
+              </div>
               <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  disabled={exportLoading || !exportMarkdown.trim()}
+                  className="rounded-full text-slate-700 hover:bg-black/[0.05] disabled:opacity-50"
+                  onClick={downloadExportMarkdown}
+                >
+                  下载
+                </Button>
                 <Button
                   type="button"
                   size="sm"
@@ -2767,12 +2736,13 @@ export function ThinkingLayer(props: {
                 </button>
               </div>
             </div>
-            <textarea
-              data-zh-input="multiline"
-              value={exportLoading ? "导出生成中..." : exportMarkdown}
-              readOnly
-              className="h-[52vh] w-full resize-none rounded-xl border border-black/12 bg-[#f7f4ef] px-3 py-3 text-xs leading-[1.65] text-slate-700 outline-none [overflow-wrap:anywhere]"
-            />
+            <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-black/12 bg-[#f7f4ef]">
+              <div className="h-full overflow-y-auto px-4 py-4">
+                <pre className="whitespace-pre-wrap break-words text-xs leading-[1.7] text-slate-700">
+                  {exportLoading ? "导出生成中..." : exportMarkdown || "暂无导出内容"}
+                </pre>
+              </div>
+            </div>
           </div>
         </div>
       ) : null}

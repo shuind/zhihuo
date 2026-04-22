@@ -1,7 +1,6 @@
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
 export type ThinkingSpaceStatus = "active" | "hidden";
 export type ThinkingNodeState = "normal" | "hidden";
-export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
 export type DoubtRecord = {
   id: string;
@@ -80,7 +79,7 @@ export type ThinkingSpaceMetaRecord = {
   pending_track_id?: string | null;
   empty_track_ids?: string[];
   milestone_node_ids?: string[];
-  track_direction_hints?: Record<string, TrackDirectionHint | null>;
+  track_direction_hints?: Record<string, string | null>;
 };
 
 export type ThinkingNodeLinkRecord = {
@@ -177,7 +176,7 @@ export type ThinkingSnapshot = {
     rootQuestionText: string;
     status: ThinkingSpaceStatus;
     createdAt: string;
-    frozenAt: string | null;
+    writtenToTimeAt: string | null;
     sourceTimeDoubtId: string | null;
   }>;
   nodes: Array<{
@@ -196,7 +195,6 @@ export type ThinkingSnapshot = {
   }>;
   spaceMeta: Array<{
     spaceId: string;
-    userFreezeNote: string | null;
     exportVersion: number;
     backgroundText?: string | null;
     backgroundVersion?: number;
@@ -208,17 +206,6 @@ export type ThinkingSnapshot = {
     parkingTrackId?: string | null;
     pendingTrackId?: string | null;
     emptyTrackIds?: string[];
-    milestoneNodeIds?: string[];
-    trackDirectionHints?: Record<string, TrackDirectionHint | null>;
-  }>;
-  nodeLinks?: Array<{
-    id: string;
-    spaceId: string;
-    sourceNodeId: string;
-    targetNodeId: string;
-    linkType: "related";
-    score: number;
-    createdAt: string;
   }>;
   mediaAssets?: Array<{
     id: string;

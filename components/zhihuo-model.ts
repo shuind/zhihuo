@@ -30,7 +30,6 @@ export type LifeStore = {
 export type ThinkingSpaceStatus = "active" | "hidden";
 export type ThinkingNodeState = "normal" | "hidden";
 export type DimensionKey = "definition" | "resource" | "risk" | "value" | "path" | "evidence";
-export type TrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
 export type ThinkingSpace = {
   id: string;
@@ -39,7 +38,7 @@ export type ThinkingSpace = {
   status: ThinkingSpaceStatus;
   createdAt: string;
   lastActivityAt?: string;
-  frozenAt: string | null;
+  writtenToTimeAt: string | null;
   sourceTimeDoubtId: string | null;
 };
 
@@ -52,16 +51,6 @@ export type ThinkingScratchItem = {
   deletedAt: string | null;
   derivedSpaceId: string | null;
   fedTimeDoubtId: string | null;
-};
-
-export type ThinkingNodeLink = {
-  id: string;
-  spaceId: string;
-  sourceNodeId: string;
-  targetNodeId: string;
-  linkType: "related";
-  score: number;
-  createdAt: string;
 };
 
 export type ThinkingNode = {
@@ -101,7 +90,6 @@ export type ThinkingMediaRef = {
 
 export type ThinkingSpaceMeta = {
   spaceId: string;
-  userFreezeNote: string | null;
   exportVersion: number;
   backgroundText?: string | null;
   backgroundVersion?: number;
@@ -113,8 +101,6 @@ export type ThinkingSpaceMeta = {
   parkingTrackId?: string | null;
   pendingTrackId?: string | null;
   emptyTrackIds?: string[];
-  milestoneNodeIds?: string[];
-  trackDirectionHints?: Record<string, TrackDirectionHint | null>;
 };
 
 export type ThinkingInboxItem = {
@@ -127,7 +113,6 @@ export type ThinkingStore = {
   spaces: ThinkingSpace[];
   nodes: ThinkingNode[];
   spaceMeta: ThinkingSpaceMeta[];
-  nodeLinks: ThinkingNodeLink[];
   mediaAssets: ThinkingMediaAsset[];
   scratch: ThinkingScratchItem[];
   inbox: Record<string, ThinkingInboxItem[]>;
@@ -181,7 +166,6 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   spaces: [],
   nodes: [],
   spaceMeta: [],
-  nodeLinks: [],
   mediaAssets: [],
   scratch: [],
   inbox: {},
@@ -464,6 +448,7 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
 
 export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {
   const spaces: ThinkingSpace[] = (store.spaces ?? []).map((space) => {
+    const legacySpace = space as Partial<ThinkingSpace> & { frozenAt?: string | null };
     const status: ThinkingSpaceStatus = space.status === "active" ? "active" : "hidden";
     return {
       id: typeof space.id === "string" ? space.id : createId(),
@@ -472,7 +457,12 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
       status,
       createdAt: toIso(space.createdAt),
       lastActivityAt: typeof space.lastActivityAt === "string" ? toIso(space.lastActivityAt) : toIso(space.createdAt),
-      frozenAt: space.frozenAt ? toIso(space.frozenAt) : null,
+      writtenToTimeAt:
+        typeof space.writtenToTimeAt === "string"
+          ? toIso(space.writtenToTimeAt)
+          : legacySpace.frozenAt
+            ? toIso(legacySpace.frozenAt)
+            : null,
       sourceTimeDoubtId: typeof space.sourceTimeDoubtId === "string" ? space.sourceTimeDoubtId : null
     };
   });
@@ -495,7 +485,6 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     .filter((item) => item.spaceId && item.rawQuestionText);
   const spaceMeta = (store.spaceMeta ?? []).map((meta) => ({
     spaceId: typeof meta.spaceId === "string" ? meta.spaceId : "",
-    userFreezeNote: typeof meta.userFreezeNote === "string" ? meta.userFreezeNote : null,
     exportVersion: typeof meta.exportVersion === "number" ? meta.exportVersion : 1,
     backgroundText: typeof meta.backgroundText === "string" ? meta.backgroundText : null,
     backgroundVersion: typeof meta.backgroundVersion === "number" ? meta.backgroundVersion : 0,
@@ -507,36 +496,8 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     lastOrganizedOrder: typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
     parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
     pendingTrackId: typeof meta.pendingTrackId === "string" ? meta.pendingTrackId : null,
-    emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : [],
-    milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3) : [],
-    trackDirectionHints:
-      meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
-        ? Object.fromEntries(
-            Object.entries(meta.trackDirectionHints).filter(
-              ([trackId, hint]) =>
-                typeof trackId === "string" &&
-                (hint === null ||
-                  hint === "hypothesis" ||
-                  hint === "memory" ||
-                  hint === "counterpoint" ||
-                  hint === "worry" ||
-                  hint === "constraint" ||
-                  hint === "aside")
-            )
-          )
-        : {}
+    emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : []
   })).filter((meta) => meta.spaceId);
-  const nodeLinks: ThinkingNodeLink[] = (store.nodeLinks ?? [])
-    .map((link) => ({
-      id: typeof link.id === "string" ? link.id : createId(),
-      spaceId: typeof link.spaceId === "string" ? link.spaceId : "",
-      sourceNodeId: typeof link.sourceNodeId === "string" ? link.sourceNodeId : "",
-      targetNodeId: typeof link.targetNodeId === "string" ? link.targetNodeId : "",
-      linkType: "related" as const,
-      score: typeof link.score === "number" && Number.isFinite(link.score) ? link.score : 0,
-      createdAt: toIso(link.createdAt)
-    }))
-    .filter((item) => item.spaceId && item.sourceNodeId && item.targetNodeId && item.sourceNodeId !== item.targetNodeId);
   const mediaAssets: ThinkingMediaAsset[] = (store.mediaAssets ?? [])
     .map((item) => ({
       id: typeof item.id === "string" ? item.id : createId(),
@@ -584,7 +545,6 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     spaces,
     nodes,
     spaceMeta,
-    nodeLinks,
     mediaAssets,
     scratch,
     inbox,

@@ -33,7 +33,6 @@ export const POST = withApiRoute(
       trackId: string | null;
       updatedAt: string | null;
       suggestedQuestions: string[];
-      relatedCandidate: { node_id: string; preview: string; score: number } | null;
     } = {
       kind: "not_found",
       nodeId: null,
@@ -42,8 +41,7 @@ export const POST = withApiRoute(
       noteText: null,
       trackId: null,
       updatedAt: null,
-      suggestedQuestions: [],
-      relatedCandidate: null
+      suggestedQuestions: []
     };
 
     await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
@@ -63,14 +61,6 @@ export const POST = withApiRoute(
         state.trackId = result.track_id;
         state.updatedAt = result.node.created_at;
         state.suggestedQuestions = result.suggested_questions ?? [];
-        state.relatedCandidate =
-          result.related_candidate && typeof result.related_candidate.nodeId === "string"
-            ? {
-                node_id: result.related_candidate.nodeId,
-                preview: result.related_candidate.preview,
-                score: result.related_candidate.score
-              }
-            : null;
       } else if (result.kind === "invalid") {
         state.suggestedQuestions = result.suggested_questions;
       }
@@ -88,7 +78,6 @@ export const POST = withApiRoute(
       track_id: state.trackId,
       updated_at: state.updatedAt,
       suggested_questions: state.suggestedQuestions,
-      related_candidate: state.relatedCandidate,
       client_mutation_id: clientMutationId
     });
   },

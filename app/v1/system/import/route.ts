@@ -40,6 +40,7 @@ type UserExportPayload = {
       rootQuestionText?: string;
       status?: "active" | "hidden";
       createdAt?: string;
+      writtenToTimeAt?: string | null;
       frozenAt?: string | null;
       sourceTimeDoubtId?: string | null;
     }>;
@@ -59,7 +60,6 @@ type UserExportPayload = {
     }>;
     space_meta?: Array<{
       spaceId?: string;
-      userFreezeNote?: string | null;
       exportVersion?: number;
       backgroundText?: string | null;
       backgroundVersion?: number;
@@ -73,15 +73,6 @@ type UserExportPayload = {
       emptyTrackIds?: string[];
       milestoneNodeIds?: string[];
       trackDirectionHints?: Record<string, "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside" | null>;
-    }>;
-    node_links?: Array<{
-      id?: string;
-      spaceId?: string;
-      sourceNodeId?: string;
-      targetNodeId?: string;
-      linkType?: "related";
-      score?: number;
-      createdAt?: string;
     }>;
     inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
     scratch?: Array<{
@@ -251,7 +242,6 @@ export const POST = withApiRoute(
         spaces: (payload.thinking?.spaces ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["spaces"],
         nodes: (payload.thinking?.nodes ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["nodes"],
         spaceMeta: (payload.thinking?.space_meta ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["spaceMeta"],
-        nodeLinks: (payload.thinking?.node_links ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["nodeLinks"],
         inbox: (payload.thinking?.inbox ?? {}) as Parameters<typeof replaceThinkingSnapshot>[2]["inbox"],
         scratch: (payload.thinking?.scratch ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["scratch"],
         mediaAssets: (payload.thinking?.media_assets ?? []).map((asset) => ({

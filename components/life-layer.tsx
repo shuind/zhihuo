@@ -31,7 +31,6 @@ export function LifeLayer(props: {
   store: LifeStore;
   setStore: Dispatch<SetStateAction<LifeStore>>;
   timezone: string;
-  freezeNoteByDoubtId: Record<string, string>;
   ready: boolean;
   openingPhase: OpeningPhase;
   stars: StarDot[];
@@ -344,7 +343,6 @@ export function LifeLayer(props: {
               key="detail-panel"
               doubt={selectedDoubt}
               timezone={props.timezone}
-              freezeNote={props.freezeNoteByDoubtId[selectedDoubt.id] ?? ""}
               noteText={notesMap.get(selectedDoubt.id) ?? ""}
               onClose={closeDetail}
               onDelete={() => setDeleteId(selectedDoubt.id)}
@@ -361,7 +359,6 @@ export function LifeLayer(props: {
             key="mobile-detail-drawer"
             doubt={selectedDoubt}
             timezone={props.timezone}
-            freezeNote={props.freezeNoteByDoubtId[selectedDoubt.id] ?? ""}
             noteText={notesMap.get(selectedDoubt.id) ?? ""}
             onOpenSearch={openMobileSearch}
             onClose={closeDetail}
@@ -526,7 +523,6 @@ function TimeEntryCard(props: {
 function DetailPanel(props: {
   doubt: LifeDoubt;
   timezone: string;
-  freezeNote: string;
   noteText: string;
   onClose: () => void;
   onDelete: () => void;
@@ -550,7 +546,6 @@ function DetailPanel(props: {
 function MobileDetailDrawer(props: {
   doubt: LifeDoubt;
   timezone: string;
-  freezeNote: string;
   noteText: string;
   onOpenSearch: () => void;
   onClose: () => void;
@@ -586,7 +581,6 @@ function MobileDetailDrawer(props: {
 function DetailBody(props: {
   doubt: LifeDoubt;
   timezone: string;
-  freezeNote: string;
   noteText: string;
   onOpenSearch?: () => void;
   onClose: () => void;
@@ -596,7 +590,6 @@ function DetailBody(props: {
   compact?: boolean;
 }) {
   const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
-  const freezeNoteText = collapseWhitespace(props.freezeNote);
   const firstTrackNode = collapseWhitespace(props.doubt.firstNodePreview ?? "");
   const lastTrackNode = collapseWhitespace(props.doubt.lastNodePreview ?? firstTrackNode);
   const shouldShowTrackEdgeSummary = Boolean(firstTrackNode);
@@ -664,16 +657,14 @@ function DetailBody(props: {
             </div>
           ) : null}
 
-          {freezeNoteText ? <p className="mb-10 text-[16px] leading-[1.9] text-[rgba(186,194,198,0.82)]">{freezeNoteText}</p> : null}
-
           {shouldShowTrackEdgeSummary ? (
-            <div className={cn("mb-12 space-y-4", freezeNoteText && "mt-2")}>
+            <div className="mb-12 space-y-4">
               <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"初："}{firstTrackNode}</p>
               <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"终："}{lastTrackNode}</p>
             </div>
-          ) : !freezeNoteText ? (
+          ) : (
             <div className="mb-12" />
-          ) : null}
+          )}
 
           {canEditNote ? (
             <div className="mb-12">

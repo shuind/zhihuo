@@ -10,12 +10,14 @@ export const POST = withApiRoute(
   "thinking.spaces.write_to_time",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
     const body = await parseJsonBody<{
+      note_text?: string;
       freeze_note?: string;
       preserve_original_time?: boolean;
       client_mutation_id?: string;
       client_updated_at?: string;
     }>(request);
-    const freezeNote = typeof body?.freeze_note === "string" ? body.freeze_note : undefined;
+    const noteText =
+      typeof body?.note_text === "string" ? body.note_text : typeof body?.freeze_note === "string" ? body.freeze_note : undefined;
     const preserveOriginalTime = body?.preserve_original_time !== false;
     const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
 
@@ -28,7 +30,7 @@ export const POST = withApiRoute(
     let writtenAt: string | null = null;
 
     await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
-      const written = writeSpaceToTime(db, userId, params.spaceId, freezeNote, { preserveOriginalTime });
+      const written = writeSpaceToTime(db, userId, params.spaceId, noteText, { preserveOriginalTime });
       resultKind = written.kind;
       if (written.kind !== "ok") return;
       spaceId = written.space.id;

@@ -201,12 +201,8 @@ export function buildUserExportMarkdown(
       lines.push("### 来自思路层（已写入时间）");
       lines.push("");
       for (const [index, space] of writtenToTimeSpaces.entries()) {
-        const meta = allMetaMap.get(space.id);
         lines.push(`- ${index + 1}. ${space.root_question_text}`);
         lines.push(`  - 写回时间：${formatFriendlyDateTime(space.frozen_at)}`);
-        if (meta?.user_freeze_note) {
-          lines.push(`  - 批注：${meta.user_freeze_note}`);
-        }
       }
       lines.push("");
     }
@@ -221,8 +217,6 @@ export function buildUserExportMarkdown(
       lines.push("");
     } else {
       for (const [spaceIndex, space] of activeSpaces.entries()) {
-        const meta = allMetaMap.get(space.id);
-        const milestones = new Set((meta?.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
         const spaceNodes = nodesForActiveSpaces.filter((node) => node.space_id === space.id);
         const trackMap = new Map<string, typeof spaceNodes>();
 
@@ -239,14 +233,12 @@ export function buildUserExportMarkdown(
 
         lines.push(`### 空间 ${spaceIndex + 1}：${space.root_question_text}`);
         lines.push(`- 创建时间：${formatFriendlyDateTime(space.created_at)}`);
-        if (meta?.user_freeze_note) lines.push(`- 批注：${meta.user_freeze_note}`);
         lines.push("");
 
         for (const [trackIndex, [, trackNodes]] of orderedTracks.entries()) {
           lines.push(`#### 方向 ${trackIndex + 1}`);
           for (const node of trackNodes) {
-            const star = milestones.has(node.id) ? "⭐ " : "";
-            lines.push(`- ${star}${node.raw_question_text}`);
+            lines.push(`- ${node.raw_question_text}`);
             if (node.note_text) lines.push(`  - 注记：${node.note_text}`);
           }
           lines.push("");

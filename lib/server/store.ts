@@ -3,7 +3,6 @@
   DimensionKey,
   DoubtNoteRecord,
   DoubtRecord,
-  TrackDirectionHint,
   ThinkingMediaAssetRecord,
   ThinkingNodeLinkRecord,
   ThinkingNodeRecord,
@@ -31,17 +30,9 @@ import {
 const TRACK_PREFIX = "track:";
 const ORGANIZE_MOVE_THRESHOLD = 0.52;
 const ORGANIZE_MOVE_DELTA = 0.16;
-const TRACK_DIRECTION_HINTS: TrackDirectionHint[] = ["hypothesis", "memory", "counterpoint", "worry", "constraint", "aside"];
-const TRACK_DIRECTION_HINT_LABEL: Record<TrackDirectionHint, string> = {
-  hypothesis: "假设",
-  memory: "回忆",
-  counterpoint: "反驳",
-  worry: "担忧",
-  constraint: "现实限制",
-  aside: "旁支念头"
-};
+type LegacyTrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
-function isTrackDirectionHint(value: unknown): value is TrackDirectionHint {
+function isTrackDirectionHint(value: unknown): value is LegacyTrackDirectionHint {
   return (
     value === "hypothesis" ||
     value === "memory" ||
@@ -52,7 +43,7 @@ function isTrackDirectionHint(value: unknown): value is TrackDirectionHint {
   );
 }
 
-function isTrackDirectionSetting(value: unknown): value is TrackDirectionHint | null {
+function isTrackDirectionSetting(value: unknown): value is LegacyTrackDirectionHint | null {
   return value === null || isTrackDirectionHint(value);
 }
 
@@ -517,73 +508,10 @@ export function setSpaceBackgroundAssets(
   return { kind: "ok" as const, background_asset_ids: meta.background_asset_ids, background_selected_asset_id: meta.background_selected_asset_id };
 }
 
-function pruneTrackDirectionHints(meta: ThinkingSpaceMetaRecord, trackIds: Iterable<string>) {
-  const allowed = new Set(trackIds);
-  const next = Object.fromEntries(
-    Object.entries(getTrackDirectionHints(meta)).filter(([trackId, hint]) => allowed.has(trackId) && isTrackDirectionSetting(hint))
-  );
-  meta.track_direction_hints = next;
-  return next;
-}
-
-function inferTrackDirectionHint(trackNodes: ThinkingNodeRecord[], isParkingTrack: boolean): TrackDirectionHint | null {
-  if (isParkingTrack) return null;
-  if (!trackNodes.length) return null;
-
-  const text = trackNodes.slice(0, 3).map((node) => node.raw_question_text).join(" ");
-  if (/(记得|当时|以前|曾经|回想|回忆|小时候|过去)/iu.test(text)) return "memory";
-  if (/(但是|可是|难道|反过来|例外|反例|不成立|为什么不是)/iu.test(text)) return "counterpoint";
-  if (/(担心|害怕|焦虑|会不会|最坏|风险|代价|后果)/iu.test(text)) return "worry";
-  if (/(现实|限制|资源|时间|成本|预算|约束|做不到)/iu.test(text)) return "constraint";
-  if (/(也许|如果|假如|会不会是|可能是|猜想|设想)/iu.test(text)) return "hypothesis";
-
-  const dimensions = new Map<DimensionKey, number>();
-  for (const node of trackNodes.slice(0, 4)) {
-    dimensions.set(node.dimension, (dimensions.get(node.dimension) ?? 0) + 1);
-  }
-  const dominant = [...dimensions.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "definition";
-  if (dominant === "risk") return "worry";
-  if (dominant === "resource") return "constraint";
-  if (dominant === "evidence") return "counterpoint";
-  if (dominant === "value") return "memory";
-  return "hypothesis";
-}
-
-function resolveTrackDirectionHint(
-  meta: ThinkingSpaceMetaRecord,
-  trackId: string,
-  trackNodes: ThinkingNodeRecord[],
-  parkingTrackId: string
-) {
-  const hints = getTrackDirectionHints(meta);
-  if (Object.prototype.hasOwnProperty.call(hints, trackId)) {
-    return hints[trackId] ?? null;
-  }
-  return inferTrackDirectionHint(trackNodes, trackId === parkingTrackId);
-}
-
 function trackQuestionPreview(text: string, limit = 46) {
   const compact = collapseWhitespace(text);
   if (compact.length <= limit) return compact;
   return `${compact.slice(0, limit)}...`;
-}
-
-function findRelatedCandidate(nodes: ThinkingNodeRecord[], node: ThinkingNodeRecord) {
-  const nodeTokens = tokenizeText(node.raw_question_text);
-  let best: { nodeId: string; preview: string; score: number } | null = null;
-  for (const candidate of nodes) {
-    if (candidate.id === node.id) continue;
-    const score = textOverlapScore(nodeTokens, tokenizeText(candidate.raw_question_text));
-    if (score <= 0.3) continue;
-    if (!best || score > best.score) {
-      best = {
-        nodeId: candidate.id,
-        preview: trackQuestionPreview(candidate.raw_question_text),
-        score: Number(score.toFixed(3))
-      };
-    }
-  }
-  return best;
 }
 
 function deriveTrackEdgePreview(nodes: ThinkingNodeRecord[]) {
@@ -1064,57 +992,15 @@ export function listThinkingSpaces(db: DbState, userId: string) {
         (meta?.last_track_id && tracks.has(meta.last_track_id) ? meta.last_track_id : null) ??
         chooseFallbackTrackId(nodes) ??
         null;
-      const milestonePreviews = (meta?.milestone_node_ids ?? [])
-        .map((id) => nodeMap.get(id))
-        .filter((node): node is ThinkingNodeRecord => Boolean(node))
-        .slice(0, 3)
-        .map((node) => trackQuestionPreview(node.raw_question_text, 56));
-      const milestoneEntries = (meta?.milestone_node_ids ?? [])
-        .map((id) => nodeMap.get(id))
-        .filter((node): node is ThinkingNodeRecord => Boolean(node))
-        .slice(0, 3)
-        .map((node) => ({
-          node_id: node.id,
-          track_id: trackIdFromNode(node),
-          preview: trackQuestionPreview(node.raw_question_text, 56)
-        }));
-      const freezeAnchorNode =
-        milestoneEntries[0] ??
-        (() => {
-          const focusTrackId = currentTrackId && tracks.has(currentTrackId) ? currentTrackId : chooseFallbackTrackId(nodes);
-          if (!focusTrackId) return null;
-          const focusNodes = tracks.get(focusTrackId) ?? [];
-          const latestNode = focusNodes[focusNodes.length - 1];
-          if (!latestNode) return null;
-          return {
-            node_id: latestNode.id,
-            track_id: focusTrackId,
-            preview: trackQuestionPreview(latestNode.raw_question_text, 56)
-          };
-        })();
       return {
         doubt_id: space.source_time_doubt_id as string,
         space_id: space.id,
         status: space.status,
-        freeze_note: meta?.user_freeze_note ?? null,
-        milestone_previews: milestonePreviews,
         reentry: {
           question_entry: {
             space_id: space.id,
             root_question_text: space.root_question_text
-          },
-          freeze_entry:
-            space.frozen_at || meta?.user_freeze_note
-              ? {
-                  space_id: space.id,
-                  frozen_at: space.frozen_at,
-                  freeze_note: meta?.user_freeze_note ?? null,
-                  track_id: freezeAnchorNode?.track_id ?? currentTrackId,
-                  node_id: freezeAnchorNode?.node_id ?? null,
-                  preview: freezeAnchorNode?.preview ?? null
-                }
-              : null,
-          milestone_entries: milestoneEntries
+          }
         }
       };
     });
@@ -1280,8 +1166,7 @@ export function addQuestionToSpace(
         converted: false,
         note_text: existed.note_text ?? null,
         track_id: trackIdFromNode(existed),
-        suggested_questions: suggestedQuestions,
-        related_candidate: findRelatedCandidate(nodes, existed)
+        suggested_questions: suggestedQuestions
       };
     }
   }
@@ -1326,7 +1211,6 @@ export function addQuestionToSpace(
   meta.suggestion_decay = options?.from_suggestion ? Math.min(3, (meta.suggestion_decay ?? 0) + 1) : 0;
   enforceMaxNodes(db, spaceId);
   bumpUserRevision(db, userId);
-  const relatedCandidate = findRelatedCandidate(getSpaceNodes(db, spaceId), node);
 
   return {
     kind: "ok" as const,
@@ -1335,8 +1219,7 @@ export function addQuestionToSpace(
     converted: normalized.converted,
     note_text: normalized.raw_note,
     track_id: trackId,
-    suggested_questions: suggestedQuestions,
-    related_candidate: relatedCandidate
+    suggested_questions: suggestedQuestions
   };
 }
 
@@ -1344,7 +1227,7 @@ export function writeSpaceToTime(
   db: DbState,
   userId: string,
   spaceId: string,
-  freezeNote?: string | null,
+  _writeNote?: string | null,
   options?: { preserveOriginalTime?: boolean }
 ) {
   const space = requireSpace(db, userId, spaceId);
@@ -1374,11 +1257,7 @@ export function writeSpaceToTime(
 
   space.status = "hidden";
   space.frozen_at = writtenAt;
-  const meta = ensureMeta(db, spaceId);
-  const normalizedFreezeNote = typeof freezeNote === "string" ? collapseWhitespace(freezeNote).slice(0, 48) : "";
-  if (normalizedFreezeNote) {
-    meta.user_freeze_note = normalizedFreezeNote;
-  }
+  ensureMeta(db, spaceId);
   bumpUserRevision(db, userId);
   return { kind: "ok" as const, space, doubt };
 }
@@ -1529,14 +1408,6 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   if (pendingTrackId && pendingTrackId !== parkingTrackId && !tracks.has(pendingTrackId)) {
     tracks.set(pendingTrackId, []);
   }
-  const milestoneSet = new Set((meta.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
-  const links = db.thinking_node_links.filter((item) => item.space_id === spaceId && item.link_type === "related");
-  const nodeLinkedSet = new Set<string>();
-  for (const link of links) {
-    nodeLinkedSet.add(link.source_node_id);
-    nodeLinkedSet.add(link.target_node_id);
-  }
-
   const echoes = new Map<string, Array<{ trackId: string; nodeId: string }>>();
   for (const node of nodes) {
     const key = echoKey(node.raw_question_text);
@@ -1552,7 +1423,6 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
       trackId,
       firstOrder: trackNodes[0]?.order_index ?? Number.MAX_SAFE_INTEGER,
       title: trackId === parkingTrackId ? "先放这里" : trackNodes[0]?.raw_question_text ?? "新方向",
-      directionHint: resolveTrackDirectionHint(meta, trackId, trackNodes, parkingTrackId),
       isParking: trackId === parkingTrackId,
       isEmpty: trackId === pendingTrackId && trackNodes.length === 0,
       nodes: trackNodes
@@ -1566,7 +1436,6 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
   const trackPayload = trackRows.map((track) => ({
     id: track.trackId,
     title_question_text: track.title,
-    direction_hint: track.directionHint,
     is_parking: track.isParking,
     is_empty: track.isEmpty,
     node_count: track.nodes.length,
@@ -1582,8 +1451,6 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
         answer_text: node.answer_text ?? null,
         created_at: node.created_at,
         is_suggested: node.is_suggested,
-        is_milestone: milestoneSet.has(node.id),
-        has_related_link: nodeLinkedSet.has(node.id),
         echo_track_id: jump?.trackId ?? null,
         echo_node_id: jump?.nodeId ?? null
       };
@@ -1626,15 +1493,13 @@ export function getSpaceView(db: DbState, userId: string, spaceId: string) {
     current_track_id: currentTrackId,
     tracks: trackPayload,
     suggested_questions: suggestedQuestions,
-    freeze_note: meta.user_freeze_note ?? null,
     background_text: meta.background_text ?? null,
     background_version: meta.background_version ?? 0,
     background_asset_ids: meta.background_asset_ids ?? [],
     background_selected_asset_id: meta.background_selected_asset_id ?? null,
     parking_track_id: parkingTrackId,
     pending_track_id: pendingTrackId,
-    empty_track_ids: getEmptyTrackIds(meta),
-    milestone_node_ids: [...milestoneSet]
+    empty_track_ids: getEmptyTrackIds(meta)
   };
 }
 
@@ -1683,7 +1548,7 @@ export function updateTrackDirectionHint(
   userId: string,
   spaceId: string,
   trackId: string,
-  directionHint: TrackDirectionHint | null
+  _directionHint: string | null
 ) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
@@ -1695,13 +1560,7 @@ export function updateTrackDirectionHint(
   const meta = ensureMeta(db, spaceId);
   const parkingTrackId = getParkingTrackId(meta);
   if (!tracks.has(normalized) && normalized !== parkingTrackId) return { kind: "track_not_found" as const };
-  if (directionHint !== null && !isTrackDirectionHint(directionHint)) return { kind: "invalid_hint" as const };
-
-  const hints = { ...getTrackDirectionHints(meta) };
-  hints[normalized] = directionHint;
-  meta.track_direction_hints = hints;
-  bumpUserRevision(db, userId);
-  return { kind: "ok" as const, track_id: normalized, direction_hint: directionHint };
+  return { kind: "ok" as const, track_id: normalized, direction_hint: null };
 }
 
 export function updateSpaceBackground(
@@ -1991,7 +1850,6 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
   const metas = db.thinking_space_meta
     .filter((meta) => spaceIds.has(meta.space_id))
     .map((meta) => sanitizeMeta(JSON.parse(JSON.stringify(meta)) as ThinkingSpaceMetaRecord));
-  const nodeLinks = db.thinking_node_links.filter((link) => spaceIds.has(link.space_id));
   const inbox = db.thinking_inbox.filter((item) => spaceIds.has(item.space_id));
 
   const inboxMap: ThinkingSnapshot["inbox"] = {};
@@ -2027,7 +1885,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       rootQuestionText: space.root_question_text,
       status: normalizeSpaceStatus(space.status),
       createdAt: space.created_at,
-      frozenAt: space.frozen_at,
+      writtenToTimeAt: space.frozen_at,
       sourceTimeDoubtId: space.source_time_doubt_id
     })),
     nodes: nodes.map((node) => ({
@@ -2046,7 +1904,6 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
     })),
     spaceMeta: metas.map((meta) => ({
       spaceId: meta.space_id,
-      userFreezeNote: meta.user_freeze_note,
       exportVersion: meta.export_version,
       backgroundText: meta.background_text ?? null,
       backgroundVersion: meta.background_version ?? 0,
@@ -2057,18 +1914,7 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       lastOrganizedOrder: meta.last_organized_order ?? -1,
       parkingTrackId: meta.parking_track_id ?? null,
       pendingTrackId: meta.pending_track_id ?? null,
-      emptyTrackIds: meta.empty_track_ids ?? [],
-      milestoneNodeIds: meta.milestone_node_ids ?? [],
-      trackDirectionHints: meta.track_direction_hints ?? {}
-    })),
-    nodeLinks: nodeLinks.map((link) => ({
-      id: link.id,
-      spaceId: link.space_id,
-      sourceNodeId: link.source_node_id,
-      targetNodeId: link.target_node_id,
-      linkType: link.link_type,
-      score: link.score,
-      createdAt: link.created_at
+      emptyTrackIds: meta.empty_track_ids ?? []
     })),
     mediaAssets: listThinkingMediaAssets(db, userId).map((asset) => ({
       id: asset.id,
@@ -2096,7 +1942,12 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     root_question_text: collapseWhitespace(space.rootQuestionText ?? ""),
     status: normalizeSpaceStatus(space.status),
     created_at: typeof space.createdAt === "string" ? space.createdAt : nowIso(),
-    frozen_at: typeof space.frozenAt === "string" ? space.frozenAt : null,
+    frozen_at:
+      typeof (space as { writtenToTimeAt?: string | null }).writtenToTimeAt === "string"
+        ? (space as { writtenToTimeAt?: string | null }).writtenToTimeAt ?? null
+        : typeof (space as { frozenAt?: string | null }).frozenAt === "string"
+          ? (space as { frozenAt?: string | null }).frozenAt ?? null
+          : null,
     source_time_doubt_id: typeof space.sourceTimeDoubtId === "string" ? space.sourceTimeDoubtId : null
   }));
   const spaceIds = new Set(nextSpaces.map((space) => space.id));
@@ -2124,7 +1975,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     .map((meta) =>
       sanitizeMeta({
         space_id: meta.spaceId,
-        user_freeze_note: typeof meta.userFreezeNote === "string" ? collapseWhitespace(meta.userFreezeNote).slice(0, 48) : null,
+        user_freeze_note: null,
         export_version: Number.isFinite(meta.exportVersion) && meta.exportVersion > 0 ? meta.exportVersion : 1,
         background_text: typeof meta.backgroundText === "string" ? collapseWhitespace(meta.backgroundText) : null,
         background_version:
@@ -2150,30 +2001,10 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
         empty_track_ids: Array.isArray(meta.emptyTrackIds)
           ? meta.emptyTrackIds.filter((id) => typeof id === "string")
           : [],
-        milestone_node_ids: Array.isArray(meta.milestoneNodeIds)
-          ? meta.milestoneNodeIds.filter((id) => typeof id === "string").slice(0, 3)
-          : [],
-        track_direction_hints:
-          meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
-            ? Object.fromEntries(
-                Object.entries(meta.trackDirectionHints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionSetting(hint))
-              )
-            : {}
+        milestone_node_ids: [],
+        track_direction_hints: {}
       })
     );
-
-  const nextLinks: ThinkingNodeLinkRecord[] = (snapshot.nodeLinks ?? [])
-    .filter((link) => typeof link.spaceId === "string" && spaceIds.has(link.spaceId))
-    .map((link) => ({
-      id: typeof link.id === "string" ? link.id : createId(),
-      space_id: link.spaceId,
-      source_node_id: typeof link.sourceNodeId === "string" ? link.sourceNodeId : "",
-      target_node_id: typeof link.targetNodeId === "string" ? link.targetNodeId : "",
-      link_type: "related" as const,
-      score: Number.isFinite(link.score) ? Number(link.score) : 0,
-      created_at: typeof link.createdAt === "string" ? link.createdAt : nowIso()
-    }))
-    .filter((link) => link.source_node_id && link.target_node_id && link.source_node_id !== link.target_node_id);
 
   const rawInbox = snapshot.inbox ?? {};
   const nextInbox = Object.entries(rawInbox).flatMap(([spaceId, list]) => {
@@ -2226,7 +2057,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     ...nextNodes.sort((a, b) => a.order_index - b.order_index)
   ];
   db.thinking_space_meta = [...db.thinking_space_meta.filter((meta) => !userSpaceIds.has(meta.space_id)), ...nextMeta];
-  db.thinking_node_links = [...db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id)), ...nextLinks];
+  db.thinking_node_links = db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id));
   db.thinking_inbox = [...db.thinking_inbox.filter((item) => !userSpaceIds.has(item.space_id)), ...nextInbox];
   db.thinking_scratch = [...db.thinking_scratch.filter((item) => item.user_id !== userId), ...nextScratch];
   db.thinking_media_assets = [...db.thinking_media_assets.filter((asset) => asset.user_id !== userId), ...nextMediaAssets];
@@ -2239,8 +2070,6 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
 
   const nodes = getSpaceNodes(db, spaceId);
   const meta = sanitizeMeta(db.thinking_space_meta.find((item) => item.space_id === spaceId) ?? ensureMeta(db, spaceId));
-  const milestoneSet = new Set((meta.milestone_node_ids ?? []).filter((id) => typeof id === "string"));
-  const parkingTrackId = getParkingTrackId(meta);
   const tracks = getTrackMap(nodes);
   const orderedTracks = [...tracks.entries()].sort(
     (a, b) => (a[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER) - (b[1][0]?.order_index ?? Number.MAX_SAFE_INTEGER)
@@ -2256,8 +2085,7 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
   orderedTracks.forEach(([trackId, trackNodes], index) => {
     lines.push(`## 方向 ${index + 1}`);
     for (const node of trackNodes) {
-      const star = milestoneSet.has(node.id) ? "⭐ " : "";
-      lines.push(`- ${star}${node.raw_question_text}`);
+      lines.push(`- ${node.raw_question_text}`);
       if (node.image_asset_id && mediaAssetIds.has(node.image_asset_id)) {
         lines.push(`  - 图片：${node.image_asset_id}`);
       }
@@ -2266,11 +2094,6 @@ export function exportSpace(db: DbState, userId: string, spaceId: string) {
     lines.push("");
   });
 
-  if (meta.user_freeze_note) {
-    lines.push("## 当前状态");
-    lines.push(meta.user_freeze_note);
-    lines.push("");
-  }
   if ((meta.background_asset_ids ?? []).length) {
     lines.push("## 空间图集");
     for (const assetId of meta.background_asset_ids ?? []) {
