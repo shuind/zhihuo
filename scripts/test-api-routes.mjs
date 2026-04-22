@@ -212,6 +212,7 @@ async function run() {
     target_node_id: secondNodeId
   });
   assert(link.status === 200, `node link failed: ${link.status}`);
+  assert(link.json?.deprecated === true, "node link compat route should be marked deprecated");
 
   const invalidBackground = await request("POST", `/v1/thinking/spaces/${spaceId}/background`, {
     background_text: "太短"
@@ -262,8 +263,11 @@ async function run() {
   const detail = await request("GET", `/v1/thinking/spaces/${spaceId}`);
   assert(detail.status === 200, `space detail failed: ${detail.status}`);
   assert(Array.isArray(detail.json?.tracks), "tracks should be array");
-  assert(Array.isArray(detail.json?.milestone_node_ids), "detail should include milestone ids");
-  assert(detail.json?.tracks?.every((track) => "direction_hint" in track), "track detail should include direction_hint");
+  assert(!("milestone_node_ids" in (detail.json ?? {})), "space detail should not emit removed milestone ids");
+  assert(
+    detail.json?.tracks?.every((track) => !("direction_hint" in track)),
+    "track detail should not emit removed direction_hint"
+  );
   const detailFirstNode = detail.json?.tracks?.flatMap((track) => track.nodes ?? []).find((node) => node.id === firstNodeId);
   assert(detailFirstNode?.answer_text === null, "new node should default answer_text to null");
 
@@ -310,23 +314,25 @@ async function run() {
   assert(writeToTime.json?.status === "hidden", "write-to-time should hide the space");
 
   const targetTrackId = detail.json?.tracks?.[0]?.id;
-  assert(typeof targetTrackId === "string", "missing track id for direction hint");
+  assert(typeof targetTrackId === "string", "missing track id for compat track-direction route");
   const updateDirection = await request("POST", `/v1/thinking/spaces/${spaceId}/track-direction`, {
     track_id: targetTrackId,
     direction_hint: "hypothesis"
   });
   assert(updateDirection.status === 200, `track direction update failed: ${updateDirection.status}`);
+  assert(updateDirection.json?.deprecated === true, "track direction compat route should be marked deprecated");
 
   const clearDirection = await request("POST", `/v1/thinking/spaces/${spaceId}/track-direction`, {
     track_id: targetTrackId,
     direction_hint: null
   });
   assert(clearDirection.status === 200, `track direction clear failed: ${clearDirection.status}`);
+  assert(clearDirection.json?.deprecated === true, "track direction clear compat route should be marked deprecated");
 
   const detailAfterClear = await request("GET", `/v1/thinking/spaces/${spaceId}`);
   assert(detailAfterClear.status === 200, `space detail after clear failed: ${detailAfterClear.status}`);
   const clearedTrack = detailAfterClear.json?.tracks?.find((track) => track.id === targetTrackId);
-  assert(clearedTrack?.direction_hint === null, "direction_hint should stay null after clearing");
+  assert(clearedTrack && !("direction_hint" in clearedTrack), "space detail should continue omitting removed direction_hint");
 
   const statementSpaceQuestion = await request("POST", `/v1/thinking/spaces/${statementSpaceId}/questions`, {
     raw_text: "这是另一条线吗"
