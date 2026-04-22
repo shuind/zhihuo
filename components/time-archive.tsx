@@ -1215,6 +1215,7 @@ export function TimeArchive() {
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
   const offlineSyncingRef = useRef(false);
+  const autoCloudRefreshInFlightRef = useRef(false);
   const userBootstrapRef = useRef<string | null>(null);
   const localProfileIdRef = useRef("");
   const bindingCheckUserIdRef = useRef<string | null>(null);
@@ -3346,6 +3347,25 @@ export function TimeArchive() {
       window.clearInterval(timer);
     };
   }, [authReady, cloudSyncReady, isOnline, refreshCloudSyncState, sessionUser]);
+
+  useEffect(() => {
+    if (!authReady || !cloudSyncReady || !sessionUser || !isOnline) return;
+    if (pendingMutationCount > 0) return;
+    if (offlineMeta?.syncState.hasLocalChanges === true) return;
+    if (typeof cloudRevision !== "number") return;
+    if (offlineMeta?.revision === cloudRevision) return;
+    if (syncPhase === "bootstrap" || syncPhase === "repairing" || syncPhase === "push") return;
+    if (autoCloudRefreshInFlightRef.current) return;
+
+    autoCloudRefreshInFlightRef.current = true;
+    void (async () => {
+      try {
+        await refreshFromCloud(activeSpaceIdRef.current, sessionUser.userId);
+      } finally {
+        autoCloudRefreshInFlightRef.current = false;
+      }
+    })();
+  }, [authReady, cloudRevision, cloudSyncReady, isOnline, offlineMeta, pendingMutationCount, refreshFromCloud, sessionUser, syncPhase]);
 
   useEffect(() => {
     if (!hydrated) return;
