@@ -2060,8 +2060,8 @@ export function ThinkingLayer(props: {
       {writeToTimeOpen && activeSpace ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
           <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">????</p>
-            <p className="mt-1 text-xs text-slate-500">????????????????????????</p>
+            <p className="text-sm text-slate-800">写入时间</p>
+            <p className="mt-1 text-xs text-slate-500">把这段思考写回它所在的时刻，此后这段空间将被封存，不可继续。</p>
             <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
               <input
                 type="checkbox"
@@ -2069,7 +2069,7 @@ export function ThinkingLayer(props: {
                 checked={writeToTimePreserveOriginal}
                 onChange={(event) => setWriteToTimePreserveOriginal(event.target.checked)}
               />
-              <span>??????</span>
+              <span>保留疑问原文</span>
             </label>
             <div className="mt-4 flex justify-end gap-2">
               <Button
@@ -2083,7 +2083,7 @@ export function ThinkingLayer(props: {
                   setWriteToTimePreserveOriginal(true);
                 }}
               >
-                ??
+                取消
               </Button>
               <Button
                 type="button"
@@ -2092,7 +2092,7 @@ export function ThinkingLayer(props: {
                 onClick={submitWriteToTime}
                 disabled={isWritingToTime}
               >
-                {isWritingToTime ? "???..." : "????"}
+                {isWritingToTime ? "写入中…" : "写入时间"}
               </Button>
             </div>
           </div>
