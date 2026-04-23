@@ -24,6 +24,7 @@ import {
   type ThinkingStore,
 } from "@/components/zhihuo-model";
 import { SettleLetterDialog } from "@/components/letter/settle-letter-dialog";
+import { ConstellationCanvas } from "@/components/thinking/constellation-canvas";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
@@ -231,6 +232,7 @@ export function ThinkingLayer(props: {
   const [focusMenuNodeId, setFocusMenuNodeId] = useState<string | null>(null);
   const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
+  const [thinkingLayout, setThinkingLayout] = useState<"tracks" | "constellation">("tracks");
   const [detailSpaceId, setDetailSpaceId] = useState<string | null>(null);
   const [expandedNodeId, setExpandedNodeId] = useState<string | null>(null);
   const [answerDraftByNodeId, setAnswerDraftByNodeId] = useState<Record<string, string>>({});
@@ -440,6 +442,7 @@ export function ThinkingLayer(props: {
     setWriteToTimeOpen(false);
     setWriteToTimePreserveOriginal(true);
     setIsWritingToTime(false);
+    setThinkingLayout("tracks");
   }, [props.activeSpaceId]);
 
   useEffect(() => {
@@ -1457,6 +1460,47 @@ export function ThinkingLayer(props: {
                 </button>
                 <h2 className="line-clamp-1 text-[14px] font-medium text-slate-800 md:text-[15px]">{activeSpace.rootQuestionText}</h2>
               </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <div className="flex items-center gap-0.5 rounded-full border border-black/[0.07] bg-white/65 p-0.5 text-slate-500">
+                  <button
+                    type="button"
+                    aria-label="轨道视图"
+                    title="轨道"
+                    className={cn(
+                      "grid h-7 w-7 place-items-center rounded-full transition-colors",
+                      thinkingLayout === "tracks" ? "bg-slate-900 text-white" : "hover:bg-white/80 hover:text-slate-700"
+                    )}
+                    onClick={() => setThinkingLayout("tracks")}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <line x1="2" y1="4" x2="12" y2="4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                      <line x1="2" y1="10" x2="12" y2="10" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                    </svg>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="星图视图"
+                    title="星图"
+                    className={cn(
+                      "grid h-7 w-7 place-items-center rounded-full transition-colors",
+                      thinkingLayout === "constellation" ? "bg-slate-900 text-white" : "hover:bg-white/80 hover:text-slate-700"
+                    )}
+                    onClick={() => setThinkingLayout("constellation")}
+                  >
+                    <svg width="13" height="13" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                      <circle cx="7" cy="7" r="1.1" fill="currentColor" />
+                      <circle cx="3" cy="3.4" r="0.8" fill="currentColor" />
+                      <circle cx="11" cy="4" r="0.8" fill="currentColor" />
+                      <circle cx="4" cy="11" r="0.8" fill="currentColor" />
+                      <circle cx="11" cy="10.4" r="0.8" fill="currentColor" />
+                      <line x1="7" y1="7" x2="3" y2="3.4" stroke="currentColor" strokeWidth="0.5" />
+                      <line x1="7" y1="7" x2="11" y2="4" stroke="currentColor" strokeWidth="0.5" />
+                      <line x1="7" y1="7" x2="4" y2="11" stroke="currentColor" strokeWidth="0.5" />
+                      <line x1="7" y1="7" x2="11" y2="10.4" stroke="currentColor" strokeWidth="0.5" />
+                    </svg>
+                  </button>
+                </div>
               <div className="relative shrink-0" ref={moreMenuRef}>
                 <button
                   type="button"
@@ -1509,6 +1553,7 @@ export function ThinkingLayer(props: {
                   </div>,
                   document.body
                 ) : null}
+              </div>
               </div>
             </div>
           ) : (
@@ -1627,6 +1672,29 @@ export function ThinkingLayer(props: {
         {detailOpen && activeSpace ? (
           <div data-thinking-detail="true" className="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
             <section className="relative min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
+              {thinkingLayout === "constellation" ? (
+                <div className="ml-auto mr-0 flex h-full max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
+                  <ConstellationCanvas
+                    tracks={tracks}
+                    activeTrackId={activeTrackId}
+                    rootQuestionText={activeSpace.rootQuestionText}
+                    frozen={activeSpace.status === "hidden"}
+                    onSelectNode={(trackId, nodeId) => {
+                      setLocalPendingTrackId(trackId);
+                      setThinkingLayout("tracks");
+                      if (typeof window !== "undefined") {
+                        window.setTimeout(() => {
+                          const target = document.getElementById(`thinking-node-${nodeId}`);
+                          if (target) {
+                            target.scrollIntoView({ behavior: "smooth", block: "center" });
+                          }
+                        }, 120);
+                      }
+                    }}
+                    className="h-full w-full"
+                  />
+                </div>
+              ) : (
               <div
                 className={cn(
                   "ml-auto mr-0 grid h-full max-w-[1180px] min-h-0 gap-6 md:mr-6 md:gap-11 lg:mr-10 xl:mr-14",
@@ -1916,12 +1984,14 @@ export function ThinkingLayer(props: {
                   </aside>
                 ) : null}
               </div>
+              )}
             </section>
 
               <footer
                 data-composer="true"
                 className={cn(
                   "px-4 pb-[14px] pt-3 md:px-8 md:pb-5 md:pt-3",
+                  thinkingLayout === "constellation" ? "hidden" : "",
                   selectedBackgroundSrc
                     ? "bg-transparent"
                     : "border-t border-black/[0.05] bg-[#f5f2ee]/66 backdrop-blur-md"
