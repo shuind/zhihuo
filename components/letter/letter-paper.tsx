@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { LetterSprite } from "./letter-sprite";
 import { MoonGlyph } from "./moon-glyph";
 import { PaperOrnament } from "./paper-ornament";
+import { LetterSeal } from "./letter-seal";
 import type { MoonPhase } from "@/lib/solar-terms";
 
 export type PaperVariant = "plain" | "vellum" | "ink" | "rice" | "tide" | "clay";
@@ -30,11 +31,27 @@ export type LetterPaperProps = {
   moon: MoonPhase;
   authorName?: string;
   spriteFade?: number;
+  sealVisible?: boolean;
+  sealDateLabel?: string;
+  sealSolarTerm?: string;
   className?: string;
 };
 
 export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function LetterPaper(
-  { variant, title, lines, dateLabel, solarTermLabel, moon, authorName = "shuind", spriteFade = 0, className },
+  {
+    variant,
+    title,
+    lines,
+    dateLabel,
+    solarTermLabel,
+    moon,
+    authorName = "shuind",
+    spriteFade = 0,
+    sealVisible = false,
+    sealDateLabel,
+    sealSolarTerm,
+    className
+  },
   ref
 ) {
   const p = getPalette(variant);
@@ -61,6 +78,14 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
 
       {/* 装饰（每种质感独立 SVG） */}
       <PaperOrnament variant={variant} palette={p} />
+
+      {/* 落成印章 */}
+      <LetterSeal
+        visible={sealVisible}
+        dateLabel={sealDateLabel ?? dateLabel}
+        solarTerm={sealSolarTerm ?? solarTermLabel}
+        color={variant === "vellum" || variant === "ink" || variant === "tide" ? p.accent : "#b93a2a"}
+      />
 
       {/* 素笺的虚线格 */}
       {variant === "plain" && (
@@ -148,21 +173,41 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
 
       {/* 底部 */}
       <footer className="relative z-10 flex items-end justify-between px-8 pb-7 pt-4">
-        <div className="flex flex-col gap-1">
+        <div className="flex items-center gap-3">
           <span
-            className="text-[11px] tracking-[0.2em]"
-            style={{ color: p.subtle }}
+            className="grid h-[22px] w-[22px] place-items-center rounded-full"
+            style={{
+              background: variant === "vellum" || variant === "ink" || variant === "tide" ? "rgba(255,255,255,0.08)" : "rgba(0,0,0,0.04)",
+              border: `1px solid ${p.rule}`
+            }}
           >
-            {authorName}
+            <img
+              src="/zhihuo_logo_icon.svg"
+              alt=""
+              width={13}
+              height={13}
+              style={{
+                opacity: 0.85,
+                filter: variant === "vellum" || variant === "ink" || variant === "tide" ? "invert(1)" : "none"
+              }}
+            />
           </span>
-          <span
-            className="text-[10px] tracking-[0.2em]"
-            style={{ color: p.subtleSoft }}
-          >
-            由排版小动物制作
-          </span>
+          <div className="flex flex-col gap-[2px]">
+            <span
+              className="text-[11px] tracking-[0.22em]"
+              style={{ color: p.subtle }}
+            >
+              知惑
+            </span>
+            <span
+              className="text-[10px] tracking-[0.2em]"
+              style={{ color: p.subtleSoft }}
+            >
+              {authorName}
+            </span>
+          </div>
         </div>
-        <div className="h-[70px] w-[78px]" style={{ color: p.sprite }}>
+        <div className="h-[64px] w-[72px]" style={{ color: p.sprite }}>
           <LetterSprite fade={spriteFade} className="h-full w-full" />
         </div>
       </footer>

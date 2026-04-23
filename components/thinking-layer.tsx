@@ -23,6 +23,7 @@ import {
   type ThinkingSpaceStatus,
   type ThinkingStore,
 } from "@/components/zhihuo-model";
+import { SettleLetterDialog } from "@/components/letter/settle-letter-dialog";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
@@ -1063,25 +1064,36 @@ export function ThinkingLayer(props: {
     setWriteToTimeOpen(true);
   }, [activeSpace]);
 
-  const submitWriteToTime = useCallback(() => {
-    if (!activeSpace || activeSpace.status !== "active" || isWritingToTime) return;
+  const [writeToTimeSealed, setWriteToTimeSealed] = useState(false);
+
+  const submitWriteToTime = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
+    if (!activeSpace || activeSpace.status !== "active" || isWritingToTime) {
+      return { ok: false, message: "正在写入" };
+    }
     setIsWritingToTime(true);
-    void (async () => {
-      const result = await props.onWriteSpaceToTime(activeSpace.id, {
-        preserveOriginalTime: writeToTimePreserveOriginal
-      });
-      setIsWritingToTime(false);
-      if (!result.ok) {
-        props.showNotice(result.message);
-        return;
-      }
-      setWriteToTimeOpen(false);
+    const result = await props.onWriteSpaceToTime(activeSpace.id, {
+      preserveOriginalTime: writeToTimePreserveOriginal
+    });
+    setIsWritingToTime(false);
+    if (!result.ok) {
+      return { ok: false, message: result.message };
+    }
+    setWriteToTimeSealed(true);
+    return { ok: true };
+  }, [activeSpace, isWritingToTime, props, writeToTimePreserveOriginal]);
+
+  const closeSettleDialog = useCallback(() => {
+    if (isWritingToTime) return;
+    setWriteToTimeOpen(false);
+    if (writeToTimeSealed) {
       setMoreOpen(false);
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
-      props.showNotice("?????");
-    })();
-  }, [activeSpace, isWritingToTime, props, writeToTimePreserveOriginal]);
+      props.showNotice("已写入时间");
+    }
+    setWriteToTimePreserveOriginal(true);
+    setWriteToTimeSealed(false);
+  }, [isWritingToTime, props, writeToTimeSealed]);
 
   const openExport = useCallback(() => {
     if (!activeSpace) return;
@@ -2057,46 +2069,17 @@ export function ThinkingLayer(props: {
         )}
       </div>
 
-      {writeToTimeOpen && activeSpace ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">写入时间</p>
-            <p className="mt-1 text-xs text-slate-500">把这段思考写回它所在的时刻，此后这段空间将被封存，不可继续。</p>
-            <label className="mt-3 flex items-center gap-2 text-sm text-slate-700">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-black/20 accent-slate-900"
-                checked={writeToTimePreserveOriginal}
-                onChange={(event) => setWriteToTimePreserveOriginal(event.target.checked)}
-              />
-              <span>保留疑问原文</span>
-            </label>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="rounded-full border border-black/12 text-slate-700"
-                onClick={() => {
-                  if (isWritingToTime) return;
-                  setWriteToTimeOpen(false);
-                  setWriteToTimePreserveOriginal(true);
-                }}
-              >
-                取消
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800"
-                onClick={submitWriteToTime}
-                disabled={isWritingToTime}
-              >
-                {isWritingToTime ? "写入中…" : "写入时间"}
-              </Button>
-            </div>
-          </div>
-        </div>
+      {activeSpace ? (
+        <SettleLetterDialog
+          open={writeToTimeOpen}
+          doubtText={activeSpace.rootQuestionText}
+          nodes={tracks.flatMap((track) => track.nodes.map((node) => node.questionText ?? "")).filter(Boolean)}
+          writtenAt={new Date(activeSpace.createdAt ?? Date.now())}
+          preserveOriginal={writeToTimePreserveOriginal}
+          onPreserveOriginalChange={setWriteToTimePreserveOriginal}
+          onConfirm={submitWriteToTime}
+          onClose={closeSettleDialog}
+        />
       ) : null}
 
       {createSpaceOpen ? (
@@ -2618,7 +2601,7 @@ export function ThinkingLayer(props: {
                         </button>
                       </div>
 
-                      {/* 操作中遮罩 */}
+                      {/* ���作中遮罩 */}
                       {busy ? (
                         <div className="pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(15,17,20,0.28)] text-[11px] text-white backdrop-blur-[1px]">
                           {selectBusy ? "应用中…" : "移除中…"}

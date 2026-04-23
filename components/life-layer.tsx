@@ -17,6 +17,7 @@ import {
   getDateKeyInTimeZone,
   isOlderThanOneYear
 } from "@/components/zhihuo-model";
+import { LetterViewer } from "@/components/letter/letter-viewer";
 
 type DateGroup = {
   key: string;
@@ -593,6 +594,8 @@ function DetailBody(props: {
   const firstTrackNode = collapseWhitespace(props.doubt.firstNodePreview ?? "");
   const lastTrackNode = collapseWhitespace(props.doubt.lastNodePreview ?? firstTrackNode);
   const shouldShowTrackEdgeSummary = Boolean(firstTrackNode);
+  const hasSettled = Boolean(firstTrackNode);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   const handlePrimaryAction = () => {
     props.onClose();
@@ -666,6 +669,23 @@ function DetailBody(props: {
             <div className="mb-12" />
           )}
 
+          {hasSettled ? (
+            <div className="mb-10">
+              <button
+                type="button"
+                onClick={() => setViewerOpen(true)}
+                className="group inline-flex items-center gap-2 text-[12px] tracking-[0.14em] text-[rgba(160,168,173,0.6)] transition-colors duration-500 hover:text-[rgba(220,210,180,0.85)]"
+              >
+                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+                  <path d="M2.5 2.5h6.5l2.5 2.5v6.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5Z" stroke="currentColor" strokeWidth="1" />
+                  <path d="M9 2.5V5h2.5" stroke="currentColor" strokeWidth="1" />
+                  <path d="M4.5 7.5h5M4.5 9.5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
+                </svg>
+                <span>翻开这页笺</span>
+              </button>
+            </div>
+          ) : null}
+
           {canEditNote ? (
             <div className="mb-12">
               <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
@@ -691,6 +711,15 @@ function DetailBody(props: {
           </button>
         </div>
       </div>
+
+      <LetterViewer
+        open={viewerOpen}
+        doubtText={props.doubt.rawText}
+        lines={[firstTrackNode, lastTrackNode !== firstTrackNode ? lastTrackNode : "", props.noteText].filter(Boolean)}
+        writtenAt={new Date(props.doubt.createdAt)}
+        frozen
+        onClose={() => setViewerOpen(false)}
+      />
     </div>
   );
 }
