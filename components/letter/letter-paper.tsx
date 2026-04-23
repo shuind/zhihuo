@@ -4,19 +4,31 @@ import { forwardRef } from "react";
 import { cn } from "@/lib/utils";
 import { LetterSprite } from "./letter-sprite";
 import { MoonGlyph } from "./moon-glyph";
+import { PaperOrnament } from "./paper-ornament";
 import type { MoonPhase } from "@/lib/solar-terms";
 
-export type PaperVariant = "plain" | "vellum" | "ink";
+export type PaperVariant = "plain" | "vellum" | "ink" | "rice" | "tide" | "clay";
+
+export const VARIANT_META: Record<
+  PaperVariant,
+  { label: string; hint: string }
+> = {
+  plain: { label: "素笺", hint: "米色虚线 · 白日" },
+  vellum: { label: "羊皮金", hint: "深褐金字 · 冻结" },
+  ink: { label: "夜墨", hint: "深灰银蓝 · 夜里" },
+  rice: { label: "宣纸", hint: "浅白淡墨 · 朱印" },
+  tide: { label: "潮汐", hint: "青蓝水纹 · 细金" },
+  clay: { label: "陶土", hint: "赤陶朱砂 · 古意" }
+};
 
 export type LetterPaperProps = {
   variant: PaperVariant;
   title: string;
   lines: string[];
-  dateLabel: string;        // 例如 "2026 / 4 / 23"
-  solarTermLabel: string;   // 例如 "谷雨·第五日"
+  dateLabel: string;
+  solarTermLabel: string;
   moon: MoonPhase;
   authorName?: string;
-  /** 小动物墨色淡化（0 - 1） */
   spriteFade?: number;
   className?: string;
 };
@@ -25,7 +37,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
   { variant, title, lines, dateLabel, solarTermLabel, moon, authorName = "shuind", spriteFade = 0, className },
   ref
 ) {
-  const palette = getPalette(variant);
+  const p = getPalette(variant);
 
   return (
     <div
@@ -35,20 +47,22 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
         className
       )}
       style={{
-        background: palette.bg,
-        color: palette.ink,
-        fontFamily: palette.font,
-        ["--sprite-stroke" as string]: palette.sprite
+        background: p.bg,
+        color: p.ink,
+        fontFamily: p.font
       }}
     >
-      {/* 纸张纹理层 */}
+      {/* 底层纹理 */}
       <div
         aria-hidden
         className="pointer-events-none absolute inset-0"
-        style={{ background: palette.texture, mixBlendMode: palette.textureBlend }}
+        style={{ background: p.texture, mixBlendMode: p.textureBlend }}
       />
 
-      {/* 虚线格子（素笺才有） */}
+      {/* 装饰（每种质感独立 SVG） */}
+      <PaperOrnament variant={variant} palette={p} />
+
+      {/* 素笺的虚线格 */}
       {variant === "plain" && (
         <div
           aria-hidden
@@ -60,31 +74,42 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
         />
       )}
 
-      {/* 顶部：标题与日期 */}
+      {/* 宣纸的墨渍 */}
+      {variant === "rice" && (
+        <div
+          aria-hidden
+          className="pointer-events-none absolute inset-0"
+          style={{
+            background:
+              "radial-gradient(ellipse 180px 60px at 70% 20%, rgba(60,50,40,0.06), transparent 70%), radial-gradient(ellipse 140px 50px at 20% 85%, rgba(80,60,40,0.07), transparent 70%)"
+          }}
+        />
+      )}
+
+      {/* 顶部 */}
       <header className="relative z-10 flex items-start justify-between px-8 pt-7">
         <div className="flex items-center gap-2">
           <span
             className="text-[11px] tracking-[0.3em] uppercase"
-            style={{ color: palette.subtle }}
+            style={{ color: p.subtle }}
           >
-            {variant === "vellum" ? "Doubt · No." : "知惑"}
+            {getCorner(variant)}
           </span>
-          <span className="h-px w-12" style={{ background: palette.rule }} />
+          <span className="h-px w-12" style={{ background: p.rule }} />
         </div>
         <div
           className="flex items-center gap-2 text-[11px] tracking-[0.25em]"
-          style={{ color: palette.subtle }}
+          style={{ color: p.subtle }}
         >
-          <MoonGlyph phase={moon} size={12} lit={palette.moonLit} dark={palette.moonDark} />
+          <MoonGlyph phase={moon} size={12} lit={p.moonLit} dark={p.moonDark} />
           <span>{dateLabel}</span>
         </div>
       </header>
 
-      {/* 节气微章 */}
       <div className="relative z-10 px-8 pt-2">
         <span
           className="text-[11px] tracking-[0.2em]"
-          style={{ color: palette.subtle }}
+          style={{ color: p.subtle }}
         >
           {solarTermLabel}
         </span>
@@ -95,9 +120,12 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
         <h1
           className={cn(
             "text-balance leading-[1.45] tracking-[0.02em]",
-            variant === "vellum" ? "text-[22px] italic" : "text-[26px]"
+            variant === "vellum" || variant === "tide" ? "text-[22px] italic" : "text-[26px]"
           )}
-          style={{ color: palette.titleInk, fontWeight: variant === "ink" ? 300 : 400 }}
+          style={{
+            color: p.titleInk,
+            fontWeight: variant === "ink" ? 300 : 400
+          }}
         >
           {title}
         </h1>
@@ -107,10 +135,10 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
             <p
               key={i}
               className={cn(
-                "leading-[1.9] tracking-[0.02em]",
-                variant === "vellum" ? "text-[15px] italic" : "text-[16px]"
+                "leading-[1.95] tracking-[0.02em]",
+                variant === "vellum" || variant === "tide" ? "text-[15px] italic" : "text-[16px]"
               )}
-              style={{ color: palette.bodyInk }}
+              style={{ color: p.bodyInk }}
             >
               {line}
             </p>
@@ -118,23 +146,23 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
         </div>
       </main>
 
-      {/* 底部：署名 + 小动物 */}
+      {/* 底部 */}
       <footer className="relative z-10 flex items-end justify-between px-8 pb-7 pt-4">
         <div className="flex flex-col gap-1">
           <span
             className="text-[11px] tracking-[0.2em]"
-            style={{ color: palette.subtle }}
+            style={{ color: p.subtle }}
           >
             {authorName}
           </span>
           <span
             className="text-[10px] tracking-[0.2em]"
-            style={{ color: palette.subtleSoft }}
+            style={{ color: p.subtleSoft }}
           >
             由排版小动物制作
           </span>
         </div>
-        <div className="h-[70px] w-[78px]" style={{ color: palette.sprite }}>
+        <div className="h-[70px] w-[78px]" style={{ color: p.sprite }}>
           <LetterSprite fade={spriteFade} className="h-full w-full" />
         </div>
       </footer>
@@ -142,9 +170,18 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
   );
 });
 
-/* ------------------------------------------------------------------ */
+function getCorner(v: PaperVariant): string {
+  switch (v) {
+    case "vellum": return "Doubt · No.";
+    case "ink": return "Nightnote";
+    case "rice": return "宣 · 知惑";
+    case "tide": return "Tide · 潮";
+    case "clay": return "陶 · 壹";
+    default: return "知惑";
+  }
+}
 
-type Palette = {
+export type Palette = {
   bg: string;
   texture: string;
   textureBlend: React.CSSProperties["mixBlendMode"];
@@ -155,6 +192,7 @@ type Palette = {
   subtleSoft: string;
   rule: string;
   sprite: string;
+  accent: string;
   moonLit: string;
   moonDark: string;
   font: string;
@@ -163,7 +201,6 @@ type Palette = {
 function getPalette(variant: PaperVariant): Palette {
   switch (variant) {
     case "plain":
-      // 素笺 · TinyType 风
       return {
         bg: "linear-gradient(180deg, #f7f1e0 0%, #f2e9d2 100%)",
         texture:
@@ -176,12 +213,12 @@ function getPalette(variant: PaperVariant): Palette {
         subtleSoft: "rgba(120,100,70,0.45)",
         rule: "rgba(120,100,70,0.35)",
         sprite: "rgba(90,74,50,0.85)",
+        accent: "#b08a4a",
         moonLit: "#c9a567",
         moonDark: "#7a6338",
         font: 'var(--font-time-serif), "Noto Serif SC", "STSong", serif'
       };
     case "vellum":
-      // 羊皮金笺 · Sonnet 18 风（用于冻结的思路）
       return {
         bg: "linear-gradient(160deg, #3a2a1a 0%, #2a1d12 60%, #1e140b 100%)",
         texture:
@@ -194,12 +231,12 @@ function getPalette(variant: PaperVariant): Palette {
         subtleSoft: "rgba(220,180,110,0.32)",
         rule: "rgba(220,180,110,0.3)",
         sprite: "rgba(230,195,120,0.6)",
+        accent: "#e8c784",
         moonLit: "#f0d498",
         moonDark: "#6b4a22",
         font: 'var(--font-time-serif), "Noto Serif SC", serif'
       };
     case "ink":
-      // 夜墨笺 · Healthy 风（深色 + 银蓝光泽）
       return {
         bg: "linear-gradient(160deg, #141820 0%, #0c0f15 100%)",
         texture:
@@ -212,9 +249,64 @@ function getPalette(variant: PaperVariant): Palette {
         subtleSoft: "rgba(180,195,215,0.3)",
         rule: "rgba(180,195,215,0.25)",
         sprite: "rgba(200,214,228,0.55)",
+        accent: "#9fb8d4",
         moonLit: "#e4ecf5",
         moonDark: "#3a4656",
         font: 'var(--font-time-serif), "Noto Serif SC", serif'
+      };
+    case "rice":
+      return {
+        bg: "linear-gradient(180deg, #fbf8f1 0%, #f5efdf 100%)",
+        texture:
+          "radial-gradient(600px 400px at 10% 0%, rgba(220,210,180,0.35), transparent 60%), radial-gradient(500px 300px at 100% 100%, rgba(200,180,140,0.2), transparent 70%)",
+        textureBlend: "multiply",
+        ink: "#2a2420",
+        titleInk: "#1a1612",
+        bodyInk: "#342c26",
+        subtle: "rgba(60,50,40,0.55)",
+        subtleSoft: "rgba(60,50,40,0.3)",
+        rule: "rgba(60,50,40,0.25)",
+        sprite: "rgba(40,30,20,0.8)",
+        accent: "#b93a2a",
+        moonLit: "#4a3a2a",
+        moonDark: "#bfb09a",
+        font: 'var(--font-time-serif), "Noto Serif SC", "STKaiti", "KaiTi", serif'
+      };
+    case "tide":
+      return {
+        bg: "linear-gradient(170deg, #0f2a33 0%, #0b1f28 50%, #081520 100%)",
+        texture:
+          "radial-gradient(900px 500px at 30% 0%, rgba(100,180,190,0.12), transparent 60%), radial-gradient(700px 400px at 80% 80%, rgba(180,150,90,0.08), transparent 70%)",
+        textureBlend: "normal",
+        ink: "#cfe4e8",
+        titleInk: "#e8d9a8",
+        bodyInk: "#b6ced2",
+        subtle: "rgba(200,220,220,0.55)",
+        subtleSoft: "rgba(200,220,220,0.3)",
+        rule: "rgba(200,220,220,0.25)",
+        sprite: "rgba(220,200,140,0.55)",
+        accent: "#d9b87a",
+        moonLit: "#e8d9a8",
+        moonDark: "#2a3c40",
+        font: 'var(--font-time-serif), "Noto Serif SC", serif'
+      };
+    case "clay":
+      return {
+        bg: "linear-gradient(170deg, #d9a07a 0%, #c07e58 60%, #a86345 100%)",
+        texture:
+          "radial-gradient(500px 350px at 20% 10%, rgba(255,220,180,0.22), transparent 60%), radial-gradient(400px 300px at 90% 90%, rgba(60,20,10,0.12), transparent 70%), repeating-radial-gradient(circle at 50% 50%, transparent 0 20px, rgba(60,20,10,0.03) 20px 21px)",
+        textureBlend: "multiply",
+        ink: "#3a1a10",
+        titleInk: "#2a1008",
+        bodyInk: "#4a2418",
+        subtle: "rgba(60,20,10,0.6)",
+        subtleSoft: "rgba(60,20,10,0.35)",
+        rule: "rgba(60,20,10,0.3)",
+        sprite: "rgba(40,15,8,0.85)",
+        accent: "#8a1a10",
+        moonLit: "#3a1a10",
+        moonDark: "#d9a07a",
+        font: 'var(--font-time-serif), "Noto Serif SC", "STKaiti", serif'
       };
   }
 }
