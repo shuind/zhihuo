@@ -38,16 +38,14 @@
       POSTGRES_USER: ${POSTGRES_USER:-zhihuo}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-zhihuo_change_me}
       TZ: ${TZ:-Asia/Shanghai}
-    ports:
-      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - zhihuo-pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-zhihuo} -d ${POSTGRES_DB:-zhihuo}"]
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -p 5432 -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
-      retries: 5
-      start_period: 10s
+      retries: 12
+      start_period: 30s
     logging:
       driver: json-file
       options:

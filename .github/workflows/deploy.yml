@@ -80,7 +80,11 @@ jobs:
             fetch-retry-maxtimeout=120000
             network-timeout=600000
             EOF
-            docker compose up -d --build --pull never
+            docker compose up -d --build --pull never || {
+              docker compose ps || true
+              docker compose logs --tail=200 postgres app || true
+              exit 1
+            }
             docker compose ps
             for i in {1..30}; do
               if curl -sf http://127.0.0.1:3000/v1/health >/dev/null; then
