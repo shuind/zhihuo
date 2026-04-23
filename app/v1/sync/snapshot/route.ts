@@ -20,6 +20,17 @@ export const GET = withApiRoute("sync.snapshot.get", async (request: NextRequest
 
   return okJson({
     revision: snapshot.revision,
+    lastSequence: snapshot.lastSequence,
+    repairItems: snapshot.repairItems.map((item) => ({
+      id: item.id,
+      clientMutationId: item.client_mutation_id,
+      op: item.op,
+      payload: item.payload,
+      reason: item.reason,
+      destinationClass: item.destination_class,
+      originalTargetId: item.original_target_id,
+      createdAt: item.created_at
+    })),
     life: snapshot.life,
     thinking: snapshot.thinking,
     thinking_views: thinkingViews

@@ -71,6 +71,8 @@ export type OfflineOwnerKey = `guest:${string}` | `user:${string}`;
 export type QueuedMutation = {
   id: string;
   ownerKey: OfflineOwnerKey;
+  deviceId: string;
+  clientOrder: number;
   route: string;
   method: "POST" | "PUT" | "DELETE";
   op: string;
@@ -187,9 +189,22 @@ function normalizeOfflineSnapshot(raw: OfflineSnapshot): OfflineSnapshot {
 }
 
 function normalizeQueuedMutation(raw: QueuedMutation, fallbackOwnerKey: OfflineOwnerKey): QueuedMutation {
+  const fallbackDeviceId =
+    fallbackOwnerKey.startsWith("guest:") || fallbackOwnerKey.startsWith("user:")
+      ? fallbackOwnerKey.slice(fallbackOwnerKey.indexOf(":") + 1)
+      : getOrCreateLocalProfileId();
+  const createdAtMs = new Date(typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString()).getTime();
   return {
     ...cloneValue(raw),
     ownerKey: typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey,
+    deviceId: typeof (raw as { deviceId?: unknown }).deviceId === "string" && String((raw as { deviceId?: unknown }).deviceId).trim()
+      ? String((raw as { deviceId?: unknown }).deviceId)
+      : fallbackDeviceId,
+    clientOrder: Number.isFinite((raw as { clientOrder?: unknown }).clientOrder)
+      ? Number((raw as { clientOrder?: unknown }).clientOrder)
+      : Number.isFinite(createdAtMs)
+        ? createdAtMs
+        : Date.now(),
     op: typeof raw.op === "string" && raw.op.trim() ? raw.op : raw.route,
     entityType:
       raw.entityType === "life" || raw.entityType === "thinking" || raw.entityType === "scratch" || raw.entityType === "system"
@@ -564,7 +579,7 @@ export async function listOfflineMutationsByOwner(ownerKey: OfflineOwnerKey, now
           .filter((item) => item.ownerKey === ownerKey)
           .filter((item) => item.status !== "acked" && item.status !== "dead_letter")
           .filter((item) => Number.isFinite(item.nextRetryAt) && item.nextRetryAt <= now)
-          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+          .sort((a, b) => a.clientOrder - b.clientOrder || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
       );
     };
   });
@@ -585,7 +600,7 @@ export async function listOfflineMutations(now = Date.now()): Promise<QueuedMuta
           .map((item) => normalizeQueuedMutation(item, getGuestOwnerKey(getOrCreateLocalProfileId())))
           .filter((item) => item.status !== "acked" && item.status !== "dead_letter")
           .filter((item) => Number.isFinite(item.nextRetryAt) && item.nextRetryAt <= now)
-          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+          .sort((a, b) => a.clientOrder - b.clientOrder || new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
       );
     };
   });

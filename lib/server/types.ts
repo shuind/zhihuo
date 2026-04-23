@@ -121,6 +121,8 @@ export type DbState = {
   audit_logs: AuditLogRecord[];
   user_sync_state: UserSyncStateRecord[];
   applied_client_mutations: AppliedClientMutationRecord[];
+  sync_operation_log: SyncOperationLogRecord[];
+  sync_repair_items: SyncRepairItemRecord[];
 };
 
 export type UserRecord = {
@@ -156,6 +158,7 @@ export type AuditLogRecord = {
 export type UserSyncStateRecord = {
   user_id: string;
   revision: number;
+  last_sequence: number;
   updated_at: string;
 };
 
@@ -167,6 +170,33 @@ export type AppliedClientMutationRecord = {
   base_revision: number;
   applied_revision: number;
   created_at: string;
+};
+
+export type SyncOperationLogRecord = {
+  id: string;
+  user_id: string;
+  client_mutation_id: string;
+  device_id: string;
+  client_order: number;
+  client_updated_at: string | null;
+  op: string;
+  payload: Record<string, unknown>;
+  applied_revision: number;
+  server_sequence: number;
+  created_at: string;
+};
+
+export type SyncRepairItemRecord = {
+  id: string;
+  user_id: string;
+  client_mutation_id: string;
+  op: string;
+  payload: Record<string, unknown>;
+  reason: string;
+  destination_class: string | null;
+  original_target_id: string | null;
+  created_at: string;
+  resolved_at: string | null;
 };
 
 export type ThinkingSnapshot = {

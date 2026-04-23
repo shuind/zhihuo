@@ -105,6 +105,8 @@ async function run() {
   const syncState = await request("GET", "/v1/sync/state");
   assert(syncState.status === 200, `sync state failed: ${syncState.status}`);
   assert(typeof syncState.json?.revision === "number", "sync state should include revision");
+  assert(typeof syncState.json?.lastSequence === "number", "sync state should include lastSequence");
+  assert(typeof syncState.json?.repairCount === "number", "sync state should include repairCount");
   assert(typeof syncState.json?.server_time === "string", "sync state should include server_time");
 
   const monitor = await request("GET", "/v1/system/monitor");
@@ -251,6 +253,107 @@ async function run() {
     persistBackgroundAsset.json?.background_selected_asset_id === imageAssetId,
     "background asset update should persist selected asset id"
   );
+
+  const syncScratchForFeed = await request("POST", "/v1/thinking/scratch", {
+    raw_text: "离线后补进时间的随记"
+  });
+  assert(syncScratchForFeed.status === 201, `sync scratch for feed failed: ${syncScratchForFeed.status}`);
+  const syncScratchFeedId = syncScratchForFeed.json?.scratch?.id;
+  assert(typeof syncScratchFeedId === "string", "sync scratch feed id missing");
+
+  const syncScratchForDelete = await request("POST", "/v1/thinking/scratch", {
+    raw_text: "离线后会删除的随记"
+  });
+  assert(syncScratchForDelete.status === 201, `sync scratch for delete failed: ${syncScratchForDelete.status}`);
+  const syncScratchDeleteId = syncScratchForDelete.json?.scratch?.id;
+  assert(typeof syncScratchDeleteId === "string", "sync scratch delete id missing");
+
+  const syncStateBeforeMutations = await request("GET", "/v1/sync/state");
+  assert(syncStateBeforeMutations.status === 200, `sync state before mutations failed: ${syncStateBeforeMutations.status}`);
+  const syncMutationBatch = await request("POST", "/v1/sync/mutations", {
+    baseRevision: syncStateBeforeMutations.json?.revision,
+    deviceId: "api-test-device",
+    mutations: [
+      {
+        clientMutationId: `sync-archive-${Date.now()}`,
+        clientOrder: 1,
+        op: `/v1/doubts/${doubtId}/archive`,
+        payload: {},
+        clientTime: new Date().toISOString()
+      },
+      {
+        clientMutationId: `sync-feed-${Date.now()}`,
+        clientOrder: 2,
+        op: `/v1/thinking/scratch/${syncScratchFeedId}/feed-to-time`,
+        payload: {},
+        clientTime: new Date().toISOString()
+      },
+      {
+        clientMutationId: `sync-delete-${Date.now()}`,
+        clientOrder: 3,
+        op: `/v1/thinking/scratch/${syncScratchDeleteId}/delete`,
+        payload: {},
+        clientTime: new Date().toISOString()
+      },
+      {
+        clientMutationId: `sync-image-${Date.now()}`,
+        clientOrder: 4,
+        op: `/v1/thinking/nodes/${firstNodeId}/image`,
+        payload: { image_asset_id: imageAssetId },
+        clientTime: new Date().toISOString()
+      },
+      {
+        clientMutationId: `sync-background-${Date.now()}`,
+        clientOrder: 5,
+        op: `/v1/thinking/spaces/${spaceId}/background`,
+        payload: {
+          background_text:
+            "这是通过同步变更写入的背景说明，用来验证离线后的背景更新不会在拉取快照时丢失，同时也确认媒体选中状态可以一起保留和回放。".repeat(2),
+          background_asset_ids: [imageAssetId],
+          background_selected_asset_id: imageAssetId
+        },
+        clientTime: new Date().toISOString()
+      }
+    ]
+  });
+  assert(syncMutationBatch.status === 200, `sync mutation batch failed: ${syncMutationBatch.status}`);
+  assert(Array.isArray(syncMutationBatch.json?.applied), "sync mutation batch should return applied array");
+  assert(Array.isArray(syncMutationBatch.json?.skipped), "sync mutation batch should return skipped array");
+  assert(Array.isArray(syncMutationBatch.json?.repairItems), "sync mutation batch should return repairItems array");
+  assert(syncMutationBatch.json?.repairItems?.length === 0, "supported sync mutation batch should not produce repair items");
+  assert(typeof syncMutationBatch.json?.lastSequence === "number", "sync mutation batch should return lastSequence");
+
+  const doubtsAfterSyncMutations = await request("GET", "/v1/doubts?range=all");
+  assert(doubtsAfterSyncMutations.status === 200, `doubts after sync mutations failed: ${doubtsAfterSyncMutations.status}`);
+  const archivedOriginalDoubt = doubtsAfterSyncMutations.json?.doubts?.find((item) => item.id === doubtId);
+  assert(typeof archivedOriginalDoubt?.archived_at === "string", "sync archive mutation should archive the original doubt");
+  const fedBySync = doubtsAfterSyncMutations.json?.doubts?.find((item) => item.raw_text === "离线后补进时间的随记");
+  assert(typeof fedBySync?.id === "string", "sync feed-to-time mutation should create a time doubt");
+
+  const scratchListAfterSyncMutations = await request("GET", "/v1/thinking/scratch");
+  assert(scratchListAfterSyncMutations.status === 200, `scratch list after sync mutations failed: ${scratchListAfterSyncMutations.status}`);
+  assert(
+    !scratchListAfterSyncMutations.json?.scratch?.some((item) => item.id === syncScratchDeleteId),
+    "sync delete mutation should remove scratch from list"
+  );
+  assert(
+    !scratchListAfterSyncMutations.json?.scratch?.some((item) => item.id === syncScratchFeedId),
+    "sync feed-to-time mutation should hide fed scratch from list"
+  );
+
+  const detailAfterSyncMutations = await request("GET", `/v1/thinking/spaces/${spaceId}`);
+  assert(detailAfterSyncMutations.status === 200, `detail after sync mutations failed: ${detailAfterSyncMutations.status}`);
+  const imageNodeAfterSync = detailAfterSyncMutations.json?.tracks?.flatMap((track) => track.nodes ?? []).find((node) => node.id === firstNodeId);
+  assert(imageNodeAfterSync?.image_asset_id === imageAssetId, "sync image mutation should persist node image asset");
+  assert(
+    detailAfterSyncMutations.json?.background_selected_asset_id === imageAssetId,
+    "sync background mutation should preserve selected asset id"
+  );
+
+  const syncSnapshot = await request("GET", "/v1/sync/snapshot");
+  assert(syncSnapshot.status === 200, `sync snapshot failed: ${syncSnapshot.status}`);
+  assert(typeof syncSnapshot.json?.lastSequence === "number", "sync snapshot should include lastSequence");
+  assert(Array.isArray(syncSnapshot.json?.repairItems), "sync snapshot should include repairItems array");
 
   const preview = await request("POST", `/v1/thinking/spaces/${spaceId}/organize-preview`, {});
   assert(preview.status === 200, `organize preview failed: ${preview.status}`);

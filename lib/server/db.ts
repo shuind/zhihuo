@@ -60,7 +60,9 @@ const EMPTY_DB: DbState = {
   users: [],
   audit_logs: [],
   user_sync_state: [],
-  applied_client_mutations: []
+  applied_client_mutations: [],
+  sync_operation_log: [],
+  sync_repair_items: []
 };
 
 let writeQueue: Promise<void> = Promise.resolve();
@@ -203,6 +205,9 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
           .map((row) => ({
             user_id: row.user_id,
             revision: Number.isFinite(row.revision) ? Number(row.revision) : 0,
+            last_sequence: Number.isFinite((row as { last_sequence?: unknown }).last_sequence)
+              ? Number((row as { last_sequence?: unknown }).last_sequence)
+              : 0,
             updated_at: typeof row.updated_at === "string" ? row.updated_at : nowIso()
           }))
       : [],
@@ -217,6 +222,45 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
             base_revision: Number.isFinite(row.base_revision) ? Number(row.base_revision) : 0,
             applied_revision: Number.isFinite(row.applied_revision) ? Number(row.applied_revision) : 0,
             created_at: typeof row.created_at === "string" ? row.created_at : nowIso()
+          }))
+      : [],
+    sync_operation_log: Array.isArray(input?.sync_operation_log)
+      ? input.sync_operation_log
+          .filter((row) => row && typeof row.id === "string" && typeof row.user_id === "string")
+          .map((row) => ({
+            id: row.id,
+            user_id: row.user_id,
+            client_mutation_id: typeof row.client_mutation_id === "string" ? row.client_mutation_id : "",
+            device_id: typeof row.device_id === "string" ? row.device_id : "",
+            client_order: Number.isFinite(row.client_order) ? Number(row.client_order) : 0,
+            client_updated_at: typeof row.client_updated_at === "string" ? row.client_updated_at : null,
+            op: typeof row.op === "string" ? row.op : "",
+            payload:
+              row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+                ? (row.payload as Record<string, unknown>)
+                : {},
+            applied_revision: Number.isFinite(row.applied_revision) ? Number(row.applied_revision) : 0,
+            server_sequence: Number.isFinite(row.server_sequence) ? Number(row.server_sequence) : 0,
+            created_at: typeof row.created_at === "string" ? row.created_at : nowIso()
+          }))
+      : [],
+    sync_repair_items: Array.isArray(input?.sync_repair_items)
+      ? input.sync_repair_items
+          .filter((row) => row && typeof row.id === "string" && typeof row.user_id === "string")
+          .map((row) => ({
+            id: row.id,
+            user_id: row.user_id,
+            client_mutation_id: typeof row.client_mutation_id === "string" ? row.client_mutation_id : "",
+            op: typeof row.op === "string" ? row.op : "",
+            payload:
+              row.payload && typeof row.payload === "object" && !Array.isArray(row.payload)
+                ? (row.payload as Record<string, unknown>)
+                : {},
+            reason: typeof row.reason === "string" ? row.reason : "repair_required",
+            destination_class: typeof row.destination_class === "string" ? row.destination_class : null,
+            original_target_id: typeof row.original_target_id === "string" ? row.original_target_id : null,
+            created_at: typeof row.created_at === "string" ? row.created_at : nowIso(),
+            resolved_at: typeof row.resolved_at === "string" ? row.resolved_at : null
           }))
       : []
   };
@@ -383,7 +427,9 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     emailVerificationCodes,
     auditLogs,
     userSyncState,
-    appliedClientMutations
+    appliedClientMutations,
+    syncOperationLog,
+    syncRepairItems
   ] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
     client.query("SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"),
@@ -409,9 +455,15 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
       "SELECT id, email, purpose, code_hash, expires_at, consumed_at, created_at, last_sent_at, send_count FROM email_verification_codes"
     ),
     client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs"),
-    client.query("SELECT user_id, revision, updated_at FROM user_sync_state"),
+    client.query("SELECT user_id, revision, last_sequence, updated_at FROM user_sync_state"),
     client.query(
       "SELECT id, user_id, client_mutation_id, op, base_revision, applied_revision, created_at FROM applied_client_mutations"
+    ),
+    client.query(
+      "SELECT id, user_id, client_mutation_id, device_id, client_order, client_updated_at, op, payload, applied_revision, server_sequence, created_at FROM sync_operation_log"
+    ),
+    client.query(
+      "SELECT id, user_id, client_mutation_id, op, payload, reason, destination_class, original_target_id, created_at, resolved_at FROM sync_repair_items"
     )
   ]);
 
@@ -498,13 +550,29 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     audit_logs: auditLogs.rows as DbState["audit_logs"],
     user_sync_state: userSyncState.rows.map((row) => ({
       ...row,
-      revision: Number(row.revision)
+      revision: Number(row.revision),
+      last_sequence: Number(row.last_sequence ?? 0)
     })) as DbState["user_sync_state"],
     applied_client_mutations: appliedClientMutations.rows.map((row) => ({
       ...row,
       base_revision: Number(row.base_revision),
       applied_revision: Number(row.applied_revision)
-    })) as DbState["applied_client_mutations"]
+    })) as DbState["applied_client_mutations"],
+    sync_operation_log: syncOperationLog.rows.map((row) => ({
+      ...row,
+      client_order: Number(row.client_order ?? 0),
+      client_updated_at: typeof row.client_updated_at === "string" ? row.client_updated_at : null,
+      payload: row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? row.payload : {},
+      applied_revision: Number(row.applied_revision ?? 0),
+      server_sequence: Number(row.server_sequence ?? 0)
+    })) as DbState["sync_operation_log"],
+    sync_repair_items: syncRepairItems.rows.map((row) => ({
+      ...row,
+      payload: row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? row.payload : {},
+      destination_class: typeof row.destination_class === "string" ? row.destination_class : null,
+      original_target_id: typeof row.original_target_id === "string" ? row.original_target_id : null,
+      resolved_at: typeof row.resolved_at === "string" ? row.resolved_at : null
+    })) as DbState["sync_repair_items"]
   });
 }
 
@@ -761,9 +829,9 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     {
       table: "user_sync_state",
       idColumn: "user_id",
-      columns: ["user_id", "revision", "updated_at"],
+      columns: ["user_id", "revision", "last_sequence", "updated_at"],
       conflictColumns: ["user_id"],
-      rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.updated_at])
+      rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.last_sequence, row.updated_at])
     },
     {
       table: "applied_client_mutations",
@@ -779,6 +847,66 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.applied_revision,
         row.created_at
       ])
+    },
+    {
+      table: "sync_operation_log",
+      idColumn: "id",
+      columns: [
+        "id",
+        "user_id",
+        "client_mutation_id",
+        "device_id",
+        "client_order",
+        "client_updated_at",
+        "op",
+        "payload",
+        "applied_revision",
+        "server_sequence",
+        "created_at"
+      ],
+      conflictColumns: ["id"],
+      rows: db.sync_operation_log.map((row) => [
+        row.id,
+        row.user_id,
+        row.client_mutation_id,
+        row.device_id,
+        row.client_order,
+        row.client_updated_at,
+        row.op,
+        row.payload,
+        row.applied_revision,
+        row.server_sequence,
+        row.created_at
+      ])
+    },
+    {
+      table: "sync_repair_items",
+      idColumn: "id",
+      columns: [
+        "id",
+        "user_id",
+        "client_mutation_id",
+        "op",
+        "payload",
+        "reason",
+        "destination_class",
+        "original_target_id",
+        "created_at",
+        "resolved_at"
+      ],
+      conflictColumns: ["id"],
+      rows: db.sync_repair_items.map((row) => [
+        row.id,
+        row.user_id,
+        row.client_mutation_id,
+        row.op,
+        row.payload,
+        row.reason,
+        row.destination_class,
+        row.original_target_id,
+        row.created_at,
+        row.resolved_at
+      ])
     }
   ];
 
@@ -792,6 +920,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "audit_logs",
     "user_sync_state",
     "applied_client_mutations",
+    "sync_operation_log",
+    "sync_repair_items",
     "thinking_media_assets",
     "email_verification_codes",
     "doubt_notes",
@@ -818,6 +948,8 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     "thinking_media_assets",
     "email_verification_codes",
     "audit_logs",
+    "sync_repair_items",
+    "sync_operation_log",
     "applied_client_mutations",
     "user_sync_state",
     "users"
@@ -842,7 +974,9 @@ type ScopedTable =
   | "thinking_media_assets"
   | "audit_logs"
   | "user_sync_state"
-  | "applied_client_mutations";
+  | "applied_client_mutations"
+  | "sync_operation_log"
+  | "sync_repair_items";
 
 function createEmptyDbState(): DbState {
   return {
@@ -859,7 +993,9 @@ function createEmptyDbState(): DbState {
     users: [],
     audit_logs: [],
     user_sync_state: [],
-    applied_client_mutations: []
+    applied_client_mutations: [],
+    sync_operation_log: [],
+    sync_repair_items: []
   };
 }
 
@@ -1006,10 +1142,11 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
       continue;
     }
     if (table === "user_sync_state") {
-      const { rows } = await client.query("SELECT user_id, revision, updated_at FROM user_sync_state");
+      const { rows } = await client.query("SELECT user_id, revision, last_sequence, updated_at FROM user_sync_state");
       state.user_sync_state = rows.map((row) => ({
         ...row,
-        revision: Number(row.revision)
+        revision: Number(row.revision),
+        last_sequence: Number(row.last_sequence ?? 0)
       })) as DbState["user_sync_state"];
       continue;
     }
@@ -1022,6 +1159,33 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
         base_revision: Number(row.base_revision),
         applied_revision: Number(row.applied_revision)
       })) as DbState["applied_client_mutations"];
+      continue;
+    }
+    if (table === "sync_operation_log") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, client_mutation_id, device_id, client_order, client_updated_at, op, payload, applied_revision, server_sequence, created_at FROM sync_operation_log"
+      );
+      state.sync_operation_log = rows.map((row) => ({
+        ...row,
+        client_order: Number(row.client_order ?? 0),
+        client_updated_at: typeof row.client_updated_at === "string" ? row.client_updated_at : null,
+        payload: row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? row.payload : {},
+        applied_revision: Number(row.applied_revision ?? 0),
+        server_sequence: Number(row.server_sequence ?? 0)
+      })) as DbState["sync_operation_log"];
+      continue;
+    }
+    if (table === "sync_repair_items") {
+      const { rows } = await client.query(
+        "SELECT id, user_id, client_mutation_id, op, payload, reason, destination_class, original_target_id, created_at, resolved_at FROM sync_repair_items"
+      );
+      state.sync_repair_items = rows.map((row) => ({
+        ...row,
+        payload: row.payload && typeof row.payload === "object" && !Array.isArray(row.payload) ? row.payload : {},
+        destination_class: typeof row.destination_class === "string" ? row.destination_class : null,
+        original_target_id: typeof row.original_target_id === "string" ? row.original_target_id : null,
+        resolved_at: typeof row.resolved_at === "string" ? row.resolved_at : null
+      })) as DbState["sync_repair_items"];
     }
   }
   return normalizeDb(state);
@@ -1248,9 +1412,9 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       planByScope.set(item, {
         table: "user_sync_state",
         idColumn: "user_id",
-        columns: ["user_id", "revision", "updated_at"],
+        columns: ["user_id", "revision", "last_sequence", "updated_at"],
         conflictColumns: ["user_id"],
-        rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.updated_at])
+        rows: db.user_sync_state.map((row) => [row.user_id, row.revision, row.last_sequence, row.updated_at])
       });
       continue;
     }
@@ -1270,6 +1434,72 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.created_at
         ])
       });
+      continue;
+    }
+    if (item === "sync_operation_log") {
+      planByScope.set(item, {
+        table: "sync_operation_log",
+        idColumn: "id",
+        columns: [
+          "id",
+          "user_id",
+          "client_mutation_id",
+          "device_id",
+          "client_order",
+          "client_updated_at",
+          "op",
+          "payload",
+          "applied_revision",
+          "server_sequence",
+          "created_at"
+        ],
+        conflictColumns: ["id"],
+        rows: db.sync_operation_log.map((row) => [
+          row.id,
+          row.user_id,
+          row.client_mutation_id,
+          row.device_id,
+          row.client_order,
+          row.client_updated_at,
+          row.op,
+          row.payload,
+          row.applied_revision,
+          row.server_sequence,
+          row.created_at
+        ])
+      });
+      continue;
+    }
+    if (item === "sync_repair_items") {
+      planByScope.set(item, {
+        table: "sync_repair_items",
+        idColumn: "id",
+        columns: [
+          "id",
+          "user_id",
+          "client_mutation_id",
+          "op",
+          "payload",
+          "reason",
+          "destination_class",
+          "original_target_id",
+          "created_at",
+          "resolved_at"
+        ],
+        conflictColumns: ["id"],
+        rows: db.sync_repair_items.map((row) => [
+          row.id,
+          row.user_id,
+          row.client_mutation_id,
+          row.op,
+          row.payload,
+          row.reason,
+          row.destination_class,
+          row.original_target_id,
+          row.created_at,
+          row.resolved_at
+        ])
+      });
     }
   }
 
@@ -1280,6 +1510,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "audit_logs",
     "user_sync_state",
     "applied_client_mutations",
+    "sync_operation_log",
+    "sync_repair_items",
     "thinking_media_assets",
     "doubt_notes",
     "thinking_space_meta",
@@ -1304,6 +1536,8 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
     "thinking_scratch",
     "thinking_media_assets",
     "audit_logs",
+    "sync_repair_items",
+    "sync_operation_log",
     "applied_client_mutations",
     "user_sync_state"
   ];
@@ -1530,7 +1764,7 @@ export async function updateDbScoped(
   }
   const pool = getPool();
   if (!pool) return { ...EMPTY_DB };
-  const normalizedScope = normalizeScope([...scope, "user_sync_state", "applied_client_mutations"]);
+  const normalizedScope = normalizeScope([...scope, "user_sync_state", "applied_client_mutations", "sync_operation_log", "sync_repair_items"]);
   if (!normalizedScope.length) return { ...EMPTY_DB };
 
   await ensurePgReady();

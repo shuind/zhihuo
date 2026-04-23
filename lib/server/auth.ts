@@ -1,4 +1,6 @@
 import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import path from "node:path";
 
 import type { NextRequest } from "next/server";
 
@@ -8,25 +10,164 @@ const AUTH_COOKIE = "zhihuo_session";
 const DEFAULT_AUTH_SECRET = "zhihuo_dev_only_change_me";
 const SESSION_TTL_DAYS = 30;
 let warnedDefaultSecret = false;
+let warnedPersistedSecretFallback = false;
+let warnedGeneratedSecretFallback = false;
+let warnedPersistFailure = false;
+let cachedSecretState: AuthSecretState | null = null;
 
 type SessionPayload = {
   uid: string;
   exp: number;
 };
 
-function getSecret() {
-  const configured = process.env.AUTH_SECRET?.trim();
+type PersistedAuthSecretStore = {
+  active: string;
+  previous?: string[];
+  updated_at?: string;
+};
+
+type AuthSecretState = {
+  active: string;
+  previous: string[];
+  source: "env" | "runtime_file" | "generated" | "development_fallback" | "ci_fallback";
+};
+
+function runtimeDataDir() {
+  const configured = process.env.RUNTIME_DATA_DIR?.trim();
   if (configured) return configured;
+  return path.join(process.cwd(), "runtime-data");
+}
+
+function secretStorePath() {
+  return path.join(runtimeDataDir(), "auth-secret.json");
+}
+
+function uniqueSecrets(values: Array<string | null | undefined>) {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    result.push(trimmed);
+  }
+  return result;
+}
+
+function previousSecretsFromEnv() {
+  return uniqueSecrets((process.env.AUTH_SECRET_PREVIOUS ?? "").split(","));
+}
+
+function readPersistedSecretStore(): PersistedAuthSecretStore | null {
+  try {
+    const raw = readFileSync(secretStorePath(), "utf8");
+    const parsed = JSON.parse(raw) as Partial<PersistedAuthSecretStore>;
+    if (!parsed || typeof parsed.active !== "string" || !parsed.active.trim()) return null;
+    return {
+      active: parsed.active.trim(),
+      previous: Array.isArray(parsed.previous) ? uniqueSecrets(parsed.previous.filter((value) => typeof value === "string")) : [],
+      updated_at: typeof parsed.updated_at === "string" ? parsed.updated_at : undefined
+    };
+  } catch {
+    return null;
+  }
+}
+
+function persistSecretStore(store: PersistedAuthSecretStore) {
+  try {
+    mkdirSync(runtimeDataDir(), { recursive: true });
+    writeFileSync(
+      secretStorePath(),
+      JSON.stringify(
+        {
+          active: store.active,
+          previous: uniqueSecrets(store.previous ?? []),
+          updated_at: store.updated_at ?? new Date().toISOString()
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+  } catch (error) {
+    if (!warnedPersistFailure) {
+      warnedPersistFailure = true;
+      const message = error instanceof Error ? error.message : String(error);
+      console.warn(`[auth] failed to persist runtime secret store: ${message}`);
+    }
+  }
+}
+
+function buildSecretState(): AuthSecretState {
+  const configured = process.env.AUTH_SECRET?.trim();
+  const previousFromEnv = previousSecretsFromEnv();
+  const persisted = readPersistedSecretStore();
+
+  if (configured) {
+    const previous = uniqueSecrets([persisted?.active, ...(persisted?.previous ?? []), ...previousFromEnv]).filter(
+      (secret) => secret !== configured
+    );
+    const shouldPersist =
+      !persisted ||
+      persisted.active !== configured ||
+      previous.length !== (persisted.previous?.length ?? 0) ||
+      previous.some((secret, index) => secret !== persisted.previous?.[index]);
+    if (shouldPersist) {
+      persistSecretStore({
+        active: configured,
+        previous,
+        updated_at: new Date().toISOString()
+      });
+    }
+    return { active: configured, previous, source: "env" };
+  }
+
   const isCi = process.env.CI === "true";
   if (process.env.NODE_ENV === "production" && !isCi) {
-    throw new Error("AUTH_SECRET is required in production");
+    if (persisted?.active) {
+      if (!warnedPersistedSecretFallback) {
+        warnedPersistedSecretFallback = true;
+        console.warn("[auth] AUTH_SECRET is missing in production, falling back to persisted runtime secret");
+      }
+      return {
+        active: persisted.active,
+        previous: uniqueSecrets([...(persisted.previous ?? []), ...previousFromEnv]).filter(
+          (secret) => secret !== persisted.active
+        ),
+        source: "runtime_file"
+      };
+    }
+
+    const generated = randomBytes(32).toString("hex");
+    persistSecretStore({
+      active: generated,
+      previous: previousFromEnv,
+      updated_at: new Date().toISOString()
+    });
+    if (!warnedGeneratedSecretFallback) {
+      warnedGeneratedSecretFallback = true;
+      console.warn("[auth] AUTH_SECRET is missing in production, generated and persisted a new runtime secret");
+    }
+    return { active: generated, previous: previousFromEnv, source: "generated" };
   }
+
   if (!warnedDefaultSecret) {
     warnedDefaultSecret = true;
     const reason = isCi ? "ci fallback" : "development fallback";
     console.warn(`[auth] AUTH_SECRET is not set, using ${reason} secret`);
   }
-  return DEFAULT_AUTH_SECRET;
+  return {
+    active: DEFAULT_AUTH_SECRET,
+    previous: previousFromEnv,
+    source: isCi ? "ci_fallback" : "development_fallback"
+  };
+}
+
+function getSecretState() {
+  if (!cachedSecretState) {
+    cachedSecretState = buildSecretState();
+  }
+  return cachedSecretState;
 }
 
 function base64UrlEncode(value: string) {
@@ -37,8 +178,12 @@ function base64UrlDecode(value: string) {
   return Buffer.from(value, "base64url").toString("utf8");
 }
 
+function signWithSecret(payloadBase64: string, secret: string) {
+  return createHmac("sha256", secret).update(payloadBase64).digest("base64url");
+}
+
 function sign(payloadBase64: string) {
-  return createHmac("sha256", getSecret()).update(payloadBase64).digest("base64url");
+  return signWithSecret(payloadBase64, getSecretState().active);
 }
 
 export function getAuthCookieName() {
@@ -68,11 +213,14 @@ export function readSessionToken(token: string | undefined | null) {
   if (!token) return null;
   const [payloadBase64, signature] = token.split(".");
   if (!payloadBase64 || !signature) return null;
-  const expected = sign(payloadBase64);
+
   const sigBuffer = Buffer.from(signature);
-  const expectedBuffer = Buffer.from(expected);
-  if (sigBuffer.length !== expectedBuffer.length) return null;
-  if (!timingSafeEqual(sigBuffer, expectedBuffer)) return null;
+  const verificationSecrets = uniqueSecrets([getSecretState().active, ...getSecretState().previous]);
+  const matched = verificationSecrets.some((secret) => {
+    const expectedBuffer = Buffer.from(signWithSecret(payloadBase64, secret));
+    return sigBuffer.length === expectedBuffer.length && timingSafeEqual(sigBuffer, expectedBuffer);
+  });
+  if (!matched) return null;
 
   try {
     const payload = JSON.parse(base64UrlDecode(payloadBase64)) as SessionPayload;
@@ -105,7 +253,7 @@ export function generateEmailVerificationCode() {
 }
 
 export function hashEmailVerificationCode(email: string, purpose: "register" | "reset_password", code: string) {
-  return createHmac("sha256", getSecret()).update(`${purpose}:${email}:${code}`).digest("hex");
+  return createHmac("sha256", getSecretState().active).update(`${purpose}:${email}:${code}`).digest("hex");
 }
 
 export function verifyEmailVerificationCode(
@@ -114,9 +262,21 @@ export function verifyEmailVerificationCode(
   code: string,
   expectedHash: string
 ) {
-  const actual = hashEmailVerificationCode(email, purpose, code);
   const expectedBuffer = Buffer.from(expectedHash, "hex");
-  const actualBuffer = Buffer.from(actual, "hex");
-  if (expectedBuffer.length !== actualBuffer.length) return false;
-  return timingSafeEqual(expectedBuffer, actualBuffer);
+  const verificationSecrets = uniqueSecrets([getSecretState().active, ...getSecretState().previous]);
+  return verificationSecrets.some((secret) => {
+    const actual = createHmac("sha256", secret).update(`${purpose}:${email}:${code}`).digest("hex");
+    const actualBuffer = Buffer.from(actual, "hex");
+    return expectedBuffer.length === actualBuffer.length && timingSafeEqual(expectedBuffer, actualBuffer);
+  });
+}
+
+export function getAuthSecretStatus() {
+  const state = getSecretState();
+  return {
+    source: state.source,
+    runtime_store_path: secretStorePath(),
+    runtime_store_exists: existsSync(secretStorePath()),
+    previous_secret_count: state.previous.length
+  };
 }

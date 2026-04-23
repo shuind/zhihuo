@@ -11,7 +11,9 @@
   ThinkingSpaceMetaRecord,
   ThinkingSpaceRecord,
   UserSyncStateRecord,
-  AppliedClientMutationRecord
+  AppliedClientMutationRecord,
+  SyncOperationLogRecord,
+  SyncRepairItemRecord
 } from "@/lib/server/types";
 import {
   MAX_ACTIVE_SPACES,
@@ -89,6 +91,7 @@ function ensureUserSyncState(db: DbState, userId: string): UserSyncStateRecord {
   const created: UserSyncStateRecord = {
     user_id: userId,
     revision: 0,
+    last_sequence: 0,
     updated_at: nowIso()
   };
   db.user_sync_state.push(created);
@@ -99,11 +102,92 @@ export function getUserRevision(db: DbState, userId: string) {
   return db.user_sync_state.find((item) => item.user_id === userId)?.revision ?? 0;
 }
 
+export function getUserLastSequence(db: DbState, userId: string) {
+  return db.user_sync_state.find((item) => item.user_id === userId)?.last_sequence ?? 0;
+}
+
 export function bumpUserRevision(db: DbState, userId: string) {
   const state = ensureUserSyncState(db, userId);
   state.revision += 1;
   state.updated_at = nowIso();
   return state.revision;
+}
+
+export function appendSyncOperationLog(
+  db: DbState,
+  userId: string,
+  input: {
+    clientMutationId: string;
+    deviceId: string;
+    clientOrder: number;
+    clientUpdatedAt?: string | null;
+    op: string;
+    payload?: Record<string, unknown> | null;
+    appliedRevision: number;
+  }
+): SyncOperationLogRecord {
+  const state = ensureUserSyncState(db, userId);
+  state.last_sequence += 1;
+  state.updated_at = nowIso();
+  const record: SyncOperationLogRecord = {
+    id: createId(),
+    user_id: userId,
+    client_mutation_id: input.clientMutationId,
+    device_id: input.deviceId,
+    client_order: Number.isFinite(input.clientOrder) ? input.clientOrder : 0,
+    client_updated_at: typeof input.clientUpdatedAt === "string" ? input.clientUpdatedAt : null,
+    op: input.op,
+    payload: input.payload && typeof input.payload === "object" ? input.payload : {},
+    applied_revision: Number.isFinite(input.appliedRevision) ? input.appliedRevision : state.revision,
+    server_sequence: state.last_sequence,
+    created_at: nowIso()
+  };
+  db.sync_operation_log.push(record);
+  return record;
+}
+
+export function recordSyncRepairItem(
+  db: DbState,
+  userId: string,
+  input: {
+    clientMutationId: string;
+    op: string;
+    payload?: Record<string, unknown> | null;
+    reason: string;
+    destinationClass?: string | null;
+    originalTargetId?: string | null;
+  }
+): SyncRepairItemRecord {
+  const existing = db.sync_repair_items.find(
+    (item) => item.user_id === userId && item.client_mutation_id === input.clientMutationId && !item.resolved_at
+  );
+  if (existing) {
+    existing.reason = input.reason;
+    existing.destination_class = typeof input.destinationClass === "string" ? input.destinationClass : null;
+    existing.original_target_id = typeof input.originalTargetId === "string" ? input.originalTargetId : null;
+    existing.payload = input.payload && typeof input.payload === "object" ? input.payload : {};
+    return existing;
+  }
+  const repairItem: SyncRepairItemRecord = {
+    id: createId(),
+    user_id: userId,
+    client_mutation_id: input.clientMutationId,
+    op: input.op,
+    payload: input.payload && typeof input.payload === "object" ? input.payload : {},
+    reason: input.reason,
+    destination_class: typeof input.destinationClass === "string" ? input.destinationClass : null,
+    original_target_id: typeof input.originalTargetId === "string" ? input.originalTargetId : null,
+    created_at: nowIso(),
+    resolved_at: null
+  };
+  db.sync_repair_items.push(repairItem);
+  return repairItem;
+}
+
+export function listUserSyncRepairItems(db: DbState, userId: string) {
+  return db.sync_repair_items
+    .filter((item) => item.user_id === userId && !item.resolved_at)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
 export function findAppliedClientMutation(db: DbState, userId: string, clientMutationId: string) {
@@ -146,8 +230,12 @@ export function getUserSyncSnapshot(db: DbState, userId: string) {
   const notes = db.doubt_notes.filter((item) => doubtIds.has(item.doubt_id));
   const thinking = getThinkingSnapshot(db, userId);
   const revision = getUserRevision(db, userId);
+  const lastSequence = getUserLastSequence(db, userId);
+  const repairItems = listUserSyncRepairItems(db, userId);
   return {
     revision,
+    lastSequence,
+    repairItems,
     life: {
       doubts,
       notes
@@ -824,6 +912,15 @@ export function archiveDoubt(db: DbState, userId: string, doubtId: string) {
   return doubt;
 }
 
+export function ensureDoubtArchived(db: DbState, userId: string, doubtId: string) {
+  const doubt = requireDoubt(db, userId, doubtId);
+  if (!doubt) return { kind: "not_found" as const };
+  if (doubt.archived_at) return { kind: "ok" as const, doubt, changed: false as const };
+  doubt.archived_at = nowIso();
+  bumpUserRevision(db, userId);
+  return { kind: "ok" as const, doubt, changed: true as const };
+}
+
 export function deleteDoubt(db: DbState, userId: string, doubtId: string) {
   const doubt = requireDoubt(db, userId, doubtId);
   if (!doubt) return false;
@@ -1081,7 +1178,16 @@ export function deleteThinkingScratch(db: DbState, userId: string, scratchId: st
   return scratch;
 }
 
-export function convertScratchToSpace(db: DbState, userId: string, scratchId: string) {
+export function convertScratchToSpace(
+  db: DbState,
+  userId: string,
+  scratchId: string,
+  options?: {
+    clientSpaceId?: string | null;
+    clientParkingTrackId?: string | null;
+    clientUpdatedAt?: string | null;
+  }
+) {
   const scratch = requireScratch(db, userId, scratchId);
   if (!scratch) return { kind: "not_found" as const };
   if (scratch.fed_time_doubt_id) return { kind: "not_available" as const };
@@ -1091,7 +1197,11 @@ export function convertScratchToSpace(db: DbState, userId: string, scratchId: st
     if (existing) return { kind: "ok" as const, space: existing, converted: false as const };
   }
 
-  const result = createThinkingSpace(db, userId, scratch.raw_text, null);
+  const result = createThinkingSpace(db, userId, scratch.raw_text, null, {
+    clientSpaceId: options?.clientSpaceId ?? null,
+    clientParkingTrackId: options?.clientParkingTrackId ?? null,
+    clientUpdatedAt: options?.clientUpdatedAt ?? null
+  });
   if (!result) return { kind: "invalid" as const };
   if (result.over_limit) return { kind: "over_limit" as const };
 
@@ -1101,7 +1211,12 @@ export function convertScratchToSpace(db: DbState, userId: string, scratchId: st
   return { kind: "ok" as const, space: result.space, converted: true as const };
 }
 
-export function feedScratchToTime(db: DbState, userId: string, scratchId: string) {
+export function feedScratchToTime(
+  db: DbState,
+  userId: string,
+  scratchId: string,
+  options?: { clientDoubtId?: string | null }
+) {
   const scratch = requireScratch(db, userId, scratchId);
   if (!scratch) return { kind: "not_found" as const };
   if (scratch.derived_space_id) return { kind: "not_available" as const };
@@ -1113,8 +1228,16 @@ export function feedScratchToTime(db: DbState, userId: string, scratchId: string
     }
   }
 
-  const doubt = createDoubtAt(db, userId, scratch.raw_text, scratch.created_at);
+  const preferredDoubtId =
+    typeof options?.clientDoubtId === "string" && options.clientDoubtId.trim() ? options.clientDoubtId : null;
+  const doubt = preferredDoubtId
+    ? createDoubt(db, userId, scratch.raw_text, {
+        clientEntityId: preferredDoubtId,
+        clientUpdatedAt: scratch.created_at
+      })
+    : createDoubtAt(db, userId, scratch.raw_text, scratch.created_at);
   if (!doubt) return { kind: "invalid" as const };
+  doubt.created_at = scratch.created_at;
 
   scratch.fed_time_doubt_id = doubt.id;
   scratch.updated_at = nowIso();
@@ -1228,7 +1351,7 @@ export function writeSpaceToTime(
   userId: string,
   spaceId: string,
   _writeNote?: string | null,
-  options?: { preserveOriginalTime?: boolean }
+  options?: { preserveOriginalTime?: boolean; clientDoubtId?: string | null }
 ) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
@@ -1248,8 +1371,16 @@ export function writeSpaceToTime(
     doubt.created_at = writtenAt;
     doubt.archived_at = null;
   } else {
-    doubt = createDoubtAt(db, userId, space.root_question_text, writtenAt);
+    const preferredDoubtId =
+      typeof options?.clientDoubtId === "string" && options.clientDoubtId.trim() ? options.clientDoubtId : null;
+    doubt = preferredDoubtId
+      ? createDoubt(db, userId, space.root_question_text, {
+          clientEntityId: preferredDoubtId,
+          clientUpdatedAt: writtenAt
+        })
+      : createDoubtAt(db, userId, space.root_question_text, writtenAt);
     if (!doubt) return { kind: "invalid" as const };
+    doubt.created_at = writtenAt;
     doubt.first_node_preview = edgePreview.firstNode;
     doubt.last_node_preview = edgePreview.lastNode;
     space.source_time_doubt_id = doubt.id;
@@ -1525,7 +1656,7 @@ export function setActiveTrack(db: DbState, userId: string, spaceId: string, tra
   return { kind: "ok" as const, track_id: normalized };
 }
 
-export function createEmptyTrack(db: DbState, userId: string, spaceId: string) {
+export function createEmptyTrack(db: DbState, userId: string, spaceId: string, preferredTrackId?: string | null) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
   if (space.status !== "active") return { kind: "readonly" as const };
@@ -1536,7 +1667,8 @@ export function createEmptyTrack(db: DbState, userId: string, spaceId: string) {
     meta.last_track_id = existing;
     return { kind: "ok" as const, track_id: existing };
   }
-  const trackId = createId();
+  const trackId =
+    typeof preferredTrackId === "string" && preferredTrackId.trim() ? preferredTrackId : createId();
   setPendingTrackId(meta, trackId);
   meta.last_track_id = trackId;
   bumpUserRevision(db, userId);
@@ -1677,7 +1809,13 @@ export function updateNodeQuestion(db: DbState, userId: string, nodeId: string, 
   return { kind: "ok" as const, node };
 }
 
-export function copyNode(db: DbState, userId: string, nodeId: string, targetTrackId?: string | null) {
+export function copyNode(
+  db: DbState,
+  userId: string,
+  nodeId: string,
+  targetTrackId?: string | null,
+  options?: { clientNodeId?: string | null; clientCreatedAt?: string | null }
+) {
   const node = db.thinking_nodes.find((item) => item.id === nodeId);
   if (!node) return { kind: "not_found" as const };
   const space = requireSpace(db, userId, node.space_id);
@@ -1691,14 +1829,16 @@ export function copyNode(db: DbState, userId: string, nodeId: string, targetTrac
   removeEmptyTrackId(meta, nextTrackId);
 
   const nextNode: ThinkingNodeRecord = {
-    id: createId(),
+    id:
+      typeof options?.clientNodeId === "string" && options.clientNodeId.trim() ? options.clientNodeId : createId(),
     space_id: node.space_id,
     parent_node_id: toTrackParentId(nextTrackId),
     raw_question_text: node.raw_question_text,
     note_text: node.note_text ?? null,
     answer_text: node.answer_text ?? null,
     image_asset_id: node.image_asset_id ?? null,
-    created_at: nowIso(),
+    created_at:
+      typeof options?.clientCreatedAt === "string" && options.clientCreatedAt.trim() ? options.clientCreatedAt : nowIso(),
     order_index: maxOrderIndex(getSpaceNodes(db, node.space_id)) + 1,
     is_suggested: false,
     state: "normal",
@@ -2134,6 +2274,8 @@ export function deleteAllUserData(db: DbState, userId: string, reason: string) {
   db.thinking_media_assets = db.thinking_media_assets.filter((item) => item.user_id !== userId);
   db.user_sync_state = db.user_sync_state.filter((item) => item.user_id !== userId);
   db.applied_client_mutations = db.applied_client_mutations.filter((item) => item.user_id !== userId);
+  db.sync_operation_log = db.sync_operation_log.filter((item) => item.user_id !== userId);
+  db.sync_repair_items = db.sync_repair_items.filter((item) => item.user_id !== userId);
 
   user.deleted_at = nowIso();
   appendAuditLog(db, {

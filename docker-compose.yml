@@ -13,6 +13,8 @@
       TZ: ${TZ:-Asia/Shanghai}
     ports:
       - "${APP_PORT:-3000}:3000"
+    volumes:
+      - zhihuo-runtime-data:/app/runtime-data
     depends_on:
       postgres:
         condition: service_healthy
@@ -54,4 +56,5 @@
 
 volumes:
   zhihuo-pgdata:
+  zhihuo-runtime-data:
 

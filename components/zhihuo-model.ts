@@ -10,6 +10,7 @@ export type LifeDoubt = {
   createdAt: string;
   archivedAt: string | null;
   deletedAt: string | null;
+  syncStatus?: "pending" | "repair" | null;
 };
 
 export type LifeNote = {
@@ -40,6 +41,7 @@ export type ThinkingSpace = {
   lastActivityAt?: string;
   writtenToTimeAt: string | null;
   sourceTimeDoubtId: string | null;
+  syncStatus?: "pending" | "repair" | null;
 };
 
 export type ThinkingScratchItem = {
@@ -51,6 +53,7 @@ export type ThinkingScratchItem = {
   deletedAt: string | null;
   derivedSpaceId: string | null;
   fedTimeDoubtId: string | null;
+  syncStatus?: "pending" | "repair" | null;
 };
 
 export type ThinkingNode = {
@@ -64,6 +67,7 @@ export type ThinkingNode = {
   isSuggested: boolean;
   state: ThinkingNodeState;
   dimension: DimensionKey;
+  syncStatus?: "pending" | "repair" | null;
 };
 
 export type ThinkingMediaAsset = {
@@ -77,6 +81,7 @@ export type ThinkingMediaAsset = {
   createdAt: string;
   uploadedAt: string | null;
   deletedAt: string | null;
+  syncStatus?: "pending" | "repair" | null;
 };
 
 export type ThinkingMediaRef = {

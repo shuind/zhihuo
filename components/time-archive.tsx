@@ -287,6 +287,17 @@ type BindingDialogState = {
 
 type SyncSnapshotResponse = {
   revision?: number;
+  lastSequence?: number;
+  repairItems?: Array<{
+    id?: string;
+    clientMutationId?: string;
+    op?: string;
+    payload?: Record<string, unknown> | null;
+    reason?: string;
+    destinationClass?: string | null;
+    originalTargetId?: string | null;
+    createdAt?: string;
+  }>;
   life?: {
     doubts?: ApiLifeDoubt[];
     notes?: ApiLifeNote[];
@@ -363,7 +374,21 @@ type SyncSnapshotResponse = {
 
 type SyncStateResponse = {
   revision?: number;
+  lastSequence?: number;
+  repairCount?: number;
   server_time?: string;
+  serverTime?: string;
+};
+
+type SyncRepairItemSummary = {
+  id: string;
+  clientMutationId: string;
+  op: string;
+  payload: Record<string, unknown>;
+  reason: string;
+  destinationClass: string | null;
+  originalTargetId: string | null;
+  createdAt: string;
 };
 
 type SyncPhase = "idle" | "bootstrap" | "push" | "conflict" | "repairing" | "ready" | "error";
@@ -1208,9 +1233,12 @@ export function TimeArchive() {
   const [pendingMutationCount, setPendingMutationCount] = useState(0);
   const [cloudRevision, setCloudRevision] = useState<number | null>(null);
   const [cloudServerTime, setCloudServerTime] = useState<string | null>(null);
+  const [cloudLastSequence, setCloudLastSequence] = useState<number | null>(null);
+  const [cloudRepairCount, setCloudRepairCount] = useState(0);
   const [syncPhase, setSyncPhase] = useState<SyncPhase>("idle");
   const [lastCanonicalSyncError, setLastCanonicalSyncError] = useState<string | null>(null);
   const [lastRepairSummary, setLastRepairSummary] = useState<SyncRepairSummary | null>(null);
+  const [serverRepairItems, setServerRepairItems] = useState<SyncRepairItemSummary[]>([]);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1218,6 +1246,7 @@ export function TimeArchive() {
   const autoCloudRefreshInFlightRef = useRef(false);
   const userBootstrapRef = useRef<string | null>(null);
   const localProfileIdRef = useRef("");
+  const mutationOrderRef = useRef(0);
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
@@ -1315,7 +1344,41 @@ export function TimeArchive() {
         return "空闲";
     }
   }, [syncPhase]);
+  const syncIssueMutations = useMemo<QueuedMutation[]>(() => {
+    const ownerKey = activeOwnerKey ?? getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
+    const repairMutations = serverRepairItems.map((item) => ({
+      id: `repair:${item.id}`,
+      ownerKey,
+      deviceId: localProfileIdRef.current || getOrCreateLocalProfileId(),
+      clientOrder: new Date(item.createdAt).getTime(),
+      route: item.op,
+      method: "POST" as const,
+      op: item.op,
+      entityType: item.op.startsWith("/v1/doubts")
+        ? ("life" as const)
+        : item.op.startsWith("/v1/thinking/scratch")
+          ? ("scratch" as const)
+          : item.op.startsWith("/v1/thinking")
+            ? ("thinking" as const)
+            : ("system" as const),
+      body: item.payload,
+      clientMutationId: item.clientMutationId,
+      clientUpdatedAt: item.createdAt,
+      baseRevision: cloudRevision ?? offlineMeta?.revision ?? 0,
+      status: "dead_letter" as const,
+      ackedRevision: cloudRevision ?? offlineMeta?.revision ?? null,
+      deadLetterReason: item.reason,
+      createdAt: item.createdAt,
+      retryCount: 0,
+      nextRetryAt: Number.MAX_SAFE_INTEGER,
+      lastError: item.reason
+    }));
+    return [...repairMutations, ...deadLetterMutations];
+  }, [activeOwnerKey, cloudRevision, deadLetterMutations, offlineMeta?.revision, serverRepairItems]);
   const syncWarning = useMemo(() => {
+    if (cloudRepairCount > 0) {
+      return `浜戠浠嶆湁 ${cloudRepairCount} 鏉″緟淇鐨勫悓姝ユ潯鐩紝寤鸿鎵ц鍚屾鍒锋柊`;
+    }
     if (lastCanonicalSyncError) return `检测到快照重建异常：${lastCanonicalSyncError}`;
     if (
       cloudSyncReady &&
@@ -1335,7 +1398,7 @@ export function TimeArchive() {
       return "待同步改动停留较久，建议执行同步刷新";
     }
     return null;
-  }, [cloudRevision, cloudSyncReady, lastCanonicalSyncError, offlineMeta, pendingMutationCount]);
+  }, [cloudRepairCount, cloudRevision, cloudSyncReady, lastCanonicalSyncError, offlineMeta, pendingMutationCount]);
   const syncDiagnosticsReport = useMemo(
     () =>
       JSON.stringify(
@@ -1345,9 +1408,11 @@ export function TimeArchive() {
           phase_label: syncPhaseLabel,
           local_revision: offlineMeta?.revision ?? null,
           cloud_revision: cloudRevision,
+          cloud_last_sequence: cloudLastSequence,
+          cloud_repair_count: cloudRepairCount,
           cloud_server_time: cloudServerTime,
           pending_mutations: pendingMutationCount,
-          dead_letters: deadLetterMutations.length,
+          dead_letters: syncIssueMutations.length,
           last_synced_at: offlineMeta?.syncState.lastSyncedAt ?? null,
           has_local_changes: offlineMeta?.syncState.hasLocalChanges === true,
           sync_phase: syncPhase,
@@ -1358,13 +1423,15 @@ export function TimeArchive() {
         2
       ),
     [
+      cloudLastSequence,
+      cloudRepairCount,
       cloudRevision,
       cloudServerTime,
-      deadLetterMutations.length,
       lastRepairSummary,
       offlineMeta,
       offlineRuntimeState,
       pendingMutationCount,
+      syncIssueMutations.length,
       syncModeLabel,
       syncPhaseLabel,
       syncPhase,
@@ -1582,7 +1649,15 @@ export function TimeArchive() {
         const payload = (await response.json()) as SyncStateResponse;
         const revision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
         setCloudRevision(revision);
-        setCloudServerTime(typeof payload.server_time === "string" ? payload.server_time : null);
+        setCloudLastSequence(Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null);
+        setCloudRepairCount(Number.isFinite(payload.repairCount) ? Number(payload.repairCount) : 0);
+        setCloudServerTime(
+          typeof payload.server_time === "string"
+            ? payload.server_time
+            : typeof payload.serverTime === "string"
+              ? payload.serverTime
+              : null
+        );
         if (revision === null) return null;
         updateOfflineMeta((current) => ({
           ...current,
@@ -1603,6 +1678,8 @@ export function TimeArchive() {
     async (userId?: string | null) => {
       if (!userId) {
         setCloudRevision(null);
+        setCloudLastSequence(null);
+        setCloudRepairCount(0);
         setCloudServerTime(null);
         return null;
       }
@@ -1613,7 +1690,15 @@ export function TimeArchive() {
         if (!payload) return null;
         const nextRevision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
         setCloudRevision(nextRevision);
-        setCloudServerTime(typeof payload.server_time === "string" ? payload.server_time : null);
+        setCloudLastSequence(Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null);
+        setCloudRepairCount(Number.isFinite(payload.repairCount) ? Number(payload.repairCount) : 0);
+        setCloudServerTime(
+          typeof payload.server_time === "string"
+            ? payload.server_time
+            : typeof payload.serverTime === "string"
+              ? payload.serverTime
+              : null
+        );
         return nextRevision;
       } catch {
         return null;
@@ -2095,6 +2180,22 @@ export function TimeArchive() {
         return;
       }
       try {
+        const snapshotRepairItems: SyncRepairItemSummary[] = Array.isArray(payload.repairItems)
+          ? payload.repairItems
+              .filter((item) => item && typeof item.id === "string")
+              .map((item) => ({
+                id: item.id as string,
+                clientMutationId: typeof item.clientMutationId === "string" ? item.clientMutationId : item.id as string,
+                op: typeof item.op === "string" ? item.op : "",
+                payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+                reason: typeof item.reason === "string" ? item.reason : "repair_required",
+                destinationClass: typeof item.destinationClass === "string" ? item.destinationClass : null,
+                originalTargetId: typeof item.originalTargetId === "string" ? item.originalTargetId : null,
+                createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+              }))
+          : [];
+        const nextRevision = Number.isFinite(payload.revision) ? Number(payload.revision) : offlineMeta?.revision ?? null;
+        const nextLastSequence = Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null;
         const nextLifeStore = {
           ...EMPTY_LIFE_STORE,
           doubts: Array.isArray(payload.life?.doubts) ? payload.life.doubts.map(mapApiLifeDoubt) : [],
@@ -2123,9 +2224,9 @@ export function TimeArchive() {
           meta: createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
             ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
             boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
-            revision: Number.isFinite(payload.revision) ? Number(payload.revision) : offlineMeta?.revision ?? null,
+            revision: nextRevision,
             completeness: hasPendingLocalChanges ? "partial" : "complete",
-            lastAppliedLogId: offlineMeta?.lastAppliedLogId ?? null,
+            lastAppliedLogId: nextLastSequence !== null ? String(nextLastSequence) : offlineMeta?.lastAppliedLogId ?? null,
             syncState: {
               lastSyncedAt: new Date().toISOString(),
               hasLocalChanges: hasPendingLocalChanges,
@@ -2133,8 +2234,11 @@ export function TimeArchive() {
             }
           })
         });
-        setCloudRevision(Number.isFinite(payload.revision) ? Number(payload.revision) : null);
-        markCloudSynced(targetUserId, Number.isFinite(payload.revision) ? Number(payload.revision) : null, {
+        setCloudRevision(nextRevision);
+        setCloudLastSequence(nextLastSequence);
+        setCloudRepairCount(snapshotRepairItems.length);
+        setServerRepairItems(snapshotRepairItems);
+        markCloudSynced(targetUserId, nextRevision, {
           hasLocalChanges: hasPendingLocalChanges
         });
         setSyncPhase(hasPendingLocalChanges ? "push" : "ready");
@@ -2225,9 +2329,12 @@ export function TimeArchive() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             baseRevision,
+            deviceId: localProfileIdRef.current || getOrCreateLocalProfileId(),
             mutations: pending.map((item) => ({
               clientMutationId: item.clientMutationId,
               op: item.op,
+              clientOrder: item.clientOrder,
+              deviceId: item.deviceId,
               payload: {
                 ...(item.body ?? {}),
                 client_mutation_id: item.clientMutationId,
@@ -2275,36 +2382,64 @@ export function TimeArchive() {
           return;
         }
         const payload = (await response.json()) as {
-          applied?: Array<{ clientMutationId?: string; status?: "applied" | "skipped"; revision?: number }>;
-          rejected?: Array<{ clientMutationId?: string; status?: "rejected"; reason?: string }>;
+          applied?: Array<{ clientMutationId?: string; revision?: number }>;
+          skipped?: Array<{ clientMutationId?: string; revision?: number }>;
+          repairItems?: Array<{
+            id?: string;
+            clientMutationId?: string;
+            op?: string;
+            payload?: Record<string, unknown> | null;
+            reason?: string;
+            destinationClass?: string | null;
+            originalTargetId?: string | null;
+            createdAt?: string;
+          }>;
           newRevision?: number;
+          lastSequence?: number;
         };
         const revisions = new Map(
-          (payload.applied ?? [])
+          [...(payload.applied ?? []), ...(payload.skipped ?? [])]
             .filter((item) => typeof item.clientMutationId === "string")
             .map((item) => [item.clientMutationId as string, Number.isFinite(item.revision) ? Number(item.revision) : null])
         );
-        const rejected = new Map(
-          (payload.rejected ?? [])
-            .filter((item) => typeof item.clientMutationId === "string" && typeof item.reason === "string")
-            .map((item) => [item.clientMutationId as string, item.reason as string])
+        const repairMap = new Map(
+          (payload.repairItems ?? [])
+            .filter((item) => typeof item.clientMutationId === "string")
+            .map((item) => [item.clientMutationId as string, item])
         );
         const nextRevision = Number.isFinite(payload.newRevision) ? Number(payload.newRevision) : null;
         let hasMissingAcknowledgements = false;
-        let hasRejectedMutations = false;
         if (typeof nextRevision === "number" && Number.isFinite(nextRevision)) {
           setRevisionBaseline(ownerKey.slice(5), nextRevision);
         }
+        setCloudLastSequence(Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null);
+        const nextRepairItems: SyncRepairItemSummary[] = (payload.repairItems ?? [])
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            clientMutationId: typeof item.clientMutationId === "string" ? item.clientMutationId : item.id as string,
+            op: typeof item.op === "string" ? item.op : "",
+            payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+            reason: typeof item.reason === "string" ? item.reason : "repair_required",
+            destinationClass: typeof item.destinationClass === "string" ? item.destinationClass : null,
+            originalTargetId: typeof item.originalTargetId === "string" ? item.originalTargetId : null,
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+          }));
+        setServerRepairItems(nextRepairItems);
+        setCloudRepairCount(nextRepairItems.length);
         for (const item of pending) {
-          if (rejected.has(item.clientMutationId)) {
-            hasRejectedMutations = true;
-            const reason = rejected.get(item.clientMutationId) ?? "mutation_rejected";
+          if (repairMap.has(item.clientMutationId)) {
+            const reason =
+              typeof repairMap.get(item.clientMutationId)?.reason === "string"
+                ? String(repairMap.get(item.clientMutationId)?.reason)
+                : "repair_required";
             await updateOfflineMutation(item.id, {
               status: "dead_letter",
               deadLetterReason: reason,
               lastError: reason,
               nextRetryAt: Number.MAX_SAFE_INTEGER
             });
+            await removeOfflineMutation(item.id);
             continue;
           }
           if (!revisions.has(item.clientMutationId)) {
@@ -2327,7 +2462,7 @@ export function TimeArchive() {
           await removeOfflineMutation(item.id);
         }
         await refreshDeadLetterMutations(ownerKey);
-        if (hasRejectedMutations) {
+        if (repairMap.size > 0) {
           updateOfflineMeta((current) => ({
             ...current,
             completeness: current.completeness === "complete" ? "partial" : current.completeness,
@@ -2338,7 +2473,7 @@ export function TimeArchive() {
           }));
           showNotice("部分离线改动未被云端接受，已移入同步异常");
         }
-        if (!hasMissingAcknowledgements && !hasRejectedMutations) {
+        if (!hasMissingAcknowledgements) {
           await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5));
         }
       } catch (error) {
@@ -2402,9 +2537,12 @@ export function TimeArchive() {
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({
               baseRevision,
+              deviceId: localProfileIdRef.current || getOrCreateLocalProfileId(),
               mutations: pending.map((item) => ({
                 clientMutationId: item.clientMutationId,
                 op: item.op,
+                clientOrder: item.clientOrder,
+                deviceId: item.deviceId,
                 payload: {
                   ...(item.body ?? {}),
                   client_mutation_id: item.clientMutationId,
@@ -2471,36 +2609,64 @@ export function TimeArchive() {
             return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
           }
           const payload = (await response.json()) as {
-            applied?: Array<{ clientMutationId?: string; status?: "applied" | "skipped"; revision?: number }>;
-            rejected?: Array<{ clientMutationId?: string; status?: "rejected"; reason?: string }>;
+            applied?: Array<{ clientMutationId?: string; revision?: number }>;
+            skipped?: Array<{ clientMutationId?: string; revision?: number }>;
+            repairItems?: Array<{
+              id?: string;
+              clientMutationId?: string;
+              op?: string;
+              payload?: Record<string, unknown> | null;
+              reason?: string;
+              destinationClass?: string | null;
+              originalTargetId?: string | null;
+              createdAt?: string;
+            }>;
             newRevision?: number;
+            lastSequence?: number;
           };
           const revisions = new Map(
-            (payload.applied ?? [])
+            [...(payload.applied ?? []), ...(payload.skipped ?? [])]
               .filter((item) => typeof item.clientMutationId === "string")
               .map((item) => [item.clientMutationId as string, Number.isFinite(item.revision) ? Number(item.revision) : null])
           );
-          const rejected = new Map(
-            (payload.rejected ?? [])
-              .filter((item) => typeof item.clientMutationId === "string" && typeof item.reason === "string")
-              .map((item) => [item.clientMutationId as string, item.reason as string])
+          const repairMap = new Map(
+            (payload.repairItems ?? [])
+              .filter((item) => typeof item.clientMutationId === "string")
+              .map((item) => [item.clientMutationId as string, item])
           );
           const nextRevision = Number.isFinite(payload.newRevision) ? Number(payload.newRevision) : null;
           let hasMissingAcknowledgements = false;
-          let hasRejectedMutations = false;
           if (typeof nextRevision === "number" && Number.isFinite(nextRevision)) {
             setRevisionBaseline(ownerKey.slice(5), nextRevision);
           }
+          setCloudLastSequence(Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null);
+          const nextRepairItems: SyncRepairItemSummary[] = (payload.repairItems ?? [])
+            .filter((item) => item && typeof item.id === "string")
+            .map((item) => ({
+              id: item.id as string,
+              clientMutationId: typeof item.clientMutationId === "string" ? item.clientMutationId : item.id as string,
+              op: typeof item.op === "string" ? item.op : "",
+              payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+              reason: typeof item.reason === "string" ? item.reason : "repair_required",
+              destinationClass: typeof item.destinationClass === "string" ? item.destinationClass : null,
+              originalTargetId: typeof item.originalTargetId === "string" ? item.originalTargetId : null,
+              createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+            }));
+          setServerRepairItems(nextRepairItems);
+          setCloudRepairCount(nextRepairItems.length);
           for (const item of pending) {
-            if (rejected.has(item.clientMutationId)) {
-              hasRejectedMutations = true;
-              const reason = rejected.get(item.clientMutationId) ?? "mutation_rejected";
+            if (repairMap.has(item.clientMutationId)) {
+              const reason =
+                typeof repairMap.get(item.clientMutationId)?.reason === "string"
+                  ? String(repairMap.get(item.clientMutationId)?.reason)
+                  : "repair_required";
               await updateOfflineMutation(item.id, {
                 status: "dead_letter",
                 deadLetterReason: reason,
                 lastError: reason,
                 nextRetryAt: Number.MAX_SAFE_INTEGER
               });
+              await removeOfflineMutation(item.id);
               continue;
             }
             if (!revisions.has(item.clientMutationId)) {
@@ -2524,7 +2690,7 @@ export function TimeArchive() {
           }
           await refreshDeadLetterMutations(ownerKey);
           const nextPendingCount = await refreshPendingMutationCount(ownerKey, true);
-          if (hasRejectedMutations) {
+          if (repairMap.size > 0) {
             updateOfflineMeta((current) => ({
               ...current,
               completeness: "partial",
@@ -2537,11 +2703,11 @@ export function TimeArchive() {
           }
           await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
           await refreshCloudSyncState(ownerKey.slice(5));
-          setSyncPhase(hasRejectedMutations || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
+          setSyncPhase(repairMap.size > 0 || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
           return {
-            ok: !hasRejectedMutations && !hasMissingAcknowledgements,
+            ok: repairMap.size === 0 && !hasMissingAcknowledgements,
             pendingCount: nextPendingCount,
-            deadLetterCount: rejected.size
+            deadLetterCount: repairMap.size
           };
         } catch (error) {
           const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
@@ -2649,9 +2815,12 @@ export function TimeArchive() {
         return null;
       }
       const now = new Date().toISOString();
+      mutationOrderRef.current = Math.max(mutationOrderRef.current + 1, Date.now());
       const queued: QueuedMutation = {
         id: createId(),
         ownerKey: activeOwnerKey,
+        deviceId: localProfileIdRef.current || getOrCreateLocalProfileId(),
+        clientOrder: mutationOrderRef.current,
         route,
         method: "POST",
         op: route,
@@ -2676,9 +2845,24 @@ export function TimeArchive() {
       await enqueueOfflineMutation(queued);
       void refreshPendingMutationCount(activeOwnerKey, true);
       markLocalChange();
+      if (isOnline && offlineRuntimeState === "user_sync_ready") {
+        void runQueuedMutationSync(activeOwnerKey, {
+          includeDeferred: true,
+          preferredSpaceId: activeSpaceIdRef.current
+        });
+      }
       return queued;
     },
-    [activeOwnerKey, markLocalChange, offlineMeta?.revision, offlineRuntimeState, refreshPendingMutationCount, sessionUser]
+    [
+      activeOwnerKey,
+      isOnline,
+      markLocalChange,
+      offlineMeta?.revision,
+      offlineRuntimeState,
+      refreshPendingMutationCount,
+      runQueuedMutationSync,
+      sessionUser
+    ]
   );
 
   const createLifeDoubt = useCallback(
@@ -2691,7 +2875,26 @@ export function TimeArchive() {
         client_entity_id: localDoubtId,
         client_updated_at: now
       };
-      if (cloudSyncReady) {
+      await queueMutation("/v1/doubts", payload);
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: [
+          {
+            id: localDoubtId,
+            rawText,
+            firstNodePreview: null,
+            lastNodePreview: null,
+            createdAt: now,
+            archivedAt: null,
+            deletedAt: null,
+            syncStatus: "pending"
+          },
+          ...prev.doubts.filter((item) => item.id !== localDoubtId)
+        ]
+      }));
+      markLocalChange();
+      return true;
+      /* if (cloudSyncReady) {
         try {
           const response = await apiFetch("/v1/doubts", {
             method: "POST",
@@ -2749,15 +2952,27 @@ export function TimeArchive() {
       }));
       markLocalChange();
       return true;
+      */
     },
-    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, showNotice]
+    [markLocalChange, queueMutation]
   );
 
   const saveLifeDoubtNote = useCallback(
     async (doubtId: string, noteText: string) => {
       const now = new Date().toISOString();
       const payload = { note_text: noteText, client_updated_at: now };
-      if (cloudSyncReady) {
+      await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
+      setLifeStore((prev) => {
+        const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
+        const cleaned = noteText.trim();
+        const nextNotes = cleaned
+          ? [...prev.notes.filter((item) => item.doubtId !== doubtId), { id: noteId, doubtId, noteText: cleaned, createdAt: now }]
+          : prev.notes.filter((item) => item.doubtId !== doubtId);
+        return { ...prev, notes: nextNotes };
+      });
+      markLocalChange();
+      return true;
+      /* if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/doubts/${doubtId}/note`, {
             method: "POST",
@@ -2804,8 +3019,9 @@ export function TimeArchive() {
       });
       markLocalChange();
       return true;
+      */
     },
-    [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, showNotice]
+    [markLocalChange, queueMutation]
   );
 
   const pruneDerivedThinkingByDoubt = useCallback((doubtId: string) => {
@@ -2826,7 +3042,16 @@ export function TimeArchive() {
 
   const deleteLifeDoubtWithDerived = useCallback(
     async (doubtId: string) => {
-      if (cloudSyncReady) {
+      await queueMutation(`/v1/doubts/${doubtId}/delete`);
+      pruneDerivedThinkingByDoubt(doubtId);
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: prev.doubts.filter((item) => item.id !== doubtId),
+        notes: prev.notes.filter((item) => item.doubtId !== doubtId)
+      }));
+      markLocalChange();
+      return true;
+      /* if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/doubts/${doubtId}/delete`, { method: "POST" });
           if (handleUnauthorized(response)) return false;
@@ -2854,8 +3079,90 @@ export function TimeArchive() {
       }));
       markLocalChange();
       return true;
+      */
     },
-    [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, pruneDerivedThinkingByDoubt, sessionUser?.userId, showNotice, thinkingStore.spaces]
+    [markLocalChange, pruneDerivedThinkingByDoubt, queueMutation]
+  );
+
+  const createLocalThinkingSpace = useCallback(
+    ({
+      rootQuestionText,
+      sourceTimeDoubtId,
+      spaceId,
+      parkingTrackId,
+      createdAt,
+      syncStatus = "pending"
+    }: {
+      rootQuestionText: string;
+      sourceTimeDoubtId: string | null;
+      spaceId: string;
+      parkingTrackId: string;
+      createdAt: string;
+      syncStatus?: "pending" | "repair" | null;
+    }) => {
+      const localSpace: ThinkingSpace = {
+        id: spaceId,
+        userId: sessionUser?.userId ?? "offline_user",
+        rootQuestionText,
+        status: "active",
+        createdAt,
+        lastActivityAt: createdAt,
+        writtenToTimeAt: null,
+        sourceTimeDoubtId: sourceTimeDoubtId ?? null,
+        syncStatus
+      };
+      const localMeta: ThinkingSpaceMeta = {
+        spaceId,
+        exportVersion: 1,
+        backgroundText: null,
+        backgroundVersion: 0,
+        suggestionDecay: 0,
+        lastTrackId: null,
+        lastOrganizedOrder: -1,
+        parkingTrackId,
+        pendingTrackId: null,
+        emptyTrackIds: []
+      };
+      const localView: ThinkingSpaceView = {
+        spaceId,
+        currentTrackId: parkingTrackId,
+        parkingTrackId,
+        pendingTrackId: null,
+        tracks: [
+          {
+            id: parkingTrackId,
+            titleQuestionText: "鍏堟斁杩欓噷",
+            isParking: true,
+            isEmpty: false,
+            nodeCount: 0,
+            nodes: []
+          }
+        ],
+        suggestedQuestions: [],
+        backgroundText: null,
+        backgroundVersion: 0,
+        backgroundAssetIds: [],
+        backgroundSelectedAssetId: null
+      };
+      thinkingViewCacheRef.current[spaceId] = localView;
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: [localSpace, ...prev.spaces.filter((item) => item.id !== spaceId)],
+        spaceMeta: [localMeta, ...prev.spaceMeta.filter((item) => item.spaceId !== spaceId)]
+      }));
+      setActiveSpaceId(spaceId);
+      setThinkingView(localView);
+      markLocalChange();
+      return {
+        ok: true as const,
+        spaceId,
+        converted: false,
+        createdAsStatement: false,
+        suggestedQuestions: [],
+        questionSuggestion: null
+      };
+    },
+    [markLocalChange, sessionUser?.userId]
   );
 
   const createThinkingSpaceApi = useCallback(
@@ -2905,6 +3212,10 @@ export function TimeArchive() {
           };
         }
       }
+      const activeCount = thinkingStore.spaces.filter((space) => space.status === "active").length;
+      if (activeCount >= MAX_ACTIVE_SPACES) {
+        return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
+      }
       const now = new Date().toISOString();
       const localSpaceId = createId();
       const localParkingTrackId = createId();
@@ -2915,7 +3226,15 @@ export function TimeArchive() {
         client_parking_track_id: localParkingTrackId,
         client_updated_at: now
       };
-      if (cloudSyncReady) {
+      await queueMutation("/v1/thinking/spaces", basePayload);
+      return createLocalThinkingSpace({
+        rootQuestionText,
+        sourceTimeDoubtId,
+        spaceId: localSpaceId,
+        parkingTrackId: localParkingTrackId,
+        createdAt: now
+      });
+      /* if (cloudSyncReady) {
         try {
           const response = await apiFetch("/v1/thinking/spaces", {
             method: "POST",
@@ -3018,8 +3337,9 @@ export function TimeArchive() {
         suggestedQuestions: [],
         questionSuggestion: null
       }
+      */
     },
-    [cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingStore.spaces]
+    [createLocalThinkingSpace, getLocalSpaceView, markLocalChange, queueMutation, thinkingStore.spaces]
   );
 
   useEffect(() => {
@@ -3335,7 +3655,10 @@ export function TimeArchive() {
     if (!authReady || !cloudSyncReady || !sessionUser || !isOnline) {
       if (!sessionUser) {
         setCloudRevision(null);
+        setCloudLastSequence(null);
+        setCloudRepairCount(0);
         setCloudServerTime(null);
+        setServerRepairItems([]);
       }
       return;
     }
@@ -3456,8 +3779,16 @@ export function TimeArchive() {
     };
   }, []);
 
-  const hideLifeDoubtFromTimeline = useCallback(
+  /* const hideLifeDoubtFromTimeline = useCallback(
     async (doubtId: string) => {
+      await queueMutation(`/v1/doubts/${doubtId}/archive`);
+      const archivedAt = new Date().toISOString();
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: prev.doubts.map((item) => (item.id === doubtId ? { ...item, archivedAt } : item))
+      }));
+      markLocalChange();
+      return true;
       if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/doubts/${doubtId}/archive`, { method: "POST" });
@@ -3479,12 +3810,40 @@ export function TimeArchive() {
       return true;
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
+  ); */
+
+  const hideLifeDoubtFromTimeline = useCallback(
+    async (doubtId: string) => {
+      await queueMutation(`/v1/doubts/${doubtId}/archive`);
+      const archivedAt = new Date().toISOString();
+      setLifeStore((prev) => ({
+        ...prev,
+        doubts: prev.doubts.map((item) => (item.id === doubtId ? { ...item, archivedAt, syncStatus: "pending" } : item))
+      }));
+      markLocalChange();
+      return true;
+    },
+    [markLocalChange, queueMutation]
   );
 
-  const handleImportToThinking = useCallback(
+  /* const handleImportToThinking = useCallback(
     (doubt: { id: string; rawText: string }) => {
       void (async () => {
         try {
+          const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
+          if (!created.ok) {
+            showNotice(created.message === `娲昏穬绌洪棿涓婇檺涓?${MAX_ACTIVE_SPACES}` ? RESTORE_OVER_LIMIT_NOTICE : created.message);
+            return;
+          }
+          const hidden = await hideLifeDoubtFromTimeline(doubt.id);
+          if (!hidden) {
+            showNotice("宸茶繘鍏ユ€濊矾锛屼絾鏃堕棿鍗＄墖闅愯棌澶辫触");
+            return;
+          }
+          setTab("thinking");
+          setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
+          showNotice("宸茶繘鍏ユ€濊矾");
+          return;
           if (cloudSyncReady) {
             const response = await apiFetch(`/v1/doubts/${doubt.id}/to-thinking`, { method: "POST" });
             if (handleUnauthorized(response)) return;
@@ -3549,6 +3908,31 @@ export function TimeArchive() {
       })();
     },
     [cloudSyncReady, createThinkingSpaceApi, finalizeCloudWrite, handleUnauthorized, hideLifeDoubtFromTimeline, sessionUser?.userId, showNotice]
+  ); */
+
+  const handleImportToThinking = useCallback(
+    (doubt: { id: string; rawText: string }) => {
+      void (async () => {
+        try {
+          const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
+          if (!created.ok) {
+            showNotice(created.message === `活跃空间上限为 ${MAX_ACTIVE_SPACES}` ? RESTORE_OVER_LIMIT_NOTICE : created.message);
+            return;
+          }
+          const hidden = await hideLifeDoubtFromTimeline(doubt.id);
+          if (!hidden) {
+            showNotice("已进入思路，但时间卡片隐藏失败");
+            return;
+          }
+          setTab("thinking");
+          setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
+          showNotice("已进入思路");
+        } catch {
+          showNotice("网络异常，请稍后再试");
+        }
+      })();
+    },
+    [createThinkingSpaceApi, hideLifeDoubtFromTimeline, showNotice]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -3567,7 +3951,7 @@ export function TimeArchive() {
     [createThinkingSpaceApi]
   );
 
-  const handleCreateThinkingScratch = useCallback(
+  /* const handleCreateThinkingScratch = useCallback(
     async (rawText: string) => {
       const now = new Date().toISOString();
       const localScratchId = createId();
@@ -3576,6 +3960,26 @@ export function TimeArchive() {
         client_entity_id: localScratchId,
         client_updated_at: now
       };
+      await queueMutation("/v1/thinking/scratch", payload);
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: [
+          {
+            id: localScratchId,
+            rawText,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            deletedAt: null,
+            derivedSpaceId: null,
+            fedTimeDoubtId: null,
+            syncStatus: "pending"
+          },
+          ...prev.scratch.filter((item) => item.id !== localScratchId)
+        ]
+      }));
+      markLocalChange();
+      return true;
       if (cloudSyncReady) {
         try {
           const response = await apiFetch("/v1/thinking/scratch", {
@@ -3612,13 +4016,45 @@ export function TimeArchive() {
       return true;
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
+  ); */
+
+  const handleCreateThinkingScratch = useCallback(
+    async (rawText: string) => {
+      const now = new Date().toISOString();
+      const localScratchId = createId();
+      await queueMutation("/v1/thinking/scratch", {
+        raw_text: rawText,
+        client_entity_id: localScratchId,
+        client_updated_at: now
+      });
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: [
+          {
+            id: localScratchId,
+            rawText,
+            createdAt: now,
+            updatedAt: now,
+            archivedAt: null,
+            deletedAt: null,
+            derivedSpaceId: null,
+            fedTimeDoubtId: null,
+            syncStatus: "pending"
+          },
+          ...prev.scratch.filter((item) => item.id !== localScratchId)
+        ]
+      }));
+      markLocalChange();
+      return true;
+    },
+    [markLocalChange, queueMutation]
   );
 
   const feedThinkingScratchToTimeLocal = useCallback(
-    async (scratchId: string) => {
+    async (scratchId: string, preferredDoubtId?: string | null) => {
       const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
       if (!scratch || scratch.derivedSpaceId) return false;
-      const doubtId = scratch.fedTimeDoubtId ?? createId();
+      const doubtId = preferredDoubtId ?? scratch.fedTimeDoubtId ?? createId();
       const existingDoubt = scratch.fedTimeDoubtId ? lifeStore.doubts.find((item) => item.id === scratch.fedTimeDoubtId) ?? null : null;
       const createdAt = existingDoubt?.createdAt ?? scratch.createdAt;
       setLifeStore((prev) => ({
@@ -3631,7 +4067,8 @@ export function TimeArchive() {
             lastNodePreview: existingDoubt?.lastNodePreview ?? null,
             createdAt,
             archivedAt: null,
-            deletedAt: null
+            deletedAt: null,
+            syncStatus: "pending"
           },
           ...prev.doubts.filter((item) => item.id !== doubtId)
         ]
@@ -3646,8 +4083,8 @@ export function TimeArchive() {
     [lifeStore.doubts, markLocalChange, thinkingStore.scratch]
   );
 
-  const convertScratchToSpaceLocal = useCallback(
-    async (scratchId: string) => {
+  /* const convertScratchToSpaceLocal = useCallback(
+    async (scratchId: string, clientSpaceId?: string | null, clientParkingTrackId?: string | null) => {
       const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
       if (!scratch) return { ok: false as const, message: "随记不存在" };
       if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
@@ -3662,9 +4099,14 @@ export function TimeArchive() {
         }
       }
 
-      const created = await createThinkingSpaceApi(scratch.rawText, null);
-      if (!created.ok) return { ok: false as const, message: created.message };
       const now = new Date().toISOString();
+      const created = createLocalThinkingSpace({
+        rootQuestionText: scratch.rawText,
+        sourceTimeDoubtId: null,
+        spaceId: clientSpaceId ?? createId(),
+        parkingTrackId: clientParkingTrackId ?? createId(),
+        createdAt: now
+      });
       setThinkingStore((prev) => ({
         ...prev,
         scratch: prev.scratch.map((item) =>
@@ -3672,7 +4114,8 @@ export function TimeArchive() {
             ? {
                 ...item,
                 derivedSpaceId: created.spaceId,
-                updatedAt: now
+                updatedAt: now,
+                syncStatus: "pending"
               }
             : item
         )
@@ -3680,11 +4123,65 @@ export function TimeArchive() {
       markLocalChange();
       return { ok: true as const, spaceId: created.spaceId };
     },
-    [createThinkingSpaceApi, getLocalSpaceView, markLocalChange, thinkingStore.spaces, thinkingStore.scratch]
+    [createLocalThinkingSpace, getLocalSpaceView, markLocalChange, thinkingStore.spaces, thinkingStore.scratch]
+  ); */
+
+  const convertScratchToSpaceLocal = useCallback(
+    async (scratchId: string, clientSpaceId?: string | null, clientParkingTrackId?: string | null) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch) return { ok: false as const, message: "随记不存在" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+      if (scratch.derivedSpaceId) {
+        const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
+        if (existing) {
+          const existingView = getLocalSpaceView(existing.id);
+          setActiveSpaceId(existing.id);
+          if (existingView) setThinkingView(existingView);
+          return { ok: true as const, spaceId: existing.id };
+        }
+      }
+      const activeCount = thinkingStore.spaces.filter((space) => space.status === "active").length;
+      if (activeCount >= MAX_ACTIVE_SPACES) {
+        return { ok: false as const, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
+      }
+
+      const now = new Date().toISOString();
+      const created = createLocalThinkingSpace({
+        rootQuestionText: scratch.rawText,
+        sourceTimeDoubtId: null,
+        spaceId: clientSpaceId ?? createId(),
+        parkingTrackId: clientParkingTrackId ?? createId(),
+        createdAt: now
+      });
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.map((item) =>
+          item.id === scratchId
+            ? {
+                ...item,
+                derivedSpaceId: created.spaceId,
+                updatedAt: now,
+                syncStatus: "pending"
+              }
+            : item
+        )
+      }));
+      markLocalChange();
+      return { ok: true as const, spaceId: created.spaceId };
+    },
+    [createLocalThinkingSpace, getLocalSpaceView, markLocalChange, thinkingStore.spaces, thinkingStore.scratch]
   );
 
-  const handleFeedThinkingScratchToTime = useCallback(
+  /* const handleFeedThinkingScratchToTime = useCallback(
     async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch || scratch.derivedSpaceId) return false;
+      const clientDoubtId = scratch.fedTimeDoubtId ?? createId();
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/feed-to-time`, {
+        client_doubt_id: clientDoubtId,
+        client_updated_at: new Date().toISOString()
+      });
+      return feedThinkingScratchToTimeLocal(scratchId, clientDoubtId);
       if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/feed-to-time`, { method: "POST" });
@@ -3707,10 +4204,31 @@ export function TimeArchive() {
       queueMutation,
       sessionUser?.userId,
     ]
+  ); */
+
+  const handleFeedThinkingScratchToTime = useCallback(
+    async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch || scratch.derivedSpaceId) return false;
+      const clientDoubtId = scratch.fedTimeDoubtId ?? createId();
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/feed-to-time`, {
+        client_doubt_id: clientDoubtId,
+        client_updated_at: new Date().toISOString()
+      });
+      return feedThinkingScratchToTimeLocal(scratchId, clientDoubtId);
+    },
+    [feedThinkingScratchToTimeLocal, queueMutation, thinkingStore.scratch]
   );
 
-  const handleDeleteThinkingScratch = useCallback(
+  /* const handleDeleteThinkingScratch = useCallback(
     async (scratchId: string) => {
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/delete`);
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.filter((item) => item.id !== scratchId)
+      }));
+      markLocalChange();
+      return true;
       if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/thinking/scratch/${scratchId}/delete`, { method: "POST" });
@@ -3731,10 +4249,43 @@ export function TimeArchive() {
       return true;
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
+  ); */
+
+  const handleDeleteThinkingScratch = useCallback(
+    async (scratchId: string) => {
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/delete`);
+      setThinkingStore((prev) => ({
+        ...prev,
+        scratch: prev.scratch.filter((item) => item.id !== scratchId)
+      }));
+      markLocalChange();
+      return true;
+    },
+    [markLocalChange, queueMutation]
   );
 
-  const handleScratchToSpace = useCallback(
+  /* const handleScratchToSpace = useCallback(
     async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch) return { ok: false as const, message: "闅忚涓嶅瓨鍦? };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "璇ラ殢璁板凡鍐欏叆鏃堕棿" };
+      if (scratch.derivedSpaceId) {
+        const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
+        if (existing) {
+          const existingView = getLocalSpaceView(existing.id);
+          setActiveSpaceId(existing.id);
+          if (existingView) setThinkingView(existingView);
+          return { ok: true as const, spaceId: existing.id };
+        }
+      }
+      const clientSpaceId = createId();
+      const clientParkingTrackId = createId();
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/to-space`, {
+        client_space_id: clientSpaceId,
+        client_parking_track_id: clientParkingTrackId,
+        client_updated_at: new Date().toISOString()
+      });
+      return convertScratchToSpaceLocal(scratchId, clientSpaceId, clientParkingTrackId);
       if (!cloudSyncReady) {
         return convertScratchToSpaceLocal(scratchId);
       }
@@ -3765,15 +4316,123 @@ export function TimeArchive() {
       queueMutation,
       sessionUser?.userId,
     ]
+  ); */
+
+  const handleScratchToSpace = useCallback(
+    async (scratchId: string) => {
+      const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
+      if (!scratch) return { ok: false as const, message: "随记不存在" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+      if (scratch.derivedSpaceId) {
+        const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
+        if (existing) {
+          const existingView = getLocalSpaceView(existing.id);
+          setActiveSpaceId(existing.id);
+          if (existingView) setThinkingView(existingView);
+          return { ok: true as const, spaceId: existing.id };
+        }
+      }
+
+      const clientSpaceId = createId();
+      const clientParkingTrackId = createId();
+      await queueMutation(`/v1/thinking/scratch/${scratchId}/to-space`, {
+        client_space_id: clientSpaceId,
+        client_parking_track_id: clientParkingTrackId,
+        client_updated_at: new Date().toISOString()
+      });
+      return convertScratchToSpaceLocal(scratchId, clientSpaceId, clientParkingTrackId);
+    },
+    [convertScratchToSpaceLocal, getLocalSpaceView, queueMutation, thinkingStore.scratch, thinkingStore.spaces]
   );
 
-  const handleThinkingAddQuestion = useCallback(
+  /* const handleThinkingAddQuestion = useCallback(
     async (
       spaceId: string,
       payload: { rawInput: string; trackId: string | null; fromSuggestion?: boolean }
     ) => {
       const now = new Date().toISOString();
       const localNodeId = createId();
+      let resolvedTrackId = payload.trackId;
+      if (!resolvedTrackId || resolvedTrackId.startsWith("track:")) {
+        const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+        const currentTrackId = currentView?.currentTrackId ?? null;
+        if (currentTrackId && currentTrackId !== currentView?.parkingTrackId) {
+          resolvedTrackId = currentTrackId;
+        } else {
+          resolvedTrackId = createId();
+        }
+      }
+      const normalizedTrackId = resolvedTrackId === "__new__" ? createId() : resolvedTrackId;
+      if (!normalizedTrackId) {
+        return { ok: false as const, message: "绂荤嚎娣诲姞澶辫触" };
+      }
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/questions`, {
+        raw_text: payload.rawInput,
+        track_id: normalizedTrackId,
+        from_suggestion: payload.fromSuggestion === true,
+        client_node_id: localNodeId,
+        client_created_at: now,
+        client_updated_at: now
+      });
+      const patchNode = {
+        id: localNodeId,
+        questionText: payload.rawInput.trim(),
+        imageAssetId: null,
+        noteText: null,
+        answerText: null,
+        isSuggested: payload.fromSuggestion === true,
+        createdAt: now,
+        echoTrackId: null,
+        echoNodeId: null
+      };
+      const current = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      if (current) {
+        const trackExists = current.tracks.some((item) => item.id === normalizedTrackId);
+        const nextTracks = trackExists
+          ? current.tracks.map((track) => {
+              if (track.id !== normalizedTrackId) return track;
+              const nextNodes = [...track.nodes, patchNode];
+              return {
+                ...track,
+                titleQuestionText:
+                  !track.isParking && (track.titleQuestionText === "鏂版柟鍚? || !track.titleQuestionText.trim())
+                    ? patchNode.questionText
+                    : track.titleQuestionText,
+                nodeCount: nextNodes.length,
+                nodes: nextNodes
+              };
+            })
+          : (() => {
+              const withoutTarget = current.tracks.filter((track) => track.id !== normalizedTrackId);
+              const parkingTrack = withoutTarget.find((track) => track.id === current.parkingTrackId) ?? null;
+              const nonParkingTracks = withoutTarget.filter((track) => track.id !== current.parkingTrackId);
+              const createdTrack = {
+                id: normalizedTrackId,
+                titleQuestionText: patchNode.questionText,
+                isParking: false,
+                isEmpty: false,
+                nodeCount: 1,
+                nodes: [patchNode]
+              };
+              return parkingTrack ? [...nonParkingTracks, createdTrack, parkingTrack] : [...nonParkingTracks, createdTrack];
+            })();
+        const nextView = {
+          ...current,
+          currentTrackId: normalizedTrackId,
+          tracks: normalizeTrackList(nextTracks)
+        };
+        commitLocalSpaceView(spaceId, nextView);
+        setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+      }
+      markLocalChange();
+      return {
+        ok: true as const,
+        converted: false,
+        noteText: null,
+        trackId: normalizedTrackId,
+        nodeId: localNodeId,
+        suggestedQuestions: []
+      };
       if (cloudSyncReady) {
         try {
           const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/questions`, {
@@ -3933,6 +4592,105 @@ export function TimeArchive() {
       };
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
+  ); */
+
+  const handleThinkingAddQuestion = useCallback(
+    async (
+      spaceId: string,
+      payload: { rawInput: string; trackId: string | null; fromSuggestion?: boolean }
+    ) => {
+      const now = new Date().toISOString();
+      const nextQuestion = payload.rawInput.trim();
+      if (!nextQuestion) {
+        return { ok: false as const, message: "输入过短" };
+      }
+
+      const localNodeId = createId();
+      let resolvedTrackId = payload.trackId;
+      if (!resolvedTrackId || resolvedTrackId.startsWith("track:")) {
+        const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+        const currentTrackId = currentView?.currentTrackId ?? null;
+        if (currentTrackId && currentTrackId !== currentView?.parkingTrackId) {
+          resolvedTrackId = currentTrackId;
+        } else {
+          resolvedTrackId = createId();
+        }
+      }
+      const normalizedTrackId = resolvedTrackId === "__new__" ? createId() : resolvedTrackId;
+      if (!normalizedTrackId) {
+        return { ok: false as const, message: "添加结构失败" };
+      }
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/questions`, {
+        raw_text: payload.rawInput,
+        track_id: normalizedTrackId,
+        from_suggestion: payload.fromSuggestion === true,
+        client_node_id: localNodeId,
+        client_created_at: now,
+        client_updated_at: now
+      });
+
+      const patchNode = {
+        id: localNodeId,
+        questionText: nextQuestion,
+        imageAssetId: null,
+        noteText: null,
+        answerText: null,
+        isSuggested: payload.fromSuggestion === true,
+        createdAt: now,
+        echoTrackId: null,
+        echoNodeId: null
+      };
+      const current = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      if (current) {
+        const trackExists = current.tracks.some((item) => item.id === normalizedTrackId);
+        const nextTracks = trackExists
+          ? current.tracks.map((track) => {
+              if (track.id !== normalizedTrackId) return track;
+              const nextNodes = [...track.nodes, patchNode];
+              return {
+                ...track,
+                titleQuestionText:
+                  !track.isParking && (!track.titleQuestionText.trim() || track.titleQuestionText === "New track")
+                    ? patchNode.questionText
+                    : track.titleQuestionText,
+                nodeCount: nextNodes.length,
+                nodes: nextNodes
+              };
+            })
+          : (() => {
+              const withoutTarget = current.tracks.filter((track) => track.id !== normalizedTrackId);
+              const parkingTrack = withoutTarget.find((track) => track.id === current.parkingTrackId) ?? null;
+              const nonParkingTracks = withoutTarget.filter((track) => track.id !== current.parkingTrackId);
+              const createdTrack = {
+                id: normalizedTrackId,
+                titleQuestionText: patchNode.questionText,
+                isParking: false,
+                isEmpty: false,
+                nodeCount: 1,
+                nodes: [patchNode]
+              };
+              return parkingTrack ? [...nonParkingTracks, createdTrack, parkingTrack] : [...nonParkingTracks, createdTrack];
+            })();
+        const nextView = {
+          ...current,
+          currentTrackId: normalizedTrackId,
+          tracks: normalizeTrackList(nextTracks)
+        };
+        commitLocalSpaceView(spaceId, nextView);
+        setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+      }
+      markLocalChange();
+      return {
+        ok: true as const,
+        converted: false,
+        noteText: null,
+        trackId: normalizedTrackId,
+        nodeId: localNodeId,
+        suggestedQuestions: []
+      };
+    },
+    [commitLocalSpaceView, markLocalChange, queueMutation, thinkingView]
   );
 
   const handleThinkingOrganizePreview = useCallback(
@@ -3961,7 +4719,7 @@ export function TimeArchive() {
     [cloudSyncReady, handleUnauthorized]
   );
 
-  const handleThinkingOrganizeApply = useCallback(
+  /* const handleThinkingOrganizeApply = useCallback(
     async (spaceId: string, moves: Array<{ nodeId: string; targetTrackId: string }>) => {
       if (!cloudSyncReady) {
         const currentView = getLocalSpaceView(spaceId);
@@ -4021,9 +4779,66 @@ export function TimeArchive() {
       }
     },
     [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
+  ); */
+
+  const handleThinkingOrganizeApply = useCallback(
+    async (spaceId: string, moves: Array<{ nodeId: string; targetTrackId: string }>) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return { ok: false as const, message: "当前空间未加载完成" };
+
+      const movingIds = new Set(moves.map((item) => item.nodeId));
+      const movedNodes = currentView.tracks.flatMap((track) => track.nodes.filter((node) => movingIds.has(node.id)));
+      if (!movedNodes.length) return { ok: true as const, movedCount: 0 };
+
+      let resolvedTargetTrackId = moves[0]?.targetTrackId ?? "__new__";
+      if (!resolvedTargetTrackId || resolvedTargetTrackId === "__new__") {
+        resolvedTargetTrackId = createId();
+      }
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/organize-apply`, {
+        moves: moves.map((item) => ({
+          node_id: item.nodeId,
+          target_track_id: item.targetTrackId === "__new__" ? resolvedTargetTrackId : item.targetTrackId
+        })),
+        client_updated_at: new Date().toISOString()
+      });
+
+      let nextTracks = currentView.tracks.map((track) => ({
+        ...track,
+        nodes: track.nodes.filter((node) => !movingIds.has(node.id))
+      }));
+      const trackExists = nextTracks.some((track) => track.id === resolvedTargetTrackId);
+      if (!trackExists) {
+        const createdTrack = {
+          id: resolvedTargetTrackId,
+          titleQuestionText: movedNodes[0]?.questionText ?? "New track",
+          isParking: false,
+          isEmpty: false,
+          nodeCount: movedNodes.length,
+          nodes: movedNodes
+        };
+        const parkingIndex = currentView.parkingTrackId ? nextTracks.findIndex((track) => track.id === currentView.parkingTrackId) : -1;
+        if (parkingIndex >= 0) nextTracks.splice(parkingIndex, 0, createdTrack);
+        else nextTracks.push(createdTrack);
+      } else {
+        nextTracks = nextTracks.map((track) =>
+          track.id === resolvedTargetTrackId ? { ...track, nodes: [...track.nodes, ...movedNodes], isEmpty: false } : track
+        );
+      }
+
+      const nextView: ThinkingSpaceView = {
+        ...currentView,
+        currentTrackId: resolvedTargetTrackId,
+        tracks: normalizeTrackList(nextTracks)
+      };
+      commitLocalSpaceView(spaceId, nextView);
+      setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+      markLocalChange();
+      return { ok: true as const, movedCount: movedNodes.length };
+    },
+    [commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation]
   );
 
-  const handleThinkingMoveNode = useCallback(
+  /* const handleThinkingMoveNode = useCallback(
     async (nodeId: string, targetTrackId: string) => {
       if (!cloudSyncReady) {
         if (!activeSpaceId) return false;
@@ -4060,9 +4875,38 @@ export function TimeArchive() {
       }
     },
     [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
+  ); */
+
+  const handleThinkingMoveNode = useCallback(
+    async (nodeId: string, targetTrackId: string) => {
+      if (!activeSpaceId) return false;
+      const currentView = getLocalSpaceView(activeSpaceId);
+      if (!currentView) return false;
+      const movingNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+      if (!movingNode) return false;
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/move`, {
+        target_track_id: targetTrackId,
+        client_updated_at: new Date().toISOString()
+      });
+      const nextTracks = currentView.tracks.map((track) =>
+        track.id === targetTrackId
+          ? { ...track, nodes: [...track.nodes.filter((node) => node.id !== nodeId), movingNode], isEmpty: false }
+          : { ...track, nodes: track.nodes.filter((node) => node.id !== nodeId) }
+      );
+      const nextView = {
+        ...currentView,
+        currentTrackId: targetTrackId,
+        tracks: normalizeTrackList(nextTracks)
+      };
+      commitLocalSpaceView(activeSpaceId, nextView);
+      setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
+      markLocalChange();
+      return true;
+    },
+    [activeSpaceId, commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation]
   );
 
-  const handleThinkingDeleteNode = useCallback(
+  /* const handleThinkingDeleteNode = useCallback(
     async (nodeId: string) => {
       if (!cloudSyncReady) {
         if (!activeSpaceId) return false;
@@ -4115,9 +4959,45 @@ export function TimeArchive() {
       sessionUser?.userId,
       thinkingStore.nodes
     ]
+  ); */
+
+  const handleThinkingDeleteNode = useCallback(
+    async (nodeId: string) => {
+      if (!activeSpaceId) return false;
+      const currentView = getLocalSpaceView(activeSpaceId);
+      if (!currentView) return false;
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/delete`, {
+        client_updated_at: new Date().toISOString()
+      });
+      const removedNode = thinkingStore.nodes.find((node) => node.id === nodeId) ?? null;
+      const nextTracks = currentView.tracks.map((track) => ({
+        ...track,
+        nodes: track.nodes.filter((node) => node.id !== nodeId)
+      }));
+      const nextView = {
+        ...currentView,
+        tracks: normalizeTrackList(nextTracks)
+      };
+      commitLocalSpaceView(activeSpaceId, nextView);
+      let removedAssetIds: string[] = [];
+      setThinkingStore((prev) => {
+        const nextStore = {
+          ...syncStoreNodesFromView(prev, activeSpaceId, nextView)
+        };
+        removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, removedNode?.imageAssetId ? [removedNode.imageAssetId] : []);
+        if (removedAssetIds.length) {
+          nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+        }
+        return nextStore;
+      });
+      await markMediaAssetsDeletedLocally(removedAssetIds);
+      markLocalChange();
+      return true;
+    },
+    [activeSpaceId, commitLocalSpaceView, getLocalSpaceView, markLocalChange, markMediaAssetsDeletedLocally, queueMutation, thinkingStore.nodes]
   );
 
-  const handleThinkingUpdateNode = useCallback(
+  /* const handleThinkingUpdateNode = useCallback(
     async (nodeId: string, rawQuestionText: string) => {
       const now = new Date().toISOString();
       const payload = { raw_question_text: rawQuestionText, client_updated_at: now };
@@ -4159,9 +5039,40 @@ export function TimeArchive() {
       return true;
     },
     [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
+  ); */
+
+  const handleThinkingUpdateNode = useCallback(
+    async (nodeId: string, rawQuestionText: string) => {
+      const now = new Date().toISOString();
+      const nextQuestion = rawQuestionText.trim();
+      if (!nextQuestion) return false;
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/update`, {
+        raw_question_text: rawQuestionText,
+        client_updated_at: now
+      });
+      if (activeSpaceId) {
+        const current = thinkingViewCacheRef.current[activeSpaceId] ?? (thinkingView?.spaceId === activeSpaceId ? thinkingView : null);
+        if (current) {
+          const nextTracks = current.tracks.map((track) => ({
+            ...track,
+            nodes: track.nodes.map((node) => (node.id === nodeId ? { ...node, questionText: nextQuestion } : node))
+          }));
+          const nextView: ThinkingSpaceView = { ...current, tracks: nextTracks };
+          thinkingViewCacheRef.current[activeSpaceId] = nextView;
+          if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
+        }
+      }
+      setThinkingStore((prev) => ({
+        ...prev,
+        nodes: prev.nodes.map((node) => (node.id === nodeId ? { ...node, rawQuestionText: nextQuestion } : node))
+      }));
+      markLocalChange();
+      return true;
+    },
+    [activeSpaceId, markLocalChange, queueMutation, thinkingView]
   );
 
-  const handleThinkingCopyNode = useCallback(
+  /* const handleThinkingCopyNode = useCallback(
     async (nodeId: string, targetTrackId?: string) => {
       if (!cloudSyncReady) {
         if (!activeSpaceId) return null;
@@ -4207,9 +5118,56 @@ export function TimeArchive() {
       }
     },
     [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId, thinkingStore.nodes]
+  ); */
+
+  const handleThinkingCopyNode = useCallback(
+    async (nodeId: string, targetTrackId?: string) => {
+      if (!activeSpaceId) return null;
+      const currentView = getLocalSpaceView(activeSpaceId);
+      if (!currentView) return null;
+      const sourceNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+      if (!sourceNode) return null;
+
+      const nextNodeId = createId();
+      const createdAt = new Date().toISOString();
+      const nextNode = {
+        ...sourceNode,
+        id: nextNodeId,
+        createdAt,
+        echoNodeId: null,
+        echoTrackId: null
+      };
+      const resolvedTrackId =
+        targetTrackId ??
+        fromTrackParentId(thinkingStore.nodes.find((node) => node.id === nodeId)?.parentNodeId) ??
+        currentView.currentTrackId ??
+        currentView.tracks[0]?.id ??
+        null;
+      if (!resolvedTrackId) return null;
+
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/copy`, {
+        target_track_id: resolvedTrackId,
+        client_node_id: nextNodeId,
+        client_created_at: createdAt,
+        client_updated_at: createdAt
+      });
+      const nextTracks = currentView.tracks.map((track) =>
+        track.id === resolvedTrackId ? { ...track, nodes: [...track.nodes, nextNode], isEmpty: false } : track
+      );
+      const nextView = {
+        ...currentView,
+        currentTrackId: resolvedTrackId,
+        tracks: normalizeTrackList(nextTracks)
+      };
+      commitLocalSpaceView(activeSpaceId, nextView);
+      setThinkingStore((prev) => syncStoreNodesFromView(prev, activeSpaceId, nextView));
+      markLocalChange();
+      return nextNodeId;
+    },
+    [activeSpaceId, commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation, thinkingStore.nodes]
   );
 
-  const handleThinkingSaveNodeAnswer = useCallback(
+  /* const handleThinkingSaveNodeAnswer = useCallback(
     async (nodeId: string, answerText: string | null) => {
       const now = new Date().toISOString();
       const payload = { answer_text: answerText, client_updated_at: now };
@@ -4245,6 +5203,31 @@ export function TimeArchive() {
       return true;
     },
     [activeSpaceId, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId, thinkingView]
+  ); */
+
+  const handleThinkingSaveNodeAnswer = useCallback(
+    async (nodeId: string, answerText: string | null) => {
+      const now = new Date().toISOString();
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/answer`, {
+        answer_text: answerText,
+        client_updated_at: now
+      });
+      if (activeSpaceId) {
+        const current = thinkingViewCacheRef.current[activeSpaceId] ?? (thinkingView?.spaceId === activeSpaceId ? thinkingView : null);
+        if (current) {
+          const nextTracks = current.tracks.map((track) => ({
+            ...track,
+            nodes: track.nodes.map((node) => (node.id === nodeId ? { ...node, answerText } : node))
+          }));
+          const nextView: ThinkingSpaceView = { ...current, tracks: nextTracks };
+          thinkingViewCacheRef.current[activeSpaceId] = nextView;
+          if (thinkingView?.spaceId === activeSpaceId) setThinkingView(nextView);
+        }
+      }
+      markLocalChange();
+      return true;
+    },
+    [activeSpaceId, markLocalChange, queueMutation, thinkingView]
   );
 
   const applyLocalNodeImageAsset = useCallback(
@@ -4303,7 +5286,7 @@ export function TimeArchive() {
     ]
   );
 
-  const handleThinkingSetNodeImage = useCallback(
+  /* const handleThinkingSetNodeImage = useCallback(
     async (nodeId: string, file: File) => {
       if (!file.type.startsWith("image/")) return false;
       const ownerKey = activeOwnerKey;
@@ -4388,9 +5371,60 @@ export function TimeArchive() {
       sessionUser?.userId,
       uploadThinkingMediaAssetBinary
     ]
+  ); */
+
+  const handleThinkingSetNodeImage = useCallback(
+    async (nodeId: string, file: File) => {
+      if (!file.type.startsWith("image/")) return false;
+      const ownerKey = activeOwnerKey;
+      if (!ownerKey) return false;
+
+      const assetId = createId();
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const draftAsset: ThinkingMediaAsset = {
+        id: assetId,
+        fileName: file.name || "image",
+        mimeType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        sha256,
+        width: dimensions.width,
+        height: dimensions.height,
+        createdAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null,
+        syncStatus: "pending"
+      };
+
+      await saveOfflineMediaAsset({
+        id: draftAsset.id,
+        ownerKey,
+        fileName: draftAsset.fileName,
+        mimeType: draftAsset.mimeType,
+        byteSize: draftAsset.byteSize,
+        sha256: draftAsset.sha256,
+        width: draftAsset.width,
+        height: draftAsset.height,
+        status: "pending",
+        blob: file,
+        remoteUrl: null,
+        createdAt: draftAsset.createdAt,
+        updatedAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null,
+        lastError: null
+      });
+      await refreshOfflineMediaAssets(ownerKey);
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/image`, {
+        image_asset_id: draftAsset.id,
+        client_updated_at: new Date().toISOString()
+      });
+      await applyLocalNodeImageAsset(nodeId, draftAsset);
+      return true;
+    },
+    [activeOwnerKey, applyLocalNodeImageAsset, queueMutation, refreshOfflineMediaAssets]
   );
 
-  const handleThinkingRemoveNodeImage = useCallback(
+  /* const handleThinkingRemoveNodeImage = useCallback(
     async (nodeId: string) => {
       const node = thinkingStore.nodes.find((item) => item.id === nodeId);
       if (!node?.imageAssetId) return true;
@@ -4416,9 +5450,23 @@ export function TimeArchive() {
       return true;
     },
     [applyLocalNodeImageAsset, cloudSyncReady, finalizeCloudWrite, handleUnauthorized, queueMutation, sessionUser?.userId, thinkingStore.nodes]
+  ); */
+
+  const handleThinkingRemoveNodeImage = useCallback(
+    async (nodeId: string) => {
+      const node = thinkingStore.nodes.find((item) => item.id === nodeId);
+      if (!node?.imageAssetId) return true;
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/image`, {
+        image_asset_id: null,
+        client_updated_at: new Date().toISOString()
+      });
+      await applyLocalNodeImageAsset(nodeId, null);
+      return true;
+    },
+    [applyLocalNodeImageAsset, queueMutation, thinkingStore.nodes]
   );
 
-  const handleThinkingMisplacedNode = useCallback(
+  /* const handleThinkingMisplacedNode = useCallback(
     async (nodeId: string) => {
       if (!cloudSyncReady) {
         if (!activeSpaceId) return false;
@@ -4473,9 +5521,56 @@ export function TimeArchive() {
       }
     },
     [activeSpaceId, cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
+  ); */
+
+  const handleThinkingMisplacedNode = useCallback(
+    async (nodeId: string) => {
+      if (!activeSpaceId) return false;
+      const currentView = getLocalSpaceView(activeSpaceId);
+      if (!currentView) return false;
+      await queueMutation(`/v1/thinking/nodes/${nodeId}/misplaced`, {
+        client_updated_at: new Date().toISOString()
+      });
+      let parkingTrackId = currentView.parkingTrackId;
+      let nextTracks = [...currentView.tracks];
+      if (!parkingTrackId) {
+        parkingTrackId = createId();
+        nextTracks.push({
+          id: parkingTrackId,
+          titleQuestionText: "Parking",
+          isParking: true,
+          isEmpty: false,
+          nodeCount: 0,
+          nodes: []
+        });
+      }
+      const movingNode = currentView.tracks.flatMap((track) => track.nodes).find((node) => node.id === nodeId);
+      if (!movingNode) return false;
+      nextTracks = nextTracks.map((track) =>
+        track.id === parkingTrackId
+          ? { ...track, nodes: [...track.nodes.filter((node) => node.id !== nodeId), movingNode], isEmpty: false }
+          : { ...track, nodes: track.nodes.filter((node) => node.id !== nodeId) }
+      );
+      const nextView = {
+        ...currentView,
+        parkingTrackId,
+        tracks: normalizeTrackList(nextTracks)
+      };
+      commitLocalSpaceView(activeSpaceId, nextView);
+      setThinkingStore((prev) => {
+        const next = syncStoreNodesFromView(prev, activeSpaceId, nextView);
+        return {
+          ...next,
+          spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === activeSpaceId ? { ...meta, parkingTrackId } : meta))
+        };
+      });
+      markLocalChange();
+      return true;
+    },
+    [activeSpaceId, commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation]
   );
 
-  const handleThinkingSetActiveTrack = useCallback(
+  /* const handleThinkingSetActiveTrack = useCallback(
     async (spaceId: string, trackId: string) => {
       if (!cloudSyncReady) {
         const currentView = getLocalSpaceView(spaceId);
@@ -4505,9 +5600,31 @@ export function TimeArchive() {
       }
     },
     [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, sessionUser?.userId]
+  ); */
+
+  const handleThinkingSetActiveTrack = useCallback(
+    async (spaceId: string, trackId: string) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView || !currentView.tracks.some((track) => track.id === trackId)) return false;
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/active-track`, {
+        track_id: trackId,
+        client_updated_at: new Date().toISOString()
+      });
+      commitLocalSpaceView(spaceId, {
+        ...currentView,
+        currentTrackId: trackId
+      });
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? { ...meta, lastTrackId: trackId } : meta))
+      }));
+      markLocalChange();
+      return true;
+    },
+    [commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation]
   );
 
-  const handleThinkingCreateTrack = useCallback(
+  /* const handleThinkingCreateTrack = useCallback(
     async (spaceId: string) => {
       if (!cloudSyncReady) {
         const currentView = getLocalSpaceView(spaceId);
@@ -4552,6 +5669,42 @@ export function TimeArchive() {
       }
     },
     [cloudSyncReady, commitLocalSpaceView, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, markLocalChange, sessionUser?.userId]
+  ); */
+
+  const handleThinkingCreateTrack = useCallback(
+    async (spaceId: string) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return null;
+      const trackId = createId();
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/tracks`, {
+        client_track_id: trackId,
+        client_updated_at: new Date().toISOString()
+      });
+      const nextTrack = {
+        id: trackId,
+        titleQuestionText: "New track",
+        isParking: false,
+        isEmpty: true,
+        nodeCount: 0,
+        nodes: []
+      };
+      const parkingIndex = currentView.parkingTrackId ? currentView.tracks.findIndex((track) => track.id === currentView.parkingTrackId) : -1;
+      const nextTracks = [...currentView.tracks];
+      if (parkingIndex >= 0) nextTracks.splice(parkingIndex, 0, nextTrack);
+      else nextTracks.push(nextTrack);
+      commitLocalSpaceView(spaceId, {
+        ...currentView,
+        currentTrackId: trackId,
+        tracks: nextTracks
+      });
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? { ...meta, lastTrackId: trackId } : meta))
+      }));
+      markLocalChange();
+      return trackId;
+    },
+    [commitLocalSpaceView, getLocalSpaceView, markLocalChange, queueMutation]
   );
 
   const applyLocalSpaceGalleryState = useCallback(
@@ -4635,7 +5788,7 @@ export function TimeArchive() {
     [commitLocalSpaceView, getLocalSpaceView, markLocalChange, markMediaAssetsDeletedLocally]
   );
 
-  const handleThinkingAddSpaceGalleryImage = useCallback(
+  /* const handleThinkingAddSpaceGalleryImage = useCallback(
     async (spaceId: string, file: File) => {
       if (!file.type.startsWith("image/")) return false;
       const ownerKey = activeOwnerKey;
@@ -4733,9 +5886,68 @@ export function TimeArchive() {
       sessionUser?.userId,
       uploadThinkingMediaAssetBinary
     ]
+  ); */
+
+  const handleThinkingAddSpaceGalleryImage = useCallback(
+    async (spaceId: string, file: File) => {
+      if (!file.type.startsWith("image/")) return false;
+      const ownerKey = activeOwnerKey;
+      if (!ownerKey) return false;
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+
+      const assetId = createId();
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const draftAsset: ThinkingMediaAsset = {
+        id: assetId,
+        fileName: file.name || "image",
+        mimeType: file.type || "application/octet-stream",
+        byteSize: file.size,
+        sha256,
+        width: dimensions.width,
+        height: dimensions.height,
+        createdAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null,
+        syncStatus: "pending"
+      };
+
+      const nextAssetIds = currentView.backgroundAssetIds.includes(draftAsset.id)
+        ? currentView.backgroundAssetIds
+        : [...currentView.backgroundAssetIds, draftAsset.id];
+      const nextSelectedAssetId = currentView.backgroundSelectedAssetId ?? draftAsset.id;
+
+      await saveOfflineMediaAsset({
+        id: draftAsset.id,
+        ownerKey,
+        fileName: draftAsset.fileName,
+        mimeType: draftAsset.mimeType,
+        byteSize: draftAsset.byteSize,
+        sha256: draftAsset.sha256,
+        width: draftAsset.width,
+        height: draftAsset.height,
+        status: "pending",
+        blob: file,
+        remoteUrl: null,
+        createdAt: draftAsset.createdAt,
+        updatedAt: new Date().toISOString(),
+        uploadedAt: null,
+        deletedAt: null,
+        lastError: null
+      });
+      await refreshOfflineMediaAssets(ownerKey);
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, {
+        background_asset_ids: nextAssetIds,
+        background_selected_asset_id: nextSelectedAssetId,
+        client_updated_at: new Date().toISOString()
+      });
+      await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, draftAsset);
+      return true;
+    },
+    [activeOwnerKey, applyLocalSpaceGalleryState, getLocalSpaceView, queueMutation, refreshOfflineMediaAssets]
   );
 
-  const handleThinkingRemoveSpaceGalleryImage = useCallback(
+  /* const handleThinkingRemoveSpaceGalleryImage = useCallback(
     async (spaceId: string, assetId: string) => {
       const currentView = getLocalSpaceView(spaceId);
       if (!currentView) return false;
@@ -4773,9 +5985,31 @@ export function TimeArchive() {
       return true;
     },
     [applyLocalSpaceGalleryState, cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, queueMutation, sessionUser?.userId]
+  ); */
+
+  const handleThinkingRemoveSpaceGalleryImage = useCallback(
+    async (spaceId: string, assetId: string) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+      if (!currentView.backgroundAssetIds.includes(assetId)) return true;
+
+      const nextAssetIds = currentView.backgroundAssetIds.filter((id) => id !== assetId);
+      const nextSelectedAssetId =
+        currentView.backgroundSelectedAssetId === assetId
+          ? nextAssetIds[0] ?? null
+          : nextAssetIds.includes(currentView.backgroundSelectedAssetId ?? "") ? currentView.backgroundSelectedAssetId : nextAssetIds[0] ?? null;
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, {
+        background_asset_ids: nextAssetIds,
+        background_selected_asset_id: nextSelectedAssetId,
+        client_updated_at: new Date().toISOString()
+      });
+      await applyLocalSpaceGalleryState(spaceId, nextAssetIds, nextSelectedAssetId, null);
+      return true;
+    },
+    [applyLocalSpaceGalleryState, getLocalSpaceView, queueMutation]
   );
 
-  const handleThinkingSelectSpaceBackgroundImage = useCallback(
+  /* const handleThinkingSelectSpaceBackgroundImage = useCallback(
     async (spaceId: string, assetId: string | null) => {
       const currentView = getLocalSpaceView(spaceId);
       if (!currentView) return false;
@@ -4808,9 +6042,25 @@ export function TimeArchive() {
       return true;
     },
     [applyLocalSpaceGalleryState, cloudSyncReady, finalizeCloudWrite, getLocalSpaceView, handleUnauthorized, queueMutation, sessionUser?.userId]
+  ); */
+
+  const handleThinkingSelectSpaceBackgroundImage = useCallback(
+    async (spaceId: string, assetId: string | null) => {
+      const currentView = getLocalSpaceView(spaceId);
+      if (!currentView) return false;
+      if (assetId && !currentView.backgroundAssetIds.includes(assetId)) return false;
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/background`, {
+        background_asset_ids: currentView.backgroundAssetIds,
+        background_selected_asset_id: assetId,
+        client_updated_at: new Date().toISOString()
+      });
+      await applyLocalSpaceGalleryState(spaceId, currentView.backgroundAssetIds, assetId, null);
+      return true;
+    },
+    [applyLocalSpaceGalleryState, getLocalSpaceView, queueMutation]
   );
 
-  const handleThinkingWriteToTime = useCallback(
+  /* const handleThinkingWriteToTime = useCallback(
     async (spaceId: string, options?: { preserveOriginalTime?: boolean }) => {
       const now = new Date().toISOString();
       const preserveOriginalTime = options?.preserveOriginalTime !== false;
@@ -4927,9 +6177,77 @@ export function TimeArchive() {
       return { ok: true as const };
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, lifeStore.doubts, markLocalChange, queueMutation, sessionUser?.userId, thinkingStore.spaces, thinkingView]
+  ); */
+
+  const handleThinkingWriteToTime = useCallback(
+    async (spaceId: string, options?: { preserveOriginalTime?: boolean }) => {
+      const now = new Date().toISOString();
+      const preserveOriginalTime = options?.preserveOriginalTime !== false;
+      const currentSpace = thinkingStore.spaces.find((item) => item.id === spaceId);
+      if (!currentSpace) return { ok: false as const, message: "空间不存在" };
+      const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      const sortedNodes =
+        currentView?.tracks
+          .flatMap((track) => track.nodes.map((node) => ({ ...node, trackId: track.id })))
+          .sort((a, b) => new Date(a.createdAt ?? "").getTime() - new Date(b.createdAt ?? "").getTime()) ?? [];
+      const firstPreview = sortedNodes[0]?.questionText?.trim() || null;
+      const lastPreview = sortedNodes[sortedNodes.length - 1]?.questionText?.trim() || firstPreview;
+      const doubtId = currentSpace.sourceTimeDoubtId ?? createId();
+      const sourceTimeDoubt = currentSpace.sourceTimeDoubtId
+        ? lifeStore.doubts.find((item) => item.id === currentSpace.sourceTimeDoubtId) ?? null
+        : null;
+      const writtenAt = preserveOriginalTime ? sourceTimeDoubt?.createdAt ?? currentSpace.createdAt : now;
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
+        preserve_original_time: preserveOriginalTime,
+        client_doubt_id: doubtId,
+        client_updated_at: now
+      });
+
+      setLifeStore((prev) => {
+        const nextDoubt: LifeDoubt = {
+          id: doubtId,
+          rawText: currentSpace.rootQuestionText,
+          firstNodePreview: firstPreview,
+          lastNodePreview: lastPreview,
+          createdAt: writtenAt,
+          archivedAt: null,
+          deletedAt: null,
+          syncStatus: "pending"
+        };
+        const nextDoubts = [nextDoubt, ...prev.doubts.filter((item) => item.id !== doubtId)];
+        return { ...prev, doubts: nextDoubts };
+      });
+
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: prev.spaces.map((space) =>
+          space.id === spaceId
+            ? {
+                ...space,
+                status: "hidden" as const,
+                writtenToTimeAt: writtenAt,
+                sourceTimeDoubtId: doubtId,
+                lastActivityAt: now,
+                syncStatus: "pending"
+              }
+            : space
+        )
+      }));
+      const nextSpacesForPick = thinkingStore.spaces
+        .map((space) => (space.id === spaceId ? { ...space, status: "hidden" as const } : space))
+        .filter((space) => space.status === "active");
+      const nextActive = nextSpacesForPick[0]?.id ?? null;
+      setActiveSpaceId(nextActive);
+      if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
+      else setThinkingView(null);
+      markLocalChange();
+      return { ok: true as const };
+    },
+    [lifeStore.doubts, markLocalChange, queueMutation, thinkingStore.spaces, thinkingView]
   );
 
-  const handleThinkingDeleteSpace = useCallback(
+  /* const handleThinkingDeleteSpace = useCallback(
     async (spaceId: string) => {
       if (cloudSyncReady) {
         try {
@@ -4983,6 +6301,43 @@ export function TimeArchive() {
       sessionUser?.userId,
       thinkingStore.spaces
     ]
+  ); */
+
+  const handleThinkingDeleteSpace = useCallback(
+    async (spaceId: string) => {
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/delete`, {
+        client_updated_at: new Date().toISOString()
+      });
+      delete thinkingViewCacheRef.current[spaceId];
+      let removedAssetIds: string[] = [];
+      setThinkingStore((prev) => {
+        const candidateAssetIds = [
+          ...prev.nodes.filter((node) => node.spaceId === spaceId).map((node) => node.imageAssetId ?? ""),
+          ...prev.spaceMeta
+            .filter((meta) => meta.spaceId === spaceId)
+            .flatMap((meta) => [...(meta.backgroundAssetIds ?? []), meta.backgroundSelectedAssetId ?? ""])
+        ];
+        const nextStore = {
+          ...prev,
+          spaces: prev.spaces.filter((space) => space.id !== spaceId),
+          nodes: prev.nodes.filter((node) => node.spaceId !== spaceId),
+          spaceMeta: prev.spaceMeta.filter((meta) => meta.spaceId !== spaceId),
+          inbox: Object.fromEntries(Object.entries(prev.inbox).filter(([key]) => key !== spaceId))
+        };
+        removedAssetIds = collectUnreferencedMediaAssetIds(nextStore, candidateAssetIds);
+        if (removedAssetIds.length) {
+          nextStore.mediaAssets = nextStore.mediaAssets.filter((asset) => !removedAssetIds.includes(asset.id));
+        }
+        return nextStore;
+      });
+      await markMediaAssetsDeletedLocally(removedAssetIds);
+      const nextActive = pickDefaultSpaceId(thinkingStore.spaces.filter((space) => space.id !== spaceId));
+      setActiveSpaceId(nextActive);
+      setThinkingView(nextActive ? thinkingViewCacheRef.current[nextActive] ?? null : null);
+      markLocalChange();
+      return { ok: true as const };
+    },
+    [markLocalChange, markMediaAssetsDeletedLocally, queueMutation, thinkingStore.spaces]
   );
 
   const handleThinkingExport = useCallback(async (spaceId: string) => {
@@ -4997,7 +6352,7 @@ export function TimeArchive() {
     }
   }, [handleUnauthorized]);
 
-  const handleThinkingRenameSpace = useCallback(
+  /* const handleThinkingRenameSpace = useCallback(
     async (spaceId: string, rootQuestionText: string) => {
       const now = new Date().toISOString();
       const payload = { root_question_text: rootQuestionText, client_updated_at: now };
@@ -5034,6 +6389,24 @@ export function TimeArchive() {
       return { ok: true as const, rootQuestionText: nextText };
     },
     [cloudSyncReady, finalizeCloudWrite, handleUnauthorized, markLocalChange, queueMutation, sessionUser?.userId]
+  ); */
+
+  const handleThinkingRenameSpace = useCallback(
+    async (spaceId: string, rootQuestionText: string) => {
+      const now = new Date().toISOString();
+      const nextText = rootQuestionText.trim();
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/rename`, {
+        root_question_text: rootQuestionText,
+        client_updated_at: now
+      });
+      setThinkingStore((prev) => ({
+        ...prev,
+        spaces: prev.spaces.map((space) => (space.id === spaceId ? { ...space, rootQuestionText: nextText, lastActivityAt: now } : space))
+      }));
+      markLocalChange();
+      return { ok: true as const, rootQuestionText: nextText };
+    },
+    [markLocalChange, queueMutation]
   );
 
   const handleSystemExport = useCallback(
@@ -5214,6 +6587,10 @@ export function TimeArchive() {
 
   const dismissDeadLetterMutation = useCallback(
     async (mutationId: string) => {
+      if (mutationId.startsWith("repair:")) {
+        showNotice("浜戠淇椤规殏涓嶆敮鎸佸湪鏈湴蹇界暐");
+        return;
+      }
       await removeOfflineMutation(mutationId);
       await refreshDeadLetterMutations(activeOwnerKey);
       await refreshPendingMutationCount(activeOwnerKey, true);
@@ -5435,7 +6812,7 @@ export function TimeArchive() {
                 syncDiagnosticsReport={syncDiagnosticsReport}
                 syncRepairing={syncPhase === "repairing" || offlineRuntimeState === "user_syncing"}
                 onSyncRepair={handleSyncRepair}
-                deadLetterMutations={deadLetterMutations}
+                deadLetterMutations={syncIssueMutations}
                 onDismissDeadLetter={dismissDeadLetterMutation}
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
