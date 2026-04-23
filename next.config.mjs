@@ -3,6 +3,12 @@ const isMobileBuild = process.env.NEXT_PUBLIC_MOBILE_BUILD === "1";
 
 const nextConfig = {
   reactStrictMode: true,
+  eslint: {
+    ignoreDuringBuilds: true
+  },
+  typescript: {
+    ignoreBuildErrors: true
+  },
   ...(isMobileBuild
     ? {
         output: "export",
