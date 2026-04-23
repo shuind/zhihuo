@@ -26,6 +26,8 @@
   --input: 220 20% 20%;
   --ring: 220 42% 70%;
   --radius: 0.75rem;
+  --font-ui-sans: "IBM Plex Sans", "Inter", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  --font-time-serif: "Noto Serif SC", "Source Han Serif SC", "STSong", "Songti SC", serif;
   --time-bg: #020203;
   --time-bg-elevated: rgba(7, 7, 9, 0.92);
   --time-bg-panel: rgba(8, 8, 10, 0.72);
