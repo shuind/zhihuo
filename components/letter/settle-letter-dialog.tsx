@@ -6,11 +6,13 @@ import { LetterPaper, type PaperVariant } from "./letter-paper";
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "./letter-exporter-dialog";
+import { saveLetterVariant } from "@/lib/letter-variant-store";
 
 type Phase = "preview" | "sealing" | "sealed";
 
 export type SettleLetterDialogProps = {
   open: boolean;
+  doubtId?: string | null;
   doubtText: string;
   nodes: string[];
   closingNote?: string;
@@ -24,6 +26,7 @@ export type SettleLetterDialogProps = {
 
 export function SettleLetterDialog({
   open,
+  doubtId,
   doubtText,
   nodes,
   closingNote,
@@ -67,6 +70,7 @@ export function SettleLetterDialog({
       setErrMsg(res.message ?? "写入失败，请稍后再试");
       return;
     }
+    saveLetterVariant(doubtId, variant);
     setTimeout(() => setPhase("sealed"), 720);
   };
 

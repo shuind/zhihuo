@@ -17,7 +17,11 @@ import {
   getDateKeyInTimeZone,
   isOlderThanOneYear
 } from "@/components/zhihuo-model";
-import { LetterViewer } from "@/components/letter/letter-viewer";
+import { LetterPaper, type PaperVariant } from "@/components/letter/letter-paper";
+import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
+import { poetize } from "@/lib/letter-poetize";
+import { suggestVariant } from "@/components/letter/letter-exporter-dialog";
+import { loadLetterVariant } from "@/lib/letter-variant-store";
 
 type DateGroup = {
   key: string;
@@ -593,9 +597,57 @@ function DetailBody(props: {
   const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
   const firstTrackNode = collapseWhitespace(props.doubt.firstNodePreview ?? "");
   const lastTrackNode = collapseWhitespace(props.doubt.lastNodePreview ?? firstTrackNode);
-  const shouldShowTrackEdgeSummary = Boolean(firstTrackNode);
   const hasSettled = Boolean(firstTrackNode);
-  const [viewerOpen, setViewerOpen] = useState(false);
+  const [viewMode, setViewMode] = useState<"letter" | "default">(hasSettled ? "letter" : "default");
+
+  useEffect(() => {
+    setViewMode(hasSettled ? "letter" : "default");
+  }, [hasSettled, props.doubt.id]);
+
+  const writtenAt = useMemo(() => new Date(props.doubt.createdAt), [props.doubt.createdAt]);
+  const dateLabel = useMemo(
+    () => `${writtenAt.getFullYear()} / ${writtenAt.getMonth() + 1} / ${writtenAt.getDate()}`,
+    [writtenAt]
+  );
+  const solarTermLabel = useMemo(() => describeSolarTerm(writtenAt), [writtenAt]);
+  const solarTermName = useMemo(() => getCurrentSolarTerm(writtenAt).name, [writtenAt]);
+  const moon = useMemo(() => getMoonPhase(writtenAt), [writtenAt]);
+
+  const letterLines = useMemo(
+    () =>
+      [
+        firstTrackNode,
+        lastTrackNode && lastTrackNode !== firstTrackNode ? lastTrackNode : "",
+        props.noteText
+      ].filter(Boolean) as string[],
+    [firstTrackNode, lastTrackNode, props.noteText]
+  );
+
+  const letterVariant = useMemo<PaperVariant>(
+    () => loadLetterVariant(props.doubt.id) ?? suggestVariant(writtenAt, true),
+    [props.doubt.id, writtenAt]
+  );
+
+  const poetizedLetter = useMemo(
+    () => poetize({ doubt: props.doubt.rawText, nodes: letterLines }),
+    [props.doubt.rawText, letterLines]
+  );
+
+  const letterPaperRef = useRef<HTMLDivElement>(null);
+
+  const handleSaveLetter = useCallback(async () => {
+    if (!letterPaperRef.current) return;
+    const { toPng } = await import("html-to-image");
+    const dataUrl = await toPng(letterPaperRef.current, {
+      pixelRatio: 3,
+      cacheBust: true,
+      backgroundColor: "transparent"
+    });
+    const a = document.createElement("a");
+    a.href = dataUrl;
+    a.download = `zhihuo-jian-${writtenAt.getTime()}.png`;
+    a.click();
+  }, [writtenAt]);
 
   const handlePrimaryAction = () => {
     props.onClose();
@@ -611,10 +663,44 @@ function DetailBody(props: {
   return (
     <div className={cn("flex h-full flex-col", props.compact && "px-6 pt-4 md:px-8")}>
       <div className={cn("flex items-center justify-between px-8 py-7", props.compact && "px-0")}>
-        <div>
+        <div className="flex items-center gap-5">
           <span className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">{"\u7EC6\u8282"}</span>
+          {hasSettled ? (
+            <div className="flex items-center gap-3 text-[12px] tracking-[0.14em]">
+              <button
+                type="button"
+                onClick={() => setViewMode("letter")}
+                className={cn(
+                  "transition-colors duration-500",
+                  viewMode === "letter"
+                    ? "text-[rgba(220,210,180,0.82)]"
+                    : "text-[rgba(140,148,153,0.45)] hover:text-[rgba(190,196,200,0.7)]"
+                )}
+              >
+                笺
+              </button>
+              <span className="h-3 w-px bg-[rgba(140,148,153,0.18)]" />
+              <button
+                type="button"
+                onClick={() => setViewMode("default")}
+                className={cn(
+                  "transition-colors duration-500",
+                  viewMode === "default"
+                    ? "text-[rgba(210,216,220,0.82)]"
+                    : "text-[rgba(140,148,153,0.45)] hover:text-[rgba(190,196,200,0.7)]"
+                )}
+              >
+                默认
+              </button>
+            </div>
+          ) : null}
         </div>
         <div className="flex items-center gap-3">
+          {viewMode === "letter" && hasSettled ? (
+            <button type="button" className="text-[11px] tracking-[0.1em] text-[var(--time-text-soft)] transition-colors duration-500 hover:text-[var(--time-text)]" onClick={handleSaveLetter}>
+              {"\u4FDD\u5B58"}
+            </button>
+          ) : null}
           {props.compact && props.onOpenSearch ? (
             <button type="button" className="text-[11px] tracking-[0.1em] text-[var(--time-text-soft)] transition-colors duration-500 hover:text-[var(--time-text)]" onClick={props.onOpenSearch}>
               {"\u68C0\u7D22"}
@@ -628,76 +714,94 @@ function DetailBody(props: {
 
       <AnimatePresence mode="wait" initial={false}>
         <motion.div
-          key={props.doubt.id}
+          key={`${props.doubt.id}:${viewMode}`}
           className={cn("flex-1 overflow-y-auto px-8 py-5", props.compact ? "px-0 py-4" : "")}
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.48, ease: EASE_GENTLE }}
         >
-          <div className="mb-7 mt-1">
-            <p className="text-[16px] font-light leading-[1.65] tracking-[0.01em] text-[rgba(208,215,219,0.85)] md:text-[22px]" data-life-selected-title="true">
-              {props.doubt.rawText}
-            </p>
-          </div>
+          {viewMode === "letter" && hasSettled ? (
+            <div className="flex flex-col items-center">
+              <div className="w-full max-w-[420px]">
+                <LetterPaper
+                  ref={letterPaperRef}
+                  variant={letterVariant}
+                  title={poetizedLetter.title || props.doubt.rawText}
+                  lines={letterLines.length ? letterLines : poetizedLetter.lines}
+                  dateLabel={dateLabel}
+                  solarTermLabel={solarTermLabel}
+                  moon={moon}
+                  authorName="shuind"
+                  sealVisible
+                  sealDateLabel={dateLabel}
+                  sealSolarTerm={solarTermName}
+                />
+              </div>
 
-        <div className="mb-6 mt-2 flex flex-wrap items-center gap-6 text-[13px] tracking-[0.03em] text-[rgba(126,132,136,0.36)]">
-          <span className="flex items-center gap-2">
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" className="shrink-0 text-current opacity-90">
-              <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.2" />
-              <path d="M7 3.9V7.2L9.25 8.45" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
-          </span>
-        </div>
-
-          <div className="mb-6 h-px bg-gradient-to-r from-transparent via-white/[0.05] to-transparent" />
-
-          {props.noteText ? (
-            <div className="mb-12">
-              <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u6CE8\u8BB0"}</h3>
-              <p className="text-[15px] italic leading-[1.95] text-[rgba(182,189,194,0.83)]">{props.noteText}</p>
-            </div>
-          ) : null}
-
-          {shouldShowTrackEdgeSummary ? (
-            <div className="mb-12 space-y-4">
-              <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"初："}{firstTrackNode}</p>
-              <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"终："}{lastTrackNode}</p>
+              {canEditNote ? (
+                <div className="mt-10 w-full max-w-[420px]">
+                  <h3 className="mb-3 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
+                  <input
+                    defaultValue={props.noteText}
+                    maxLength={42}
+                    placeholder={"\u7559\u4E00\u53E5\u8BDD"}
+                    className="h-11 w-full border-0 border-b border-white/[0.09] bg-transparent px-0 text-[15px] text-[rgba(196,203,208,0.82)] outline-none transition-colors duration-700 placeholder:text-[rgba(136,144,149,0.52)] focus:border-[rgba(160,170,176,0.2)]"
+                    onBlur={(event) => props.onSaveNote(event.target.value)}
+                  />
+                </div>
+              ) : null}
             </div>
           ) : (
-            <div className="mb-12" />
+            <>
+              <div className="mb-7 mt-1">
+                <p className="text-[16px] font-light leading-[1.65] tracking-[0.01em] text-[rgba(208,215,219,0.85)] md:text-[22px]" data-life-selected-title="true">
+                  {props.doubt.rawText}
+                </p>
+              </div>
+
+              <div className="mb-6 mt-2 flex flex-wrap items-center gap-6 text-[13px] tracking-[0.03em] text-[rgba(126,132,136,0.36)]">
+                <span className="flex items-center gap-2">
+                  <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" className="shrink-0 text-current opacity-90">
+                    <circle cx="7" cy="7" r="5.25" stroke="currentColor" strokeWidth="1.2" />
+                    <path d="M7 3.9V7.2L9.25 8.45" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                  <span>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</span>
+                </span>
+              </div>
+
+              <div className="mb-6 h-px bg-gradient-to-r from-transparent via-white/[0.05] to-transparent" />
+
+              {props.noteText ? (
+                <div className="mb-12">
+                  <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u6CE8\u8BB0"}</h3>
+                  <p className="text-[15px] italic leading-[1.95] text-[rgba(182,189,194,0.83)]">{props.noteText}</p>
+                </div>
+              ) : null}
+
+              {hasSettled ? (
+                <div className="mb-12 space-y-4">
+                  <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"初："}{firstTrackNode}</p>
+                  <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"终："}{lastTrackNode}</p>
+                </div>
+              ) : (
+                <div className="mb-12" />
+              )}
+
+              {canEditNote ? (
+                <div className="mb-12">
+                  <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
+                  <input
+                    defaultValue={props.noteText}
+                    maxLength={42}
+                    placeholder={"\u7559\u4E00\u53E5\u8BDD"}
+                    className="h-12 w-full border-0 border-b border-white/[0.09] bg-transparent px-0 text-[16px] text-[rgba(196,203,208,0.82)] outline-none transition-colors duration-700 placeholder:text-[rgba(136,144,149,0.52)] focus:border-[rgba(160,170,176,0.2)]"
+                    onBlur={(event) => props.onSaveNote(event.target.value)}
+                  />
+                </div>
+              ) : null}
+            </>
           )}
-
-          {hasSettled ? (
-            <div className="mb-10">
-              <button
-                type="button"
-                onClick={() => setViewerOpen(true)}
-                className="group inline-flex items-center gap-2 text-[12px] tracking-[0.14em] text-[rgba(160,168,173,0.6)] transition-colors duration-500 hover:text-[rgba(220,210,180,0.85)]"
-              >
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-                  <path d="M2.5 2.5h6.5l2.5 2.5v6.5a.5.5 0 0 1-.5.5H2.5a.5.5 0 0 1-.5-.5V3a.5.5 0 0 1 .5-.5Z" stroke="currentColor" strokeWidth="1" />
-                  <path d="M9 2.5V5h2.5" stroke="currentColor" strokeWidth="1" />
-                  <path d="M4.5 7.5h5M4.5 9.5h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
-                </svg>
-                <span>翻开这页笺</span>
-              </button>
-            </div>
-          ) : null}
-
-          {canEditNote ? (
-            <div className="mb-12">
-              <h3 className="mb-4 text-[11px] uppercase tracking-[0.08em] text-[var(--time-text)]/86">{"\u7ED9\u90A3\u65F6\u7684\u81EA\u5DF1"}</h3>
-              <input
-                defaultValue={props.noteText}
-                maxLength={42}
-                placeholder={"\u7559\u4E00\u53E5\u8BDD"}
-                className="h-12 w-full border-0 border-b border-white/[0.09] bg-transparent px-0 text-[16px] text-[rgba(196,203,208,0.82)] outline-none transition-colors duration-700 placeholder:text-[rgba(136,144,149,0.52)] focus:border-[rgba(160,170,176,0.2)]"
-                onBlur={(event) => props.onSaveNote(event.target.value)}
-              />
-            </div>
-          ) : null}
         </motion.div>
       </AnimatePresence>
 
@@ -712,14 +816,6 @@ function DetailBody(props: {
         </div>
       </div>
 
-      <LetterViewer
-        open={viewerOpen}
-        doubtText={props.doubt.rawText}
-        lines={[firstTrackNode, lastTrackNode !== firstTrackNode ? lastTrackNode : "", props.noteText].filter(Boolean)}
-        writtenAt={new Date(props.doubt.createdAt)}
-        frozen
-        onClose={() => setViewerOpen(false)}
-      />
     </div>
   );
 }

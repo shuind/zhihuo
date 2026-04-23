@@ -2072,6 +2072,7 @@ export function ThinkingLayer(props: {
       {activeSpace ? (
         <SettleLetterDialog
           open={writeToTimeOpen}
+          doubtId={activeSpace.sourceTimeDoubtId ?? activeSpace.id}
           doubtText={activeSpace.rootQuestionText}
           nodes={tracks.flatMap((track) => track.nodes.map((node) => node.questionText ?? "")).filter(Boolean)}
           writtenAt={new Date(activeSpace.createdAt ?? Date.now())}
