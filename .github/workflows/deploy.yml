@@ -75,6 +75,7 @@ jobs:
             test -f .env.production
             cat > .npmrc <<'EOF'
             registry=https://registry.npmmirror.com
+            @fontsource:registry=https://registry.npmjs.org
             fetch-retries=5
             fetch-retry-mintimeout=20000
             fetch-retry-maxtimeout=120000

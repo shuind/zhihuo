@@ -1,15 +1,17 @@
 FROM docker.m.daocloud.io/library/node:20-bookworm-slim AS base
 
 ARG NPM_REGISTRY=https://registry.npmmirror.com
+ARG FONTSOURCE_REGISTRY=https://registry.npmjs.org
 ENV PNPM_HOME="/pnpm"
 ENV PATH="$PNPM_HOME:$PATH"
 ENV NPM_CONFIG_REGISTRY=$NPM_REGISTRY
+ENV FONTSOURCE_NPM_REGISTRY=$FONTSOURCE_REGISTRY
 RUN corepack enable
 
 FROM base AS deps
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm config set registry "$NPM_CONFIG_REGISTRY"
+RUN pnpm config set registry "$NPM_CONFIG_REGISTRY" && pnpm config set @fontsource:registry "$FONTSOURCE_NPM_REGISTRY"
 RUN pnpm install --frozen-lockfile
 
 FROM base AS builder
@@ -24,7 +26,7 @@ ENV NODE_ENV=production
 ENV PORT=3000
 
 COPY package.json pnpm-lock.yaml ./
-RUN pnpm config set registry "$NPM_CONFIG_REGISTRY"
+RUN pnpm config set registry "$NPM_CONFIG_REGISTRY" && pnpm config set @fontsource:registry "$FONTSOURCE_NPM_REGISTRY"
 RUN pnpm install --prod --frozen-lockfile
 
 COPY --from=builder /app/.next ./.next
