@@ -80,21 +80,32 @@ jobs:
             fetch-retry-maxtimeout=120000
             network-timeout=600000
             EOF
-            docker compose up -d --build --pull never || {
-              docker compose ps || true
-              docker compose logs --tail=200 postgres app || true
-              exit 1
-            }
+            up_rc=0
+            docker compose up -d --build --pull never || up_rc=$?
             docker compose ps
-            for i in {1..30}; do
-              if curl -sf http://127.0.0.1:3000/v1/health >/dev/null; then
-                echo "healthcheck ok"
-                exit 0
+
+            app_container="$(docker compose ps -q app)"
+            postgres_container="$(docker compose ps -q postgres)"
+            test -n "$app_container"
+            test -n "$postgres_container"
+
+            for i in {1..60}; do
+              app_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$app_container" 2>/dev/null || echo missing)"
+              postgres_status="$(docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$postgres_container" 2>/dev/null || echo missing)"
+              echo "app=$app_status postgres=$postgres_status attempt=$i"
+
+              if [ "$app_status" = "healthy" ] && [ "$postgres_status" = "healthy" ]; then
+                if curl -sf http://127.0.0.1:3000/v1/health >/dev/null; then
+                  echo "healthcheck ok"
+                  exit 0
+                fi
               fi
               sleep 2
             done
-            echo "healthcheck failed"
-            docker compose logs --tail=120 app || true
+
+            echo "deploy verification failed (docker compose up rc=${up_rc})"
+            docker compose ps || true
+            docker compose logs --tail=200 postgres app || true
             exit 1
 
       - name: Cleanup SSH key
