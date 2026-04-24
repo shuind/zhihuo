@@ -60,7 +60,7 @@ export function PaperOrnament({ variant, palette }: Props) {
           viewBox="0 0 56 56"
         >
           <rect x="4" y="4" width="48" height="48" fill={palette.accent} opacity="0.78" />
-          <g fill="#fbf8f1" fontFamily='"STKaiti","KaiTi",serif' fontSize="14" fontWeight="700" textAnchor="middle">
+          <g fill="#fbf8f1" fontFamily='"Noto Serif SC",serif' fontSize="14" fontWeight="700" textAnchor="middle">
             <text x="18" y="24">知</text>
             <text x="38" y="24">惑</text>
             <text x="18" y="44">之</text>
@@ -100,7 +100,7 @@ export function PaperOrnament({ variant, palette }: Props) {
         >
           <g fill={palette.accent} opacity="0.7">
             <rect x="30" y="20" width="46" height="46" rx="1" />
-            <g fill="#f5e2c8" fontFamily='"STKaiti","KaiTi",serif' fontSize="14" fontWeight="700" textAnchor="middle">
+            <g fill="#f5e2c8" fontFamily='"Noto Serif SC",serif' fontSize="14" fontWeight="700" textAnchor="middle">
               <text x="42" y="40">惑</text>
               <text x="64" y="40">之</text>
               <text x="42" y="58">一</text>

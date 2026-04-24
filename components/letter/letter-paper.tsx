@@ -261,7 +261,7 @@ function getPalette(variant: PaperVariant): Palette {
         accent: "#b08a4a",
         moonLit: "#c9a567",
         moonDark: "#7a6338",
-        font: 'var(--font-time-serif), "Noto Serif SC", "STSong", serif'
+        font: 'var(--font-time-serif), "Noto Serif SC", serif'
       };
     case "vellum":
       return {
@@ -315,7 +315,7 @@ function getPalette(variant: PaperVariant): Palette {
         accent: "#b93a2a",
         moonLit: "#4a3a2a",
         moonDark: "#bfb09a",
-        font: 'var(--font-time-serif), "Noto Serif SC", "STKaiti", "KaiTi", serif'
+        font: 'var(--font-time-serif), "Noto Serif SC", serif'
       };
     case "tide":
       return {
@@ -351,7 +351,7 @@ function getPalette(variant: PaperVariant): Palette {
         accent: "#8a1a10",
         moonLit: "#3a1a10",
         moonDark: "#d9a07a",
-        font: 'var(--font-time-serif), "Noto Serif SC", "STKaiti", serif'
+        font: 'var(--font-time-serif), "Noto Serif SC", serif'
       };
   }
 }
