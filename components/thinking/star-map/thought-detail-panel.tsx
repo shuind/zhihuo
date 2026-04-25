@@ -1,69 +1,89 @@
-"use client";
+"use client"
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react"
+import type {
+  ThinkingTrackNodeView,
+  ThinkingTrackView,
+} from "@/components/thinking-layer"
+import { Textarea } from "@/components/ui/textarea"
+import { cn } from "@/lib/utils"
 
-import { Textarea } from "@/components/ui/textarea";
-import { cn } from "@/lib/utils";
+interface SelectedRef {
+  trackId: string
+  nodeId: string
+}
 
-import { formatClock } from "./star-map-layout";
-import type { StarMapMainOrbit, StarMapNode } from "./star-map-types";
-
-type Props = {
-  selectedNode: StarMapNode | null;
-  mainOrbit: StarMapMainOrbit | null;
-  onClose: () => void;
-  onSelectMainNode: (nodeId: string) => void;
-  onJumpToTrackNode: (trackId: string, nodeId: string) => void;
-  onSubmitFromNode?: (
-    trackId: string,
-    nodeId: string,
-    rawInput: string
-  ) => Promise<void>;
-  composerEnabled: boolean;
-};
+interface Props {
+  selected: SelectedRef | null
+  tracks: ThinkingTrackView[]
+  onClose: () => void
+  onSelectNode: (trackId: string, nodeId: string) => void
+  onJumpToTrackNode: (trackId: string, nodeId: string) => void
+  onSubmitFromNode?: (trackId: string, nodeId: string, rawInput: string) => Promise<void>
+  composerEnabled: boolean
+}
 
 export function ThoughtDetailPanel({
-  selectedNode,
-  mainOrbit,
+  selected,
+  tracks,
   onClose,
-  onSelectMainNode,
+  onSelectNode,
   onJumpToTrackNode,
   onSubmitFromNode,
   composerEnabled,
 }: Props) {
-  const [input, setInput] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [input, setInput] = useState("")
+  const [submitting, setSubmitting] = useState(false)
+  const inputRef = useRef<HTMLTextAreaElement | null>(null)
 
-  // 切换节点时清空输入框
+  // resolve selected node from tracks
+  const resolved = (() => {
+    if (!selected) return null
+    const track = tracks.find((t) => t.id === selected.trackId)
+    if (!track) return null
+    const idx = track.nodes.findIndex((n) => n.id === selected.nodeId)
+    if (idx < 0) return null
+    return { track, node: track.nodes[idx], idx }
+  })()
+
+  // clear input when switching nodes
   useEffect(() => {
-    setInput("");
-  }, [selectedNode?.id]);
+    setInput("")
+  }, [selected?.nodeId])
 
-  if (!selectedNode || !mainOrbit) return null;
+  // ESC closes
+  useEffect(() => {
+    if (!resolved) return
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    return () => window.removeEventListener("keydown", onKey)
+  }, [resolved, onClose])
 
-  // 同主轨上的前后节点（最多各 1 个）
-  const idx = mainOrbit.nodes.findIndex((n) => n.id === selectedNode.id);
-  const neighbors: StarMapNode[] = [];
-  if (idx > 0) neighbors.push(mainOrbit.nodes[idx - 1]);
-  if (idx >= 0 && idx < mainOrbit.nodes.length - 1) {
-    neighbors.push(mainOrbit.nodes[idx + 1]);
-  }
+  if (!resolved) return null
+
+  const { track, node, idx } = resolved
+  const prev = idx > 0 ? track.nodes[idx - 1] : null
+  const next = idx < track.nodes.length - 1 ? track.nodes[idx + 1] : null
+  const neighbors: ThinkingTrackNodeView[] = []
+  if (prev) neighbors.push(prev)
+  if (next) neighbors.push(next)
 
   const fullText =
-    (selectedNode.answerText && selectedNode.answerText.trim()) ||
-    (selectedNode.noteText && selectedNode.noteText.trim()) ||
-    "";
+    (node.answerText && node.answerText.trim()) ||
+    (node.noteText && node.noteText.trim()) ||
+    ""
 
   async function handleSubmit() {
-    const text = input.trim();
-    if (!text || !selectedNode || !onSubmitFromNode) return;
-    setSubmitting(true);
+    const text = input.trim()
+    if (!text || !onSubmitFromNode) return
+    setSubmitting(true)
     try {
-      await onSubmitFromNode(selectedNode.trackId, selectedNode.id, text);
-      setInput("");
+      await onSubmitFromNode(track.id, node.id, text)
+      setInput("")
     } finally {
-      setSubmitting(false);
+      setSubmitting(false)
     }
   }
 
@@ -72,7 +92,6 @@ export function ThoughtDetailPanel({
       className="relative flex h-full w-[340px] shrink-0 flex-col border-l border-white/[0.06]"
       style={{ backgroundColor: "rgba(10,10,12,0.96)" }}
     >
-      {/* 头部 */}
       <div className="flex items-center justify-between px-6 pt-6">
         <button
           type="button"
@@ -80,13 +99,7 @@ export function ThoughtDetailPanel({
           className="flex items-center gap-1.5 rounded-full px-2 py-1 text-[12px] text-[rgba(237,230,212,0.55)] transition-colors hover:bg-white/[0.04] hover:text-[rgba(237,230,212,0.85)]"
           aria-label="关闭详情"
         >
-          <svg
-            width="12"
-            height="12"
-            viewBox="0 0 12 12"
-            fill="none"
-            aria-hidden="true"
-          >
+          <svg width="12" height="12" viewBox="0 0 12 12" fill="none" aria-hidden="true">
             <path
               d="M3 3 L9 9 M9 3 L3 9"
               stroke="currentColor"
@@ -99,38 +112,28 @@ export function ThoughtDetailPanel({
       </div>
 
       <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pb-6 pt-5">
-        {/* 选中节点 */}
+        {/* selected */}
         <div>
           <div
             className="text-[11px]"
-            style={{
-              color: "rgba(237,230,212,0.4)",
-              letterSpacing: "0.06em",
-            }}
+            style={{ color: "rgba(237,230,212,0.4)", letterSpacing: "0.06em" }}
           >
-            {formatClock(selectedNode.createdAt)}
+            {hhmm(node.createdAt)}
           </div>
           <div
             className="mt-1 text-[15px]"
-            style={{
-              color: "#EDE6D4",
-              lineHeight: 1.6,
-              letterSpacing: "0.005em",
-            }}
+            style={{ color: "#EDE6D4", lineHeight: 1.6, letterSpacing: "0.005em" }}
           >
-            {selectedNode.questionText}
+            {node.questionText}
           </div>
         </div>
 
-        {/* 前后思路 */}
+        {/* neighbors */}
         {neighbors.length > 0 ? (
           <div>
             <div
               className="text-[11px]"
-              style={{
-                color: "rgba(237,230,212,0.42)",
-                letterSpacing: "0.06em",
-              }}
+              style={{ color: "rgba(237,230,212,0.42)", letterSpacing: "0.06em" }}
             >
               前后思路
             </div>
@@ -139,24 +142,18 @@ export function ThoughtDetailPanel({
                 <button
                   key={n.id}
                   type="button"
-                  onClick={() => onSelectMainNode(n.id)}
+                  onClick={() => onSelectNode(track.id, n.id)}
                   className="group flex flex-col items-start gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
                 >
                   <span
                     className="text-[11px]"
-                    style={{
-                      color: "rgba(237,230,212,0.4)",
-                      letterSpacing: "0.06em",
-                    }}
+                    style={{ color: "rgba(237,230,212,0.4)", letterSpacing: "0.06em" }}
                   >
-                    {formatClock(n.createdAt)}
+                    {hhmm(n.createdAt)}
                   </span>
                   <span
                     className="line-clamp-2 text-[13px]"
-                    style={{
-                      color: "rgba(237,230,212,0.78)",
-                      lineHeight: 1.55,
-                    }}
+                    style={{ color: "rgba(237,230,212,0.78)", lineHeight: 1.55 }}
                   >
                     {n.questionText}
                   </span>
@@ -166,24 +163,18 @@ export function ThoughtDetailPanel({
           </div>
         ) : null}
 
-        {/* 完整内容 */}
+        {/* full content */}
         {fullText ? (
           <div>
             <div
               className="text-[11px]"
-              style={{
-                color: "rgba(237,230,212,0.42)",
-                letterSpacing: "0.06em",
-              }}
+              style={{ color: "rgba(237,230,212,0.42)", letterSpacing: "0.06em" }}
             >
               完整内容
             </div>
             <div
               className="mt-3 whitespace-pre-wrap text-[13.5px]"
-              style={{
-                color: "rgba(237,230,212,0.78)",
-                lineHeight: 1.7,
-              }}
+              style={{ color: "rgba(237,230,212,0.78)", lineHeight: 1.7 }}
             >
               {fullText}
             </div>
@@ -192,12 +183,9 @@ export function ThoughtDetailPanel({
 
         <div className="flex-1" />
 
-        {/* 跳回思路视图 */}
         <button
           type="button"
-          onClick={() =>
-            onJumpToTrackNode(selectedNode.trackId, selectedNode.id)
-          }
+          onClick={() => onJumpToTrackNode(track.id, node.id)}
           className="self-start rounded-full px-3 py-1 text-[11.5px] transition-colors"
           style={{
             color: "rgba(237,230,212,0.5)",
@@ -208,7 +196,6 @@ export function ThoughtDetailPanel({
         </button>
       </div>
 
-      {/* 继续输入框 */}
       {composerEnabled ? (
         <div
           className="border-t border-white/[0.05] px-5 py-4"
@@ -226,20 +213,15 @@ export function ThoughtDetailPanel({
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => {
-                if (
-                  (e.key === "Enter" && (e.metaKey || e.ctrlKey)) ||
-                  (e.key === "Enter" && !e.shiftKey && false)
-                ) {
-                  e.preventDefault();
-                  void handleSubmit();
+                if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                  e.preventDefault()
+                  void handleSubmit()
                 }
               }}
               placeholder="继续从这里展开思路…"
               rows={1}
               className="min-h-[28px] resize-none border-0 bg-transparent p-0 text-[13.5px] shadow-none focus-visible:ring-0"
-              style={{
-                color: "#EDE6D4",
-              }}
+              style={{ color: "#EDE6D4" }}
               disabled={submitting}
             />
             <button
@@ -253,13 +235,7 @@ export function ThoughtDetailPanel({
               }}
               aria-label="提交"
             >
-              <svg
-                width="14"
-                height="14"
-                viewBox="0 0 14 14"
-                fill="none"
-                aria-hidden="true"
-              >
+              <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
                 <path
                   d="M3 11 L11 3 M6 3 H11 V8"
                   stroke="currentColor"
@@ -273,5 +249,14 @@ export function ThoughtDetailPanel({
         </div>
       ) : null}
     </aside>
-  );
+  )
+}
+
+function hhmm(input?: string): string {
+  if (!input) return ""
+  const d = new Date(input)
+  if (Number.isNaN(d.getTime())) return ""
+  const hh = String(d.getHours()).padStart(2, "0")
+  const mm = String(d.getMinutes()).padStart(2, "0")
+  return `${hh}:${mm}`
 }

@@ -1,197 +1,121 @@
-"use client";
+"use client"
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react"
+import type { ThinkingTrackView } from "@/components/thinking-layer"
+import { cn } from "@/lib/utils"
+import { buildFallbackScene } from "./director/scene-fallback"
+import { StageRenderer } from "./stage/stage-renderer"
+import { ThoughtDetailPanel } from "./thought-detail-panel"
 
-import type { ThinkingTrackView } from "@/components/thinking-layer";
-import { cn } from "@/lib/utils";
+export interface StarMapViewProps {
+  rootQuestionText: string
+  tracks: ThinkingTrackView[]
+  activeTrackId?: string | null
+  spaceId?: string
+  frozen?: boolean
 
-import { StarMapCanvas } from "./star-map-canvas";
-import { computeStarMapLayout } from "./star-map-layout";
-import { ThoughtDetailPanel } from "./thought-detail-panel";
+  /** kept for API parity; not invoked by v1 since we don't render cluster pills. */
+  onSelectTrack?: (trackId: string) => void
+  onJumpToTrackNode: (trackId: string, nodeId: string) => void
+  onSubmitFromNode?: (trackId: string, nodeId: string, rawInput: string) => Promise<void>
 
-type Mode = "tracks" | "starmap";
+  composerEnabled?: boolean
+  className?: string
 
-export type StarMapViewProps = {
-  rootQuestionText: string;
-  tracks: ThinkingTrackView[];
-  activeTrackId: string | null;
-  frozen: boolean;
-  /** 顶部 tab 当前激活的视图 */
-  mode: Mode;
-  /** 切换 tab。"tracks" 时调用方负责切回线性思路视图 */
-  onModeChange: (mode: Mode) => void;
-  /** 点击外围星团时，把对应思路设为主轨 */
-  onSelectTrack: (trackId: string) => void;
-  /** 在思路视图中查看某节点（关闭星图、回到线性视图、滚动定位） */
-  onJumpToTrackNode: (trackId: string, nodeId: string) => void;
-  /** 详情面板里继续从某节点展开思路 */
-  onSubmitFromNode?: (
-    trackId: string,
-    nodeId: string,
-    rawInput: string
-  ) => Promise<void>;
-  composerEnabled: boolean;
-  className?: string;
-};
+  // mode props kept so existing callsites don't break; we intentionally
+  // do not render any in-canvas tabs (extreme minimalism).
+  mode?: "starmap" | "tracks"
+  onModeChange?: (mode: "starmap" | "tracks") => void
+}
 
 export function StarMapView({
   rootQuestionText,
   tracks,
   activeTrackId,
+  spaceId,
   frozen,
-  mode,
-  onModeChange,
-  onSelectTrack,
   onJumpToTrackNode,
   onSubmitFromNode,
-  composerEnabled,
+  composerEnabled = true,
   className,
 }: StarMapViewProps) {
-  // 用一个独立的 layout 算 mainOrbit/nodes（用于详情面板和选中态），
-  // 但 canvas 内部会自己根据真实尺寸再算一遍。这一份只用作"列表层数据"。
-  const orbitData = useMemo(() => {
-    const dryLayout = computeStarMapLayout({
-      width: 1000,
-      height: 700,
-      rootQuestionText,
-      tracks,
-      activeTrackId,
-    });
-    return dryLayout.mainOrbit;
-  }, [tracks, activeTrackId, rootQuestionText]);
+  const [selected, setSelected] = useState<{ trackId: string; nodeId: string } | null>(null)
 
-  const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  // stable seed per space so the layout doesn't twitch on rerender
+  const seed = useMemo(() => spaceId || hashTracks(tracks), [spaceId, tracks])
 
-  // 切换主轨或没有节点时，清掉选中
-  useEffect(() => {
-    if (!orbitData) {
-      setSelectedNodeId(null);
-      return;
-    }
-    if (
-      selectedNodeId &&
-      !orbitData.nodes.some((n) => n.id === selectedNodeId)
-    ) {
-      setSelectedNodeId(null);
-    }
-  }, [orbitData, selectedNodeId]);
+  const scene = useMemo(
+    () =>
+      buildFallbackScene({
+        rootText: rootQuestionText,
+        tracks,
+        activeTrackId,
+        spaceSeed: seed,
+      }),
+    [rootQuestionText, tracks, activeTrackId, seed]
+  )
 
-  const selectedNode =
-    (selectedNodeId && orbitData?.nodes.find((n) => n.id === selectedNodeId)) ||
-    null;
-
-  const showDetail = selectedNode !== null;
+  const selectedStarId = selected ? `s_${selected.nodeId}` : null
+  const showDetail = selected !== null
 
   return (
-    <div
-      className={cn(
-        "relative flex h-full w-full overflow-hidden rounded-[20px]",
-        className
-      )}
-      style={{ backgroundColor: "#0a0a0c" }}
-    >
-      {/* 主区：画布 */}
-      <div className="relative flex min-w-0 flex-1 flex-col">
-        {/* 顶部 tabs */}
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-20 flex items-center justify-center px-6 pt-5">
-          <div
-            className="pointer-events-auto flex items-center gap-1 rounded-full px-1 py-1"
-            style={{
-              backgroundColor: "rgba(255,255,255,0.03)",
-              border: "1px solid rgba(237,230,212,0.08)",
-            }}
-          >
-            <ModeButton
-              active={mode === "tracks"}
-              onClick={() => onModeChange("tracks")}
-              label="思路"
-            />
-            <ModeButton
-              active={mode === "starmap"}
-              onClick={() => onModeChange("starmap")}
-              label="星图"
-            />
-          </div>
-        </div>
-
-        {/* 画布 */}
-        <StarMapCanvas
-          input={{ rootQuestionText, tracks, activeTrackId }}
-          selectedNodeId={selectedNodeId}
-          onSelectMainNode={(id) => setSelectedNodeId(id)}
-          onSelectCluster={(trackId) => {
-            setSelectedNodeId(null);
-            onSelectTrack(trackId);
+    <div className={cn("relative flex h-full w-full overflow-hidden bg-[#0a0a0c]", className)}>
+      {/* canvas */}
+      <div className="relative h-full min-h-0 flex-1">
+        <StageRenderer
+          scene={scene}
+          seed={seed}
+          selectedStarId={selectedStarId}
+          onSelectStar={(star) => {
+            if (star.trackId && star.nodeId) {
+              setSelected({ trackId: star.trackId, nodeId: star.nodeId })
+            }
           }}
         />
 
-        {/* 冻结提示（写入时间后） */}
+        {/* top-left subdued title — matches the reference */}
+        <div className="pointer-events-none absolute left-8 top-7 select-none">
+          <div className="text-[19px] font-medium tracking-[0.04em] text-[#EDE6D4]">思考星图</div>
+          <div className="mt-1 text-[12px] tracking-[0.06em] text-[#7d7a72]">
+            可视化你的思考轨迹与关联
+          </div>
+        </div>
+
         {frozen ? (
-          <div
-            className="pointer-events-none absolute bottom-5 left-1/2 -translate-x-1/2 rounded-full px-3 py-1 text-[11px]"
-            style={{
-              color: "rgba(237,230,212,0.55)",
-              backgroundColor: "rgba(255,255,255,0.04)",
-              border: "1px solid rgba(237,230,212,0.08)",
-            }}
-          >
-            已写入时间 · 仅供回看
+          <div className="pointer-events-none absolute right-6 top-7 text-[11px] tracking-[0.08em] text-[#5b584f]">
+            已写入时间
           </div>
         ) : null}
       </div>
 
-      {/* 详情面板（动态宽度，避免布局跳变） */}
+      {/* detail drawer (animated width to avoid layout pop) */}
       <div
-        className="relative flex shrink-0 overflow-hidden transition-[width] duration-300 ease-out"
+        className="relative flex h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out"
         style={{ width: showDetail ? 340 : 0 }}
       >
         <ThoughtDetailPanel
-          selectedNode={selectedNode}
-          mainOrbit={orbitData}
-          onClose={() => setSelectedNodeId(null)}
-          onSelectMainNode={(id) => setSelectedNodeId(id)}
+          selected={selected}
+          tracks={tracks}
+          onClose={() => setSelected(null)}
+          onSelectNode={(trackId, nodeId) => setSelected({ trackId, nodeId })}
           onJumpToTrackNode={(trackId, nodeId) => {
-            setSelectedNodeId(null);
-            onJumpToTrackNode(trackId, nodeId);
+            setSelected(null)
+            onJumpToTrackNode(trackId, nodeId)
           }}
           onSubmitFromNode={
-            composerEnabled && !frozen ? onSubmitFromNode : undefined
+            composerEnabled && !frozen && onSubmitFromNode
+              ? async (trackId, nodeId, rawInput) => {
+                  await onSubmitFromNode(trackId, nodeId, rawInput)
+                }
+              : undefined
           }
-          composerEnabled={composerEnabled && !frozen}
+          composerEnabled={Boolean(composerEnabled && !frozen)}
         />
       </div>
     </div>
-  );
+  )
 }
 
-function ModeButton({
-  active,
-  onClick,
-  label,
-}: {
-  active: boolean;
-  onClick: () => void;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "rounded-full px-4 py-1 text-[12.5px] transition-colors",
-        active
-          ? "text-[#F5E8C2]"
-          : "text-[rgba(237,230,212,0.5)] hover:text-[rgba(237,230,212,0.8)]"
-      )}
-      style={
-        active
-          ? {
-              backgroundColor: "rgba(245,232,194,0.1)",
-            }
-          : undefined
-      }
-    >
-      {label}
-    </button>
-  );
+function hashTracks(tracks: ThinkingTrackView[]): string {
+  return tracks.map((t) => t.id).join("|") || "default"
 }

@@ -1685,6 +1685,7 @@ export function ThinkingLayer(props: {
                     rootQuestionText={activeSpace.rootQuestionText}
                     tracks={tracks}
                     activeTrackId={activeTrackId}
+                    spaceId={activeSpace.id}
                     frozen={activeSpace.status === "hidden"}
                     mode="starmap"
                     onModeChange={(next) => {
