@@ -22,6 +22,9 @@ export interface StarMapViewProps {
   composerEnabled?: boolean
   className?: string
 
+  /** for rendering attached images inside hero cards */
+  mediaAssetSources?: Record<string, string>
+
   // mode props kept so existing callsites don't break; we intentionally
   // do not render any in-canvas tabs (extreme minimalism).
   mode?: "starmap" | "tracks"
@@ -38,6 +41,7 @@ export function StarMapView({
   onSubmitFromNode,
   composerEnabled = true,
   className,
+  mediaAssetSources,
 }: StarMapViewProps) {
   const [selected, setSelected] = useState<{ trackId: string; nodeId: string } | null>(null)
 
@@ -91,11 +95,12 @@ export function StarMapView({
       {/* detail drawer (animated width to avoid layout pop) */}
       <div
         className="relative flex h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out"
-        style={{ width: showDetail ? 340 : 0 }}
+        style={{ width: showDetail ? 440 : 0 }}
       >
         <ThoughtDetailPanel
           selected={selected}
           tracks={tracks}
+          mediaAssetSources={mediaAssetSources}
           onClose={() => setSelected(null)}
           onSelectNode={(trackId, nodeId) => setSelected({ trackId, nodeId })}
           onJumpToTrackNode={(trackId, nodeId) => {

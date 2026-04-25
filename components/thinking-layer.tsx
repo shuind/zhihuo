@@ -1687,6 +1687,7 @@ export function ThinkingLayer(props: {
                     activeTrackId={activeTrackId}
                     spaceId={activeSpace.id}
                     frozen={activeSpace.status === "hidden"}
+                    mediaAssetSources={mediaAssetSources}
                     mode="starmap"
                     onModeChange={(next) => {
                       if (next === "tracks") setThinkingLayout("tracks");

@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useRef, useState } from "react"
+import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type {
   ThinkingTrackNodeView,
   ThinkingTrackView,
@@ -16,6 +16,7 @@ interface SelectedRef {
 interface Props {
   selected: SelectedRef | null
   tracks: ThinkingTrackView[]
+  mediaAssetSources?: Record<string, string>
   onClose: () => void
   onSelectNode: (trackId: string, nodeId: string) => void
   onJumpToTrackNode: (trackId: string, nodeId: string) => void
@@ -26,6 +27,7 @@ interface Props {
 export function ThoughtDetailPanel({
   selected,
   tracks,
+  mediaAssetSources,
   onClose,
   onSelectNode,
   onJumpToTrackNode,
@@ -35,16 +37,17 @@ export function ThoughtDetailPanel({
   const [input, setInput] = useState("")
   const [submitting, setSubmitting] = useState(false)
   const inputRef = useRef<HTMLTextAreaElement | null>(null)
+  const scrollerRef = useRef<HTMLDivElement | null>(null)
+  const heroRef = useRef<HTMLDivElement | null>(null)
 
-  // resolve selected node from tracks
-  const resolved = (() => {
+  const resolved = useMemo(() => {
     if (!selected) return null
     const track = tracks.find((t) => t.id === selected.trackId)
     if (!track) return null
     const idx = track.nodes.findIndex((n) => n.id === selected.nodeId)
     if (idx < 0) return null
     return { track, node: track.nodes[idx], idx }
-  })()
+  }, [selected, tracks])
 
   // clear input when switching nodes
   useEffect(() => {
@@ -61,26 +64,27 @@ export function ThoughtDetailPanel({
     return () => window.removeEventListener("keydown", onKey)
   }, [resolved, onClose])
 
+  // center the hero card whenever selection or track changes
+  useLayoutEffect(() => {
+    if (!resolved) return
+    const scroller = scrollerRef.current
+    const hero = heroRef.current
+    if (!scroller || !hero) return
+    const target =
+      hero.offsetTop - scroller.clientHeight / 2 + hero.offsetHeight / 2
+    scroller.scrollTo({ top: Math.max(0, target), behavior: "smooth" })
+  }, [resolved?.node.id, resolved?.track.id])
+
   if (!resolved) return null
 
-  const { track, node, idx } = resolved
-  const prev = idx > 0 ? track.nodes[idx - 1] : null
-  const next = idx < track.nodes.length - 1 ? track.nodes[idx + 1] : null
-  const neighbors: ThinkingTrackNodeView[] = []
-  if (prev) neighbors.push(prev)
-  if (next) neighbors.push(next)
-
-  const fullText =
-    (node.answerText && node.answerText.trim()) ||
-    (node.noteText && node.noteText.trim()) ||
-    ""
+  const { track, node: heroNode } = resolved
 
   async function handleSubmit() {
     const text = input.trim()
     if (!text || !onSubmitFromNode) return
     setSubmitting(true)
     try {
-      await onSubmitFromNode(track.id, node.id, text)
+      await onSubmitFromNode(track.id, heroNode.id, text)
       setInput("")
     } finally {
       setSubmitting(false)
@@ -89,10 +93,10 @@ export function ThoughtDetailPanel({
 
   return (
     <aside
-      className="relative flex h-full w-[340px] shrink-0 flex-col border-l border-white/[0.06]"
+      className="relative flex h-full w-[440px] shrink-0 flex-col border-l border-white/[0.06]"
       style={{ backgroundColor: "rgba(10,10,12,0.96)" }}
     >
-      <div className="flex items-center justify-between px-6 pt-6">
+      <div className="flex shrink-0 items-center justify-between px-6 pt-5 pb-2">
         <button
           type="button"
           onClick={onClose}
@@ -109,96 +113,44 @@ export function ThoughtDetailPanel({
           </svg>
           关闭
         </button>
-      </div>
-
-      <div className="flex min-h-0 flex-1 flex-col gap-7 overflow-y-auto px-6 pb-6 pt-5">
-        {/* selected */}
-        <div>
-          <div
-            className="text-[11px]"
-            style={{ color: "rgba(237,230,212,0.4)", letterSpacing: "0.06em" }}
-          >
-            {hhmm(node.createdAt)}
-          </div>
-          <div
-            className="mt-1 text-[15px]"
-            style={{ color: "#EDE6D4", lineHeight: 1.6, letterSpacing: "0.005em" }}
-          >
-            {node.questionText}
-          </div>
-        </div>
-
-        {/* neighbors */}
-        {neighbors.length > 0 ? (
-          <div>
-            <div
-              className="text-[11px]"
-              style={{ color: "rgba(237,230,212,0.42)", letterSpacing: "0.06em" }}
-            >
-              前后思路
-            </div>
-            <div className="mt-3 flex flex-col gap-3">
-              {neighbors.map((n) => (
-                <button
-                  key={n.id}
-                  type="button"
-                  onClick={() => onSelectNode(track.id, n.id)}
-                  className="group flex flex-col items-start gap-1 rounded-md px-2 py-1.5 text-left transition-colors hover:bg-white/[0.03]"
-                >
-                  <span
-                    className="text-[11px]"
-                    style={{ color: "rgba(237,230,212,0.4)", letterSpacing: "0.06em" }}
-                  >
-                    {hhmm(n.createdAt)}
-                  </span>
-                  <span
-                    className="line-clamp-2 text-[13px]"
-                    style={{ color: "rgba(237,230,212,0.78)", lineHeight: 1.55 }}
-                  >
-                    {n.questionText}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        ) : null}
-
-        {/* full content */}
-        {fullText ? (
-          <div>
-            <div
-              className="text-[11px]"
-              style={{ color: "rgba(237,230,212,0.42)", letterSpacing: "0.06em" }}
-            >
-              完整内容
-            </div>
-            <div
-              className="mt-3 whitespace-pre-wrap text-[13.5px]"
-              style={{ color: "rgba(237,230,212,0.78)", lineHeight: 1.7 }}
-            >
-              {fullText}
-            </div>
-          </div>
-        ) : null}
-
-        <div className="flex-1" />
-
         <button
           type="button"
-          onClick={() => onJumpToTrackNode(track.id, node.id)}
-          className="self-start rounded-full px-3 py-1 text-[11.5px] transition-colors"
-          style={{
-            color: "rgba(237,230,212,0.5)",
-            border: "1px solid rgba(237,230,212,0.12)",
-          }}
+          onClick={() => onJumpToTrackNode(track.id, heroNode.id)}
+          className="rounded-full px-2 py-1 text-[11.5px] text-[rgba(237,230,212,0.45)] transition-colors hover:bg-white/[0.04] hover:text-[rgba(237,230,212,0.85)]"
         >
-          在思路视图中查看
+          在思路视图打开
         </button>
+      </div>
+
+      <div
+        ref={scrollerRef}
+        className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-8 pt-2 [scrollbar-width:thin]"
+      >
+        {/* tall top spacer so the first card can scroll to vertical center */}
+        <div className="h-[40vh] shrink-0" aria-hidden="true" />
+        <div className="flex flex-col gap-3">
+          {track.nodes.map((n) => {
+            const isHero = n.id === heroNode.id
+            return (
+              <NodeCard
+                key={n.id}
+                ref={isHero ? heroRef : undefined}
+                node={n}
+                hero={isHero}
+                mediaAssetSources={mediaAssetSources}
+                onClick={() => {
+                  if (!isHero) onSelectNode(track.id, n.id)
+                }}
+              />
+            )
+          })}
+        </div>
+        <div className="h-[40vh] shrink-0" aria-hidden="true" />
       </div>
 
       {composerEnabled ? (
         <div
-          className="border-t border-white/[0.05] px-5 py-4"
+          className="shrink-0 border-t border-white/[0.05] px-5 py-3"
           style={{ backgroundColor: "rgba(10,10,12,0.98)" }}
         >
           <div
@@ -251,6 +203,131 @@ export function ThoughtDetailPanel({
     </aside>
   )
 }
+
+interface NodeCardProps {
+  node: ThinkingTrackNodeView
+  hero: boolean
+  mediaAssetSources?: Record<string, string>
+  onClick: () => void
+}
+
+const NodeCard = forwardRef<HTMLDivElement, NodeCardProps>(function NodeCard(
+  { node, hero, mediaAssetSources, onClick },
+  ref,
+) {
+  const imageSrc = node.imageAssetId
+    ? mediaAssetSources?.[node.imageAssetId] ?? null
+    : null
+  const note = (node.noteText ?? "").trim()
+  const answer = (node.answerText ?? "").trim()
+  const time = hhmm(node.createdAt)
+
+  if (hero) {
+    return (
+      <div
+        ref={ref}
+        className="rounded-[20px] border px-5 py-5 transition-colors"
+        style={{
+          backgroundColor: "rgba(255,255,255,0.035)",
+          borderColor: "rgba(237,230,212,0.10)",
+        }}
+      >
+        <div
+          className="text-[11px]"
+          style={{ color: "rgba(237,230,212,0.45)", letterSpacing: "0.06em" }}
+        >
+          {time}
+        </div>
+        <div
+          className="mt-2 text-[16.5px] [overflow-wrap:anywhere]"
+          style={{ color: "#EDE6D4", lineHeight: 1.65, letterSpacing: "0.005em" }}
+        >
+          {node.questionText}
+        </div>
+
+        {imageSrc ? (
+          <div className="mt-4 overflow-hidden rounded-[14px] border border-white/[0.04]">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={imageSrc || "/placeholder.svg"}
+              alt=""
+              className="block h-auto max-h-[260px] w-full object-cover"
+            />
+          </div>
+        ) : null}
+
+        {note ? (
+          <p
+            className="mt-4 text-[13px] [overflow-wrap:anywhere]"
+            style={{ color: "rgba(237,230,212,0.55)", lineHeight: 1.7 }}
+          >
+            {note}
+          </p>
+        ) : null}
+
+        {answer ? (
+          <div
+            className="mt-4 rounded-[14px] px-4 py-3"
+            style={{ backgroundColor: "rgba(255,255,255,0.025)" }}
+          >
+            <div
+              className="text-[10.5px]"
+              style={{ color: "rgba(237,230,212,0.4)", letterSpacing: "0.08em" }}
+            >
+              我的回应
+            </div>
+            <p
+              className="mt-1.5 whitespace-pre-wrap text-[13.5px] [overflow-wrap:anywhere]"
+              style={{ color: "rgba(237,230,212,0.82)", lineHeight: 1.75 }}
+            >
+              {answer}
+            </p>
+          </div>
+        ) : null}
+      </div>
+    )
+  }
+
+  // dim sibling card
+  return (
+    <div
+      ref={ref}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault()
+          onClick()
+        }
+      }}
+      className="group relative w-full cursor-pointer rounded-[14px] px-4 py-3 text-left transition-colors hover:bg-white/[0.025]"
+    >
+      <div
+        className="text-[10.5px]"
+        style={{ color: "rgba(237,230,212,0.32)", letterSpacing: "0.06em" }}
+      >
+        {time}
+      </div>
+      <div
+        className="mt-1 line-clamp-2 text-[13px] [overflow-wrap:anywhere] transition-colors group-hover:text-[rgba(237,230,212,0.82)]"
+        style={{ color: "rgba(237,230,212,0.55)", lineHeight: 1.65 }}
+      >
+        {node.questionText}
+      </div>
+      {imageSrc || answer ? (
+        <div
+          className="mt-1 text-[10.5px]"
+          style={{ color: "rgba(237,230,212,0.28)", letterSpacing: "0.04em" }}
+        >
+          {[imageSrc ? "图片" : null, answer ? "已记录" : null]
+            .filter(Boolean)
+            .join(" · ")}
+        </div>
+      ) : null}
+    </div>
+  )
+})
 
 function hhmm(input?: string): string {
   if (!input) return ""
