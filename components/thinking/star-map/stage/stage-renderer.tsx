@@ -76,17 +76,17 @@ export function StageRenderer({
         <defs>
           {/* core glow: three stacked radial gradients = no hard boundary */}
           <radialGradient id="sm-core-far" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(245,232,194,0.20)" />
-            <stop offset="55%" stopColor="rgba(220,200,150,0.07)" />
+            <stop offset="0%" stopColor="rgba(245,232,194,0.09)" />
+            <stop offset="55%" stopColor="rgba(220,200,150,0.03)" />
             <stop offset="100%" stopColor="rgba(0,0,0,0)" />
           </radialGradient>
           <radialGradient id="sm-core-mid" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(245,232,194,0.42)" />
-            <stop offset="60%" stopColor="rgba(220,200,150,0.10)" />
+            <stop offset="0%" stopColor="rgba(245,232,194,0.16)" />
+            <stop offset="60%" stopColor="rgba(220,200,150,0.04)" />
             <stop offset="100%" stopColor="rgba(0,0,0,0)" />
           </radialGradient>
           <radialGradient id="sm-core-near" cx="50%" cy="50%" r="50%">
-            <stop offset="0%" stopColor="rgba(255,243,210,0.55)" />
+            <stop offset="0%" stopColor="rgba(255,243,210,0.22)" />
             <stop offset="100%" stopColor="rgba(0,0,0,0)" />
           </radialGradient>
           <radialGradient id="sm-star-halo" cx="50%" cy="50%" r="50%">
