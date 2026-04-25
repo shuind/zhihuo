@@ -31,9 +31,14 @@ export type LetterPaperProps = {
   moon: MoonPhase;
   authorName?: string;
   spriteFade?: number;
+  ornamentSealText?: string;
   sealVisible?: boolean;
   sealDateLabel?: string;
   sealSolarTerm?: string;
+  size?: "standard" | "long";
+  editable?: boolean;
+  onTitleChange?: (value: string) => void;
+  onLineChange?: (index: number, value: string) => void;
   className?: string;
 };
 
@@ -47,20 +52,27 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
     moon,
     authorName = "shuind",
     spriteFade = 0,
+    ornamentSealText,
     sealVisible = false,
     sealDateLabel,
     sealSolarTerm,
+    size = "standard",
+    editable = false,
+    onTitleChange,
+    onLineChange,
     className
   },
   ref
 ) {
   const p = getPalette(variant);
+  const isLong = size === "long";
 
   return (
     <div
       ref={ref}
       className={cn(
-        "relative mx-auto flex aspect-[3/4] w-full max-w-[480px] flex-col overflow-hidden",
+        "relative mx-auto flex w-full flex-col overflow-hidden",
+        isLong ? "min-h-[720px] max-w-[640px]" : "aspect-[3/4] max-w-[480px]",
         className
       )}
       style={{
@@ -77,7 +89,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
       />
 
       {/* 装饰（每种质感独立 SVG） */}
-      <PaperOrnament variant={variant} palette={p} />
+      <PaperOrnament variant={variant} palette={p} sealText={ornamentSealText} />
 
       {/* 落成印章 */}
       <LetterSeal
@@ -141,38 +153,66 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
       </div>
 
       {/* 正文 */}
-      <main className="relative z-10 flex flex-1 flex-col px-8 pt-10">
+      <main className={cn("relative z-10 flex flex-1 flex-col px-8", isLong ? "pb-8 pt-9" : "pt-10")}>
         <h1
+          contentEditable={editable}
+          suppressContentEditableWarning
+          spellCheck={false}
           className={cn(
-            "text-balance leading-[1.45] tracking-[0.02em]",
-            variant === "vellum" || variant === "tide" ? "text-[22px] italic" : "text-[26px]"
+            "text-balance leading-[1.45] tracking-[0.02em] outline-none",
+            editable && "rounded-sm focus:bg-black/[0.025] focus:ring-1 focus:ring-black/10",
+            isLong
+              ? variant === "vellum" || variant === "tide"
+                ? "text-[20px] italic"
+                : "text-[24px]"
+              : variant === "vellum" || variant === "tide" ? "text-[22px] italic" : "text-[26px]"
           )}
           style={{
             color: p.titleInk,
             fontWeight: variant === "ink" ? 300 : 400
           }}
+          onBlur={(event) => onTitleChange?.(readEditableText(event.currentTarget))}
+          onKeyDown={preventEditableBreak}
+          onPaste={pastePlainText}
         >
           {title}
         </h1>
 
-        <div className="mt-10 flex flex-col gap-3">
-          {lines.map((line, i) => (
-            <p
-              key={i}
-              className={cn(
-                "leading-[1.95] tracking-[0.02em]",
-                variant === "vellum" || variant === "tide" ? "text-[15px] italic" : "text-[16px]"
-              )}
-              style={{ color: p.bodyInk }}
-            >
-              {line}
-            </p>
-          ))}
+        <div className={cn("flex flex-col", isLong ? "mt-8 gap-2.5" : "mt-10 gap-3")}>
+          {lines.map((line, i) => {
+            const isSection = /^方向\s+\d+/.test(line) || line === "未归入方向";
+            return (
+              <p
+                key={i}
+                contentEditable={editable && !isSection}
+                suppressContentEditableWarning
+                spellCheck={false}
+                className={cn(
+                  "tracking-[0.02em]",
+                  editable && !isSection && "rounded-sm outline-none focus:bg-black/[0.025] focus:ring-1 focus:ring-black/10",
+                  isSection
+                    ? "mt-3 text-[12px] leading-[1.6] tracking-[0.16em]"
+                    : "leading-[1.95]",
+                  isLong
+                    ? variant === "vellum" || variant === "tide" ? "text-[14px] italic" : "text-[15px]"
+                    : variant === "vellum" || variant === "tide" ? "text-[15px] italic" : "text-[16px]"
+                )}
+                style={{ color: isSection ? p.subtle : p.bodyInk }}
+                onBlur={(event) => {
+                  if (!isSection) onLineChange?.(i, readEditableText(event.currentTarget));
+                }}
+                onKeyDown={preventEditableBreak}
+                onPaste={pastePlainText}
+              >
+                {line}
+              </p>
+            );
+          })}
         </div>
       </main>
 
       {/* 底部 */}
-      <footer className="relative z-10 flex items-end justify-between px-8 pb-7 pt-4">
+      <footer className={cn("relative z-10 flex items-end justify-between px-8 pb-7", isLong ? "pt-8" : "pt-4")}>
         <div className="flex items-center gap-3">
           <span
             className="grid h-[22px] w-[22px] place-items-center rounded-full"
@@ -214,6 +254,22 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
     </div>
   );
 });
+
+function readEditableText(element: HTMLElement) {
+  return element.innerText.replace(/\r/g, "").replace(/\n+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function preventEditableBreak(event: React.KeyboardEvent<HTMLElement>) {
+  if (event.key !== "Enter") return;
+  event.preventDefault();
+  event.currentTarget.blur();
+}
+
+function pastePlainText(event: React.ClipboardEvent<HTMLElement>) {
+  event.preventDefault();
+  const text = event.clipboardData.getData("text/plain").replace(/\s+/g, " ").trim();
+  document.execCommand("insertText", false, text);
+}
 
 function getCorner(v: PaperVariant): string {
   switch (v) {

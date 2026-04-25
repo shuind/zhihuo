@@ -2,9 +2,13 @@
 
 import type { PaperVariant, Palette } from "./letter-paper";
 
-type Props = { variant: PaperVariant; palette: Palette };
+type Props = { variant: PaperVariant; palette: Palette; sealText?: string };
 
-export function PaperOrnament({ variant, palette }: Props) {
+const DEFAULT_SEAL_TEXT = "知";
+
+export function PaperOrnament({ variant, palette, sealText }: Props) {
+  const normalizedSealText = normalizeSealText(sealText);
+
   switch (variant) {
     case "vellum":
       return (
@@ -60,11 +64,8 @@ export function PaperOrnament({ variant, palette }: Props) {
           viewBox="0 0 56 56"
         >
           <rect x="4" y="4" width="48" height="48" fill={palette.accent} opacity="0.78" />
-          <g fill="#fbf8f1" fontFamily='"Noto Serif SC",serif' fontSize="14" fontWeight="700" textAnchor="middle">
-            <text x="18" y="24">知</text>
-            <text x="38" y="24">惑</text>
-            <text x="18" y="44">之</text>
-            <text x="38" y="44">印</text>
+          <g fill="#fbf8f1" fontFamily='"Noto Serif SC",serif' fontWeight="700" textAnchor="middle">
+            <SealText text={normalizedSealText} layout="rice" />
           </g>
         </svg>
       );
@@ -99,12 +100,9 @@ export function PaperOrnament({ variant, palette }: Props) {
           preserveAspectRatio="none"
         >
           <g fill={palette.accent} opacity="0.7">
-            <rect x="30" y="20" width="46" height="46" rx="1" />
-            <g fill="#f5e2c8" fontFamily='"Noto Serif SC",serif' fontSize="14" fontWeight="700" textAnchor="middle">
-              <text x="42" y="40">惑</text>
-              <text x="64" y="40">之</text>
-              <text x="42" y="58">一</text>
-              <text x="64" y="58">纸</text>
+            <rect x="30" y="20" width="40" height="40" rx="1" />
+            <g fill="#f5e2c8" fontFamily='"Noto Serif SC",serif' fontWeight="700" textAnchor="middle">
+              <SealText text={normalizedSealText} layout="clay" />
             </g>
           </g>
           <g stroke={palette.accent} strokeWidth="0.4" opacity="0.35">
@@ -130,4 +128,60 @@ export function PaperOrnament({ variant, palette }: Props) {
         </svg>
       );
   }
+}
+
+function normalizeSealText(value: string | undefined) {
+  const text = Array.from((value ?? DEFAULT_SEAL_TEXT).replace(/\s+/g, "").trim()).slice(0, 4).join("");
+  return text || DEFAULT_SEAL_TEXT;
+}
+
+function SealText({ text, layout }: { text: string; layout: "rice" | "clay" }) {
+  const chars = Array.from(text);
+  const rice = layout === "rice";
+
+  if (chars.length === 1) {
+    return (
+      <text x={rice ? 28 : 50} y={rice ? 36 : 48} fontSize={rice ? 24 : 22}>
+        {chars[0]}
+      </text>
+    );
+  }
+
+  if (chars.length === 2) {
+    const x = rice ? 28 : 50;
+    const [topY, bottomY] = rice ? [25, 43] : [37, 54];
+    return (
+      <>
+        <text x={x} y={topY} fontSize={rice ? 16 : 14}>{chars[0]}</text>
+        <text x={x} y={bottomY} fontSize={rice ? 16 : 14}>{chars[1]}</text>
+      </>
+    );
+  }
+
+  if (chars.length === 3) {
+    const top = rice ? { x: 28, y: 22 } : { x: 50, y: 35 };
+    const left = rice ? { x: 19, y: 42 } : { x: 42, y: 53 };
+    const right = rice ? { x: 37, y: 42 } : { x: 58, y: 53 };
+    return (
+      <>
+        <text x={top.x} y={top.y} fontSize={rice ? 14 : 12}>{chars[0]}</text>
+        <text x={left.x} y={left.y} fontSize={rice ? 14 : 12}>{chars[1]}</text>
+        <text x={right.x} y={right.y} fontSize={rice ? 14 : 12}>{chars[2]}</text>
+      </>
+    );
+  }
+
+  const positions = rice
+    ? [{ x: 18, y: 24 }, { x: 38, y: 24 }, { x: 18, y: 44 }, { x: 38, y: 44 }]
+    : [{ x: 42, y: 38 }, { x: 58, y: 38 }, { x: 42, y: 54 }, { x: 58, y: 54 }];
+
+  return (
+    <>
+      {chars.slice(0, 4).map((char, index) => (
+        <text key={`${char}-${index}`} x={positions[index].x} y={positions[index].y} fontSize={rice ? 14 : 12}>
+          {char}
+        </text>
+      ))}
+    </>
+  );
 }

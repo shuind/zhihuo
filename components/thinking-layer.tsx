@@ -41,6 +41,13 @@ function formatRelativeNodeTime(createdAt?: string) {
   return `${deltaDays} 天前`;
 }
 
+function getScratchSortTime(item: ThinkingScratchItem) {
+  const updatedAt = new Date(item.updatedAt).getTime();
+  if (Number.isFinite(updatedAt)) return updatedAt;
+  const createdAt = new Date(item.createdAt).getTime();
+  return Number.isFinite(createdAt) ? createdAt : 0;
+}
+
 function formatNodeClockTime(createdAt: string | undefined, timeZone: string) {
   if (!createdAt) return "";
   return formatTimeInTimeZone(createdAt, timeZone);
@@ -123,6 +130,15 @@ type AddQuestionPayload = {
   trackId: string | null;
   fromSuggestion?: boolean;
 };
+
+function buildSettleLetterLines(tracks: ThinkingTrackView[]) {
+  return tracks.flatMap((track, index) => {
+    const nodes = track.nodes.map((node) => node.questionText.trim()).filter(Boolean);
+    if (!nodes.length) return [];
+    const heading = track.isParking ? "未归入方向" : `方向 ${index + 1}`;
+    return [heading, ...nodes];
+  });
+}
 
 export function ThinkingLayer(props: {
   store: ThinkingStore;
@@ -246,7 +262,6 @@ export function ThinkingLayer(props: {
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
   const [scratchDrawerOpen, setScratchDrawerOpen] = useState(false);
   const [writeToTimeOpen, setWriteToTimeOpen] = useState(false);
-  const [writeToTimePreserveOriginal, setWriteToTimePreserveOriginal] = useState(true);
   const [isWritingToTime, setIsWritingToTime] = useState(false);
 
   const trackScrollRef = useRef<HTMLDivElement | null>(null);
@@ -320,6 +335,7 @@ export function ThinkingLayer(props: {
     [props.activeSpaceId, spaces]
   );
   const tracks = useMemo(() => props.spaceView?.tracks ?? [], [props.spaceView]);
+  const settleLetterLines = useMemo(() => buildSettleLetterLines(tracks), [tracks]);
   const fallbackTrackId = useMemo(() => tracks[0]?.id ?? null, [tracks]);
   const activeTrackId = useMemo(() => {
     if (localPendingTrackId && tracks.some((track) => track.id === localPendingTrackId)) return localPendingTrackId;
@@ -440,7 +456,6 @@ export function ThinkingLayer(props: {
     setClipboardSourceTrackId(null);
     setScratchDrawerOpen(false);
     setWriteToTimeOpen(false);
-    setWriteToTimePreserveOriginal(true);
     setIsWritingToTime(false);
     setThinkingLayout("tracks");
   }, [props.activeSpaceId]);
@@ -1063,7 +1078,6 @@ export function ThinkingLayer(props: {
   const openWriteToTimeDialog = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
     setMoreOpen(false);
-    setWriteToTimePreserveOriginal(true);
     setWriteToTimeOpen(true);
   }, [activeSpace]);
 
@@ -1074,27 +1088,24 @@ export function ThinkingLayer(props: {
       return { ok: false, message: "正在写入" };
     }
     setIsWritingToTime(true);
-    const result = await props.onWriteSpaceToTime(activeSpace.id, {
-      preserveOriginalTime: writeToTimePreserveOriginal
-    });
+    const result = await props.onWriteSpaceToTime(activeSpace.id);
     setIsWritingToTime(false);
     if (!result.ok) {
       return { ok: false, message: result.message };
     }
     setWriteToTimeSealed(true);
     return { ok: true };
-  }, [activeSpace, isWritingToTime, props, writeToTimePreserveOriginal]);
+  }, [activeSpace, isWritingToTime, props]);
 
   const closeSettleDialog = useCallback(() => {
     if (isWritingToTime) return;
     setWriteToTimeOpen(false);
     if (writeToTimeSealed) {
       setMoreOpen(false);
-      setThinkingViewMode("spaces");
+    setThinkingViewMode("spaces");
       setDetailSpaceId(null);
       props.showNotice("已写入时间");
     }
-    setWriteToTimePreserveOriginal(true);
     setWriteToTimeSealed(false);
   }, [isWritingToTime, props, writeToTimeSealed]);
 
@@ -1381,7 +1392,16 @@ export function ThinkingLayer(props: {
 
   const currentTrackHeading = activeTrack ? trackCardTitle(activeTrack) : "";
   const composerCanSubmit = questionInput.trim().length > 0;
-  const latestScratch = props.scratchItems[0] ?? null;
+  const sortedScratchItems = useMemo(
+    () =>
+      [...props.scratchItems].sort((a, b) => {
+        const timeDelta = getScratchSortTime(b) - getScratchSortTime(a);
+        if (timeDelta !== 0) return timeDelta;
+        return b.id.localeCompare(a.id);
+      }),
+    [props.scratchItems]
+  );
+  const latestScratch = sortedScratchItems[0] ?? null;
   const canPasteClipboardNode =
     Boolean(
       activeSpace &&
@@ -2078,7 +2098,7 @@ export function ThinkingLayer(props: {
                     <p className="text-[15px] text-slate-800">随记</p>
                   </div>
                   <div className="flex items-center gap-3">
-                    {props.scratchItems.length ? (
+                    {sortedScratchItems.length ? (
                       <button
                         type="button"
                         className="text-[11px] text-slate-400 transition-colors hover:text-slate-700"
@@ -2087,7 +2107,7 @@ export function ThinkingLayer(props: {
                         查看全部
                       </button>
                     ) : null}
-                    <span className="text-[11px] text-slate-400">{props.scratchItems.length} 条</span>
+                    <span className="text-[11px] text-slate-400">{sortedScratchItems.length} 条</span>
                   </div>
                 </div>
                 <div className="mt-4 flex items-end gap-3 rounded-[22px] border border-black/[0.05] bg-white/40 px-4 py-3">
@@ -2144,10 +2164,8 @@ export function ThinkingLayer(props: {
           open={writeToTimeOpen}
           doubtId={activeSpace.sourceTimeDoubtId ?? activeSpace.id}
           doubtText={activeSpace.rootQuestionText}
-          nodes={tracks.flatMap((track) => track.nodes.map((node) => node.questionText ?? "")).filter(Boolean)}
+          nodes={settleLetterLines}
           writtenAt={new Date(activeSpace.createdAt ?? Date.now())}
-          preserveOriginal={writeToTimePreserveOriginal}
-          onPreserveOriginalChange={setWriteToTimePreserveOriginal}
           onConfirm={submitWriteToTime}
           onClose={closeSettleDialog}
         />
@@ -2249,11 +2267,11 @@ export function ThinkingLayer(props: {
               <div className="mx-auto h-1.5 w-14 rounded-full bg-black/[0.08]" />
               <div className="mt-4 flex items-center justify-between gap-3">
                 <p className="text-[15px] text-slate-800">随记</p>
-                <span className="text-[11px] text-slate-400">{props.scratchItems.length} 条</span>
+                <span className="text-[11px] text-slate-400">{sortedScratchItems.length} 条</span>
               </div>
               <div className="mt-4 max-h-[62vh] overflow-y-auto pr-1">
                 <div className="space-y-3 pb-1">
-                  {props.scratchItems.map((item) => {
+                  {sortedScratchItems.map((item) => {
                     const linkedSpace = item.derivedSpaceId ? spaces.find((space) => space.id === item.derivedSpaceId) ?? null : null;
                     return (
                       <div
@@ -2758,7 +2776,7 @@ export function ThinkingLayer(props: {
 
       {exportOpen ? (
         <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="flex max-h-[calc(100vh-2rem)] w-[920px] max-w-[calc(100vw-2rem)] min-h-0 flex-col rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
+          <div className="flex h-[min(760px,calc(100vh-2rem))] w-[920px] max-w-[calc(100vw-2rem)] min-h-0 flex-col rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
             <div className="mb-3 flex items-center justify-between gap-3">
               <div>
                 <p className="text-sm text-slate-800">Markdown 导出</p>
@@ -2790,12 +2808,10 @@ export function ThinkingLayer(props: {
                 </button>
               </div>
             </div>
-            <div className="min-h-0 flex-1 overflow-hidden rounded-xl border border-black/12 bg-[#f7f4ef]">
-              <div className="h-full overflow-y-auto px-4 py-4">
-                <pre className="whitespace-pre-wrap break-words text-xs leading-[1.7] text-slate-700">
-                  {exportLoading ? "导出生成中..." : exportMarkdown || "暂无导出内容"}
-                </pre>
-              </div>
+            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-black/12 bg-[#f7f4ef] px-4 py-4">
+              <pre className="whitespace-pre-wrap break-words text-xs leading-[1.7] text-slate-700">
+                {exportLoading ? "导出生成中..." : exportMarkdown || "暂无导出内容"}
+              </pre>
             </div>
           </div>
         </div>

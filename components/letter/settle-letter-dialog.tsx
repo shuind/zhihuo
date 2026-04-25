@@ -1,12 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { LetterPaper, type PaperVariant } from "./letter-paper";
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "./letter-exporter-dialog";
-import { saveLetterVariant } from "@/lib/letter-variant-store";
+import { saveLetterSealText, saveLetterVariant } from "@/lib/letter-variant-store";
+import { cn } from "@/lib/utils";
 
 type Phase = "preview" | "sealing" | "sealed";
 
@@ -17,8 +18,6 @@ export type SettleLetterDialogProps = {
   nodes: string[];
   closingNote?: string;
   writtenAt: Date;
-  preserveOriginal: boolean;
-  onPreserveOriginalChange: (v: boolean) => void;
   onConfirm: () => Promise<{ ok: boolean; message?: string }>;
   onClose: () => void;
   authorName?: string;
@@ -31,8 +30,6 @@ export function SettleLetterDialog({
   nodes,
   closingNote,
   writtenAt,
-  preserveOriginal,
-  onPreserveOriginalChange,
   onConfirm,
   onClose,
   authorName
@@ -41,6 +38,9 @@ export function SettleLetterDialog({
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
   const [variant, setVariant] = useState<PaperVariant>(() => suggestVariant(writtenAt, false));
+  const [ornamentSealText, setOrnamentSealText] = useState("知");
+  const [paperTitle, setPaperTitle] = useState("");
+  const [paperLines, setPaperLines] = useState<string[]>([]);
   const paperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -49,6 +49,7 @@ export function SettleLetterDialog({
       setBusy(false);
       setErrMsg(null);
       setVariant(suggestVariant(writtenAt, false));
+      setOrnamentSealText("知");
     }
   }, [open, writtenAt]);
 
@@ -56,7 +57,24 @@ export function SettleLetterDialog({
   const solarTermLabel = describeSolarTerm(writtenAt);
   const solarTermName = getCurrentSolarTerm(writtenAt).name;
   const moon = getMoonPhase(writtenAt);
-  const poetized = poetize({ doubt: doubtText, nodes, closing: closingNote });
+  const poetized = useMemo(
+    () => poetize({ doubt: doubtText, nodes, closing: closingNote }),
+    [doubtText, nodes, closingNote]
+  );
+  const fullLines = useMemo(() => nodes.map((node) => node.trim()).filter(Boolean), [nodes]);
+  const useLongPaper = fullLines.length > 4 || fullLines.some((line) => line.length > 36);
+  const defaultPaperTitle = poetized.title || doubtText;
+  const defaultPaperLines = useMemo(
+    () => (useLongPaper ? fullLines : poetized.lines),
+    [fullLines, poetized.lines, useLongPaper]
+  );
+  const hasOrnamentSeal = variant === "rice" || variant === "clay";
+
+  useEffect(() => {
+    if (!open) return;
+    setPaperTitle(defaultPaperTitle);
+    setPaperLines(defaultPaperLines);
+  }, [open, defaultPaperTitle, defaultPaperLines]);
 
   const handleConfirm = async () => {
     if (busy) return;
@@ -71,6 +89,7 @@ export function SettleLetterDialog({
       return;
     }
     saveLetterVariant(doubtId, variant);
+    saveLetterSealText(doubtId, ornamentSealText);
     setTimeout(() => setPhase("sealed"), 720);
   };
 
@@ -109,7 +128,7 @@ export function SettleLetterDialog({
           onClick={phase === "sealed" ? onClose : undefined}
         >
           <motion.div
-            className="relative grid w-[920px] max-w-[calc(100vw-2rem)] grid-cols-1 gap-6 rounded-2xl bg-[#faf7f0] p-6 shadow-[0_24px_64px_rgba(15,23,42,0.3)] md:grid-cols-[minmax(0,1fr)_320px]"
+            className="relative grid max-h-[calc(100vh-2rem)] w-[1120px] max-w-[calc(100vw-2rem)] grid-cols-1 gap-6 overflow-y-auto rounded-2xl bg-[#faf7f0] p-6 shadow-[0_24px_64px_rgba(15,23,42,0.3)] md:grid-cols-[minmax(0,1fr)_320px]"
             initial={{ scale: 0.96, opacity: 0 }}
             animate={{ scale: 1, opacity: 1 }}
             exit={{ scale: 0.96, opacity: 0 }}
@@ -117,20 +136,27 @@ export function SettleLetterDialog({
             onClick={(e) => e.stopPropagation()}
           >
             {/* 左：笺预览 */}
-            <div className="flex items-center justify-center">
-              <div className="w-full max-w-[400px]">
+            <div className="flex items-start justify-center">
+              <div className={cn("w-full", useLongPaper ? "max-w-[640px]" : "max-w-[400px]")}>
                 <LetterPaper
                   ref={paperRef}
                   variant={variant}
-                  title={poetized.title || doubtText}
-                  lines={poetized.lines}
+                  title={paperTitle || defaultPaperTitle}
+                  lines={paperLines}
                   dateLabel={dateLabel}
                   solarTermLabel={solarTermLabel}
                   moon={moon}
                   authorName={authorName ?? "shuind"}
+                  ornamentSealText={ornamentSealText}
                   sealVisible={phase === "sealed"}
                   sealDateLabel={dateLabel}
                   sealSolarTerm={solarTermName}
+                  size={useLongPaper ? "long" : "standard"}
+                  editable={phase === "preview"}
+                  onTitleChange={setPaperTitle}
+                  onLineChange={(index, value) =>
+                    setPaperLines((current) => current.map((line, lineIndex) => (lineIndex === index ? value : line)))
+                  }
                 />
               </div>
             </div>
@@ -138,37 +164,9 @@ export function SettleLetterDialog({
             {/* 右：说明 + 操作 */}
             <div className="flex flex-col">
               <div className="flex-1">
-                <p className="text-[13px] tracking-[0.18em] text-slate-400">
-                  {phase === "preview" && "写入时间"}
-                  {phase === "sealing" && "落印中"}
-                  {phase === "sealed" && "已写入"}
-                </p>
-                <h2 className="mt-2 text-lg font-medium text-slate-800">
-                  {phase === "preview" && "把这段思考写回它所在的时刻"}
-                  {phase === "sealing" && "正在封存…"}
-                  {phase === "sealed" && "这页笺落成了"}
-                </h2>
-                <p className="mt-3 text-[13px] leading-6 text-slate-500">
-                  {phase === "preview" &&
-                    "此后这段空间被封存，不可继续。它会成为时间里的一页笺。"}
-                  {phase === "sealing" && "正在将这段思考盖印成笺。"}
-                  {phase === "sealed" &&
-                    "你可以保存这张笺，或直接完成。它已存在于那个时刻。"}
-                </p>
-
                 {phase === "preview" ? (
                   <>
-                    <label className="mt-5 flex items-center gap-2 text-[13px] text-slate-600">
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-black/20 accent-slate-900"
-                        checked={preserveOriginal}
-                        onChange={(e) => onPreserveOriginalChange(e.target.checked)}
-                      />
-                      <span>保留疑问原文</span>
-                    </label>
-
-                    <div className="mt-5">
+                    <div>
                       <p className="mb-2 text-[11px] tracking-[0.18em] text-slate-400">质感</p>
                       <div className="grid grid-cols-3 gap-1.5">
                         {VARIANTS.map((v) => (
@@ -188,6 +186,21 @@ export function SettleLetterDialog({
                         ))}
                       </div>
                     </div>
+
+                    {hasOrnamentSeal ? (
+                      <div className="mt-5">
+                        <label className="mb-2 block text-[11px] tracking-[0.18em] text-slate-400" htmlFor="letter-seal-text">
+                          印文
+                        </label>
+                        <input
+                          id="letter-seal-text"
+                          value={ornamentSealText}
+                          maxLength={4}
+                          onChange={(event) => setOrnamentSealText(sanitizeSealInput(event.target.value))}
+                          className="h-10 w-28 rounded-md border border-black/10 bg-white/60 px-3 text-center text-[16px] text-slate-800 outline-none transition-colors focus:border-slate-500"
+                        />
+                      </div>
+                    ) : null}
 
                     {errMsg ? (
                       <p className="mt-4 text-[12px] text-rose-500">{errMsg}</p>
@@ -244,4 +257,8 @@ export function SettleLetterDialog({
       ) : null}
     </AnimatePresence>
   );
+}
+
+function sanitizeSealInput(value: string) {
+  return Array.from(value.replace(/\s+/g, "")).slice(0, 4).join("");
 }

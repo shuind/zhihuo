@@ -49,11 +49,15 @@ export function LetterExporterDialog({
 }: LetterExporterDialogProps) {
   const when = writtenAt ?? new Date();
   const [variant, setVariant] = useState<PaperVariant>(() => suggestVariant(when, frozen));
+  const [ornamentSealText, setOrnamentSealText] = useState("知");
   const [exporting, setExporting] = useState(false);
   const paperRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (open) setVariant(suggestVariant(when, frozen));
+    if (open) {
+      setVariant(suggestVariant(when, frozen));
+      setOrnamentSealText("知");
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);
 
@@ -73,6 +77,7 @@ export function LetterExporterDialog({
   const dateLabel = `${when.getFullYear()} / ${when.getMonth() + 1} / ${when.getDate()}`;
   const solarTermLabel = describeSolarTerm(when);
   const moon = getMoonPhase(when);
+  const hasOrnamentSeal = variant === "rice" || variant === "clay";
 
   const poetized = useMemo(
     () => poetize({ doubt: doubtText, nodes, closing: closingNote }),
@@ -130,6 +135,7 @@ export function LetterExporterDialog({
               solarTermLabel={solarTermLabel}
               moon={moon}
               authorName={authorName}
+              ornamentSealText={ornamentSealText}
             />
           </div>
         </div>
@@ -188,6 +194,21 @@ export function LetterExporterDialog({
             </div>
           </div>
 
+          {hasOrnamentSeal ? (
+            <div>
+              <label className="mb-2 block text-[11px] tracking-[0.2em] text-[#8a7b5e]" htmlFor="export-letter-seal-text">
+                印文
+              </label>
+              <input
+                id="export-letter-seal-text"
+                value={ornamentSealText}
+                maxLength={4}
+                onChange={(event) => setOrnamentSealText(sanitizeSealInput(event.target.value))}
+                className="h-10 w-24 rounded-sm border border-[#c8bca3] bg-transparent px-3 text-center text-[16px] text-[#2a241a] outline-none focus:border-[#8a7b5e]"
+              />
+            </div>
+          ) : null}
+
           <div className="mt-auto flex flex-col gap-2">
             <button
               onClick={handleExport}
@@ -207,6 +228,10 @@ export function LetterExporterDialog({
       </div>
     </div>
   );
+}
+
+function sanitizeSealInput(value: string) {
+  return Array.from(value.replace(/\s+/g, "")).slice(0, 4).join("");
 }
 
 function getShadow(v: PaperVariant) {

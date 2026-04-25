@@ -61,6 +61,7 @@ import {
   THINKING_STORAGE_KEY,
   createId,
   createStars,
+  formatDateTime,
   loadLifeStore,
   loadThinkingStore,
   persistLifeStore,
@@ -902,6 +903,41 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
     backgroundAssetIds: meta?.backgroundAssetIds ?? [],
     backgroundSelectedAssetId: meta?.backgroundSelectedAssetId ?? null
   };
+}
+
+function buildLocalSpaceExportMarkdown(store: ThinkingStore, space: ThinkingSpace, view: ThinkingSpaceView) {
+  const mediaAssetIds = new Set(store.mediaAssets.filter((asset) => !asset.deletedAt).map((asset) => asset.id));
+  const exportTracks = view.tracks.filter((track) => track.nodes.length > 0);
+  const lines: string[] = [];
+
+  lines.push(`# ${space.rootQuestionText}`);
+  lines.push("");
+  lines.push(`- 创建时间：${formatDateTime(space.createdAt)}`);
+  lines.push("");
+
+  exportTracks.forEach((track, index) => {
+    lines.push(`## 方向 ${index + 1}`);
+    for (const node of track.nodes) {
+      lines.push(`- ${node.questionText}`);
+      if (node.imageAssetId && mediaAssetIds.has(node.imageAssetId)) {
+        lines.push(`  - 图片：${node.imageAssetId}`);
+      }
+      if (node.noteText) lines.push(`  - 附注：${node.noteText}`);
+      if (node.answerText) lines.push(`  - 回答：${node.answerText}`);
+    }
+    lines.push("");
+  });
+
+  if (view.backgroundAssetIds.length) {
+    lines.push("## 空间图集");
+    for (const assetId of view.backgroundAssetIds) {
+      if (!mediaAssetIds.has(assetId)) continue;
+      lines.push(`- ${assetId}${view.backgroundSelectedAssetId === assetId ? "（当前选中）" : ""}`);
+    }
+    lines.push("");
+  }
+
+  return lines.join("\n");
 }
 
 function syncStoreNodesFromView(store: ThinkingStore, spaceId: string, view: ThinkingSpaceView): ThinkingStore {
@@ -6340,17 +6376,26 @@ export function TimeArchive() {
     [markLocalChange, markMediaAssetsDeletedLocally, queueMutation, thinkingStore.spaces]
   );
 
-  const handleThinkingExport = useCallback(async (spaceId: string) => {
-    try {
-      const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/export`, { method: "GET", cache: "no-store" });
-      if (handleUnauthorized(response)) return null;
-      if (!response.ok) return null;
-      const payload = (await response.json()) as { markdown?: string };
-      return typeof payload.markdown === "string" ? payload.markdown : null;
-    } catch {
-      return null;
-    }
-  }, [handleUnauthorized]);
+  const handleThinkingExport = useCallback(
+    async (spaceId: string) => {
+      const localSpace = thinkingStore.spaces.find((space) => space.id === spaceId) ?? null;
+      const localView = localSpace ? getLocalSpaceView(spaceId) : null;
+      if (localSpace && localView) {
+        return buildLocalSpaceExportMarkdown(thinkingStore, localSpace, localView);
+      }
+
+      try {
+        const response = await apiFetch(`/v1/thinking/spaces/${spaceId}/export`, { method: "GET", cache: "no-store" });
+        if (handleUnauthorized(response)) return null;
+        if (!response.ok) return null;
+        const payload = (await response.json()) as { markdown?: string };
+        return typeof payload.markdown === "string" ? payload.markdown : null;
+      } catch {
+        return null;
+      }
+    },
+    [getLocalSpaceView, handleUnauthorized, thinkingStore]
+  );
 
   /* const handleThinkingRenameSpace = useCallback(
     async (spaceId: string, rootQuestionText: string) => {

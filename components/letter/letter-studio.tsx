@@ -25,6 +25,7 @@ export function LetterStudio() {
   const [nodes, setNodes] = useState(SAMPLE.nodes);
   const [closing, setClosing] = useState(SAMPLE.closing);
   const [author, setAuthor] = useState("shuind");
+  const [ornamentSealText, setOrnamentSealText] = useState("知");
   const [exporting, setExporting] = useState(false);
   const paperRef = useRef<HTMLDivElement>(null);
 
@@ -32,6 +33,7 @@ export function LetterStudio() {
   const dateLabel = `${now.getFullYear()} / ${now.getMonth() + 1} / ${now.getDate()}`;
   const solarTermLabel = describeSolarTerm(now);
   const moon = getMoonPhase(now);
+  const hasOrnamentSeal = variant === "rice" || variant === "clay";
 
   const poetized = useMemo(() => {
     const list = nodes.split(/\n/).map((s) => s.trim()).filter(Boolean);
@@ -109,6 +111,17 @@ export function LetterStudio() {
             />
           </Field>
 
+          {hasOrnamentSeal ? (
+            <Field label="印文">
+              <input
+                value={ornamentSealText}
+                maxLength={4}
+                onChange={(e) => setOrnamentSealText(sanitizeSealInput(e.target.value))}
+                className="w-24 border-0 border-b border-[#bfb39a] bg-transparent py-2 text-center text-[16px] text-[#2a241a] outline-none focus:border-[#8a7b5e]"
+              />
+            </Field>
+          ) : null}
+
           <div>
             <div className="mb-2 text-[11px] tracking-[0.2em] text-[#8a7b5e]">质感</div>
             <div className="grid grid-cols-3 gap-2">
@@ -168,6 +181,7 @@ export function LetterStudio() {
                 solarTermLabel={solarTermLabel}
                 moon={moon}
                 authorName={author}
+                ornamentSealText={ornamentSealText}
               />
             </div>
           </div>
@@ -175,6 +189,10 @@ export function LetterStudio() {
       </div>
     </div>
   );
+}
+
+function sanitizeSealInput(value: string) {
+  return Array.from(value.replace(/\s+/g, "")).slice(0, 4).join("");
 }
 
 function getShadow(v: PaperVariant) {

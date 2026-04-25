@@ -21,7 +21,7 @@ import { LetterPaper, type PaperVariant } from "@/components/letter/letter-paper
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "@/components/letter/letter-exporter-dialog";
-import { loadLetterVariant } from "@/lib/letter-variant-store";
+import { loadLetterSealText, loadLetterVariant } from "@/lib/letter-variant-store";
 
 type DateGroup = {
   key: string;
@@ -627,6 +627,10 @@ function DetailBody(props: {
     () => loadLetterVariant(props.doubt.id) ?? suggestVariant(writtenAt, true),
     [props.doubt.id, writtenAt]
   );
+  const ornamentSealText = useMemo(
+    () => loadLetterSealText(props.doubt.id) ?? "知",
+    [props.doubt.id]
+  );
 
   const poetizedLetter = useMemo(
     () => poetize({ doubt: props.doubt.rawText, nodes: letterLines }),
@@ -733,6 +737,7 @@ function DetailBody(props: {
                   solarTermLabel={solarTermLabel}
                   moon={moon}
                   authorName="shuind"
+                  ornamentSealText={ornamentSealText}
                   sealVisible
                   sealDateLabel={dateLabel}
                   sealSolarTerm={solarTermName}
