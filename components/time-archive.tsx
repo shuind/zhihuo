@@ -801,6 +801,16 @@ function fromTrackParentId(parentNodeId: string | null | undefined) {
   return parentNodeId.startsWith("track:") ? parentNodeId.slice(6) : parentNodeId;
 }
 
+function getPreferredSpaceIdForQueuedMutation(route: string, body: Record<string, unknown> | null) {
+  const clientSpaceId =
+    typeof body?.client_space_id === "string" && body.client_space_id.trim() ? body.client_space_id : null;
+  if (clientSpaceId && (route === "/v1/thinking/spaces" || /^\/v1\/thinking\/scratch\/[^/]+\/to-space$/.test(route))) {
+    return clientSpaceId;
+  }
+  const spaceRouteMatch = route.match(/^\/v1\/thinking\/spaces\/([^/]+)/);
+  return spaceRouteMatch?.[1] ?? null;
+}
+
 function normalizeTrackList(tracks: ThinkingSpaceView["tracks"]): ThinkingSpaceView["tracks"] {
   return tracks.map((track) => ({
     ...track,
@@ -2737,7 +2747,9 @@ export function TimeArchive() {
             }));
             showNotice("部分离线改动未被云端接受，已移入同步异常");
           }
-          await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+          if (nextPendingCount === 0 && !hasMissingAcknowledgements) {
+            await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+          }
           await refreshCloudSyncState(ownerKey.slice(5));
           setSyncPhase(repairMap.size > 0 || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
           return {
@@ -2882,9 +2894,10 @@ export function TimeArchive() {
       void refreshPendingMutationCount(activeOwnerKey, true);
       markLocalChange();
       if (isOnline && offlineRuntimeState === "user_sync_ready") {
+        const preferredSpaceId = getPreferredSpaceIdForQueuedMutation(route, body) ?? activeSpaceIdRef.current;
         void runQueuedMutationSync(activeOwnerKey, {
           includeDeferred: true,
-          preferredSpaceId: activeSpaceIdRef.current
+          preferredSpaceId
         });
       }
       return queued;
@@ -4458,7 +4471,30 @@ export function TimeArchive() {
           tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(spaceId, nextView);
-        setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+        setThinkingStore((prev) => {
+          const synced = syncStoreNodesFromView(prev, spaceId, nextView);
+          return {
+            ...synced,
+            spaces: synced.spaces.map((space) =>
+              space.id === spaceId
+                ? {
+                    ...space,
+                    lastActivityAt: now
+                  }
+                : space
+            ),
+            spaceMeta: synced.spaceMeta.map((meta) =>
+              meta.spaceId === spaceId
+                ? {
+                    ...meta,
+                    lastTrackId: normalizedTrackId,
+                    pendingTrackId: meta.pendingTrackId === normalizedTrackId ? null : meta.pendingTrackId,
+                    emptyTrackIds: (meta.emptyTrackIds ?? []).filter((trackId) => trackId !== normalizedTrackId)
+                  }
+                : meta
+            )
+          };
+        });
       }
       markLocalChange();
       return {

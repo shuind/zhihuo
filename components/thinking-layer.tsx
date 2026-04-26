@@ -334,16 +334,20 @@ export function ThinkingLayer(props: {
     () => spaces.find((space) => space.id === props.activeSpaceId) ?? null,
     [props.activeSpaceId, spaces]
   );
-  const tracks = useMemo(() => props.spaceView?.tracks ?? [], [props.spaceView]);
+  const activeSpaceView = useMemo(
+    () => (activeSpace && props.spaceView?.spaceId === activeSpace.id ? props.spaceView : null),
+    [activeSpace, props.spaceView]
+  );
+  const tracks = useMemo(() => activeSpaceView?.tracks ?? [], [activeSpaceView]);
   const settleLetterLines = useMemo(() => buildSettleLetterLines(tracks), [tracks]);
   const fallbackTrackId = useMemo(() => tracks[0]?.id ?? null, [tracks]);
   const activeTrackId = useMemo(() => {
     if (localPendingTrackId && tracks.some((track) => track.id === localPendingTrackId)) return localPendingTrackId;
-    if (props.spaceView?.currentTrackId && tracks.some((track) => track.id === props.spaceView?.currentTrackId)) return props.spaceView.currentTrackId;
+    if (activeSpaceView?.currentTrackId && tracks.some((track) => track.id === activeSpaceView.currentTrackId)) return activeSpaceView.currentTrackId;
     return fallbackTrackId;
-  }, [fallbackTrackId, localPendingTrackId, props.spaceView, tracks]);
+  }, [activeSpaceView, fallbackTrackId, localPendingTrackId, tracks]);
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
-  const pendingTrackId = props.spaceView?.pendingTrackId ?? null;
+  const pendingTrackId = activeSpaceView?.pendingTrackId ?? null;
   const otherTracks = useMemo(
     () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
     [activeTrackId, pendingTrackId, tracks]
@@ -409,7 +413,6 @@ export function ThinkingLayer(props: {
   }, [normalizedSpaceFinderQuery, searchableSpaces]);
   const detailOpen = Boolean(activeSpace && thinkingViewMode === "detail" && detailSpaceId === activeSpace.id);
   const mediaAssetSources = useMemo(() => props.mediaAssetSources ?? {}, [props.mediaAssetSources]);
-  const activeSpaceView = activeSpace && props.spaceView?.spaceId === activeSpace.id ? props.spaceView : null;
   const selectedBackgroundSrc =
     activeSpaceView?.backgroundSelectedAssetId ? mediaAssetSources[activeSpaceView.backgroundSelectedAssetId] ?? null : null;
   const activeSpaceGallery = useMemo(
