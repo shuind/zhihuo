@@ -24,7 +24,7 @@ import {
   type ThinkingStore,
 } from "@/components/zhihuo-model";
 import { SettleLetterDialog } from "@/components/letter/settle-letter-dialog";
-import { ConstellationCanvas } from "@/components/thinking/constellation-canvas";
+import { StarMapView } from "@/components/thinking/star-map";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
@@ -1694,15 +1694,31 @@ export function ThinkingLayer(props: {
 
         {detailOpen && activeSpace ? (
           <div data-thinking-detail="true" className="relative z-10 grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_auto] overflow-hidden">
-            <section className="relative min-h-0 overflow-hidden px-4 py-5 md:px-8 md:pb-5 md:pt-8">
+            <section
+              className={cn(
+                "relative min-h-0 overflow-hidden",
+                thinkingLayout === "constellation"
+                  ? "p-0"
+                  : "px-4 py-5 md:px-8 md:pb-5 md:pt-8"
+              )}
+            >
               {thinkingLayout === "constellation" ? (
-                <div className="ml-auto mr-0 flex h-full max-w-[1180px] md:mr-6 lg:mr-10 xl:mr-14">
-                  <ConstellationCanvas
+                <div className="absolute inset-0 flex">
+                  <StarMapView
+                    rootQuestionText={activeSpace.rootQuestionText}
                     tracks={tracks}
                     activeTrackId={activeTrackId}
-                    rootQuestionText={activeSpace.rootQuestionText}
+                    spaceId={activeSpace.id}
                     frozen={activeSpace.status === "hidden"}
-                    onSelectNode={(trackId, nodeId) => {
+                    mediaAssetSources={mediaAssetSources}
+                    mode="starmap"
+                    onModeChange={(next) => {
+                      if (next === "tracks") setThinkingLayout("tracks");
+                    }}
+                    onSelectTrack={(trackId) => {
+                      void props.onSetActiveTrack(activeSpace.id, trackId);
+                    }}
+                    onJumpToTrackNode={(trackId, nodeId) => {
                       setLocalPendingTrackId(trackId);
                       setThinkingLayout("tracks");
                       if (typeof window !== "undefined") {
@@ -1714,6 +1730,16 @@ export function ThinkingLayer(props: {
                         }, 120);
                       }
                     }}
+                    onSubmitFromNode={async (trackId, _nodeId, rawInput) => {
+                      const result = await props.onAddQuestion(activeSpace.id, {
+                        rawInput,
+                        trackId,
+                      });
+                      if (result.ok) {
+                        setLocalPendingTrackId(trackId);
+                      }
+                    }}
+                    composerEnabled={writeEnabled}
                     className="h-full w-full"
                   />
                 </div>
