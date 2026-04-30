@@ -76,6 +76,10 @@ type ApiLifeDoubt = {
   raw_text: string;
   first_node_preview: string | null;
   last_node_preview: string | null;
+  letter_title?: string | null;
+  letter_lines?: string[] | string | null;
+  letter_variant?: string | null;
+  letter_seal_text?: string | null;
   created_at: string;
   archived_at: string | null;
   deleted_at: string | null;
@@ -202,6 +206,10 @@ type UserExportPayload = {
       raw_text: string;
       first_node_preview: string | null;
       last_node_preview: string | null;
+      letter_title?: string | null;
+      letter_lines?: string[] | string | null;
+      letter_variant?: string | null;
+      letter_seal_text?: string | null;
       created_at: string;
       archived_at: string | null;
       deleted_at: string | null;
@@ -531,6 +539,17 @@ function isCloudPayloadEmpty(payload: UserExportPayload) {
   );
 }
 
+function normalizeLetterLines(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean);
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function canonicalizeExportPayload(payload: UserExportPayload) {
   const rawSpaces = Array.isArray(payload.thinking.spaces) ? (payload.thinking.spaces as Array<Record<string, unknown>>) : [];
   const rawNodes = Array.isArray(payload.thinking.nodes) ? (payload.thinking.nodes as Array<Record<string, unknown>>) : [];
@@ -563,6 +582,10 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
           raw_text: item.raw_text,
           first_node_preview: item.first_node_preview ?? null,
           last_node_preview: item.last_node_preview ?? null,
+          letter_title: item.letter_title ?? null,
+          letter_lines: normalizeLetterLines(item.letter_lines),
+          letter_variant: item.letter_variant ?? null,
+          letter_seal_text: item.letter_seal_text ?? null,
           created_at: item.created_at,
           archived_at: item.archived_at ?? null,
           deleted_at: item.deleted_at ?? null
@@ -985,6 +1008,10 @@ function mapApiLifeDoubt(item: ApiLifeDoubt): LifeDoubt {
     rawText: item.raw_text,
     firstNodePreview: typeof item.first_node_preview === "string" ? item.first_node_preview : null,
     lastNodePreview: typeof item.last_node_preview === "string" ? item.last_node_preview : null,
+    letterTitle: typeof item.letter_title === "string" ? item.letter_title : null,
+    letterLines: normalizeLetterLines(item.letter_lines),
+    letterVariant: typeof item.letter_variant === "string" ? item.letter_variant : null,
+    letterSealText: typeof item.letter_seal_text === "string" ? item.letter_seal_text : null,
     createdAt: item.created_at,
     archivedAt: item.archived_at,
     deletedAt: item.deleted_at
@@ -1909,6 +1936,10 @@ export function TimeArchive() {
             raw_text: item.rawText,
             first_node_preview: item.firstNodePreview,
             last_node_preview: item.lastNodePreview,
+            letter_title: item.letterTitle ?? null,
+            letter_lines: item.letterLines ?? [],
+            letter_variant: item.letterVariant ?? null,
+            letter_seal_text: item.letterSealText ?? null,
             created_at: item.createdAt,
             archived_at: item.archivedAt,
             deleted_at: item.deletedAt
@@ -3242,9 +3273,14 @@ export function TimeArchive() {
             if (activeCount >= MAX_ACTIVE_SPACES) {
               return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
             }
+            await queueMutation(`/v1/doubts/${sourceTimeDoubtId}/to-thinking`, {
+              client_updated_at: new Date().toISOString()
+            });
             setThinkingStore((prev) => ({
               ...prev,
-              spaces: prev.spaces.map((space) => (space.id === existing.id ? { ...space, status: "active" as const } : space))
+              spaces: prev.spaces.map((space) =>
+                space.id === existing.id ? { ...space, status: "active" as const, syncStatus: "pending" as const } : space
+              )
             }));
             markLocalChange();
           }
@@ -3927,11 +3963,6 @@ export function TimeArchive() {
             showNotice(created.message === `活跃空间上限为 ${MAX_ACTIVE_SPACES}` ? RESTORE_OVER_LIMIT_NOTICE : created.message);
             return;
           }
-          const hidden = await hideLifeDoubtFromTimeline(doubt.id);
-          if (!hidden) {
-            showNotice("已进入思路，但时间卡片隐藏失败");
-            return;
-          }
           setTab("thinking");
           setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
           showNotice("已进入思路");
@@ -3981,7 +4012,7 @@ export function TimeArchive() {
         }
       })();
     },
-    [createThinkingSpaceApi, hideLifeDoubtFromTimeline, showNotice]
+    [createThinkingSpaceApi, showNotice]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -6252,7 +6283,16 @@ export function TimeArchive() {
   ); */
 
   const handleThinkingWriteToTime = useCallback(
-    async (spaceId: string, options?: { preserveOriginalTime?: boolean }) => {
+    async (
+      spaceId: string,
+      options?: {
+        preserveOriginalTime?: boolean;
+        letterTitle?: string | null;
+        letterLines?: string[];
+        letterVariant?: string | null;
+        letterSealText?: string | null;
+      }
+    ) => {
       const now = new Date().toISOString();
       const preserveOriginalTime = options?.preserveOriginalTime !== false;
       const currentSpace = thinkingStore.spaces.find((item) => item.id === spaceId);
@@ -6273,6 +6313,10 @@ export function TimeArchive() {
       await queueMutation(`/v1/thinking/spaces/${spaceId}/write-to-time`, {
         preserve_original_time: preserveOriginalTime,
         client_doubt_id: doubtId,
+        letter_title: options?.letterTitle ?? null,
+        letter_lines: options?.letterLines ?? [],
+        letter_variant: options?.letterVariant ?? null,
+        letter_seal_text: options?.letterSealText ?? null,
         client_updated_at: now
       });
 
@@ -6282,6 +6326,10 @@ export function TimeArchive() {
           rawText: currentSpace.rootQuestionText,
           firstNodePreview: firstPreview,
           lastNodePreview: lastPreview,
+          letterTitle: options?.letterTitle ?? null,
+          letterLines: options?.letterLines ?? [],
+          letterVariant: options?.letterVariant ?? null,
+          letterSealText: options?.letterSealText ?? null,
           createdAt: writtenAt,
           archivedAt: null,
           deletedAt: null,

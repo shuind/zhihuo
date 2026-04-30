@@ -7,6 +7,10 @@ export type LifeDoubt = {
   rawText: string;
   firstNodePreview: string | null;
   lastNodePreview: string | null;
+  letterTitle?: string | null;
+  letterLines?: string[];
+  letterVariant?: string | null;
+  letterSealText?: string | null;
   createdAt: string;
   archivedAt: string | null;
   deletedAt: string | null;
@@ -397,6 +401,10 @@ export function loadLifeStore(): LifeStore {
         rawText,
         firstNodePreview: null,
         lastNodePreview: null,
+        letterTitle: null,
+        letterLines: [],
+        letterVariant: null,
+        letterSealText: null,
         createdAt: toIso(item.createdAt),
         archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
         deletedAt: null
@@ -438,6 +446,12 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
     rawText: collapseWhitespace(typeof item.rawText === "string" ? item.rawText : ""),
     firstNodePreview: typeof item.firstNodePreview === "string" ? item.firstNodePreview : null,
     lastNodePreview: typeof item.lastNodePreview === "string" ? item.lastNodePreview : null,
+    letterTitle: typeof item.letterTitle === "string" ? item.letterTitle : null,
+    letterLines: Array.isArray(item.letterLines)
+      ? item.letterLines.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean)
+      : [],
+    letterVariant: typeof item.letterVariant === "string" ? item.letterVariant : null,
+    letterSealText: typeof item.letterSealText === "string" ? item.letterSealText : null,
     createdAt: toIso(item.createdAt),
     archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
     deletedAt: item.deletedAt ? toIso(item.deletedAt) : null

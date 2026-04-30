@@ -597,12 +597,16 @@ function DetailBody(props: {
   const canEditNote = isOlderThanOneYear(props.doubt.createdAt);
   const firstTrackNode = collapseWhitespace(props.doubt.firstNodePreview ?? "");
   const lastTrackNode = collapseWhitespace(props.doubt.lastNodePreview ?? firstTrackNode);
-  const hasSettled = Boolean(firstTrackNode);
-  const [viewMode, setViewMode] = useState<"letter" | "default">(hasSettled ? "letter" : "default");
+  const storedLetterLines = useMemo(
+    () => (props.doubt.letterLines ?? []).map((line) => line.trim()).filter(Boolean),
+    [props.doubt.letterLines]
+  );
+  const hasSettled = Boolean(firstTrackNode || storedLetterLines.length);
+  const [viewMode, setViewMode] = useState<"letter" | "default">("default");
 
   useEffect(() => {
-    setViewMode(hasSettled ? "letter" : "default");
-  }, [hasSettled, props.doubt.id]);
+    setViewMode("default");
+  }, [props.doubt.id]);
 
   const writtenAt = useMemo(() => new Date(props.doubt.createdAt), [props.doubt.createdAt]);
   const dateLabel = useMemo(
@@ -614,22 +618,24 @@ function DetailBody(props: {
   const moon = useMemo(() => getMoonPhase(writtenAt), [writtenAt]);
 
   const letterLines = useMemo(
-    () =>
-      [
+    () => {
+      if (storedLetterLines.length) return storedLetterLines;
+      return [
         firstTrackNode,
         lastTrackNode && lastTrackNode !== firstTrackNode ? lastTrackNode : "",
         props.noteText
-      ].filter(Boolean) as string[],
-    [firstTrackNode, lastTrackNode, props.noteText]
+      ].filter(Boolean) as string[];
+    },
+    [firstTrackNode, lastTrackNode, props.noteText, storedLetterLines]
   );
 
   const letterVariant = useMemo<PaperVariant>(
-    () => loadLetterVariant(props.doubt.id) ?? suggestVariant(writtenAt, true),
-    [props.doubt.id, writtenAt]
+    () => (props.doubt.letterVariant as PaperVariant | null) ?? loadLetterVariant(props.doubt.id) ?? suggestVariant(writtenAt, true),
+    [props.doubt.id, props.doubt.letterVariant, writtenAt]
   );
   const ornamentSealText = useMemo(
-    () => loadLetterSealText(props.doubt.id) ?? "知",
-    [props.doubt.id]
+    () => props.doubt.letterSealText ?? loadLetterSealText(props.doubt.id) ?? "知",
+    [props.doubt.id, props.doubt.letterSealText]
   );
 
   const poetizedLetter = useMemo(
@@ -731,7 +737,7 @@ function DetailBody(props: {
                 <LetterPaper
                   ref={letterPaperRef}
                   variant={letterVariant}
-                  title={poetizedLetter.title || props.doubt.rawText}
+                  title={props.doubt.letterTitle || poetizedLetter.title || props.doubt.rawText}
                   lines={letterLines.length ? letterLines : poetizedLetter.lines}
                   dateLabel={dateLabel}
                   solarTermLabel={solarTermLabel}

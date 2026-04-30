@@ -90,7 +90,11 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
       ? input.doubts.map((row) => ({
           ...row,
           first_node_preview: typeof row.first_node_preview === "string" ? row.first_node_preview : null,
-          last_node_preview: typeof row.last_node_preview === "string" ? row.last_node_preview : null
+          last_node_preview: typeof row.last_node_preview === "string" ? row.last_node_preview : null,
+          letter_title: typeof row.letter_title === "string" ? row.letter_title : null,
+          letter_lines: normalizeLetterLines(row.letter_lines),
+          letter_variant: typeof row.letter_variant === "string" ? row.letter_variant : null,
+          letter_seal_text: typeof row.letter_seal_text === "string" ? row.letter_seal_text : null
         }))
       : [],
     doubt_notes: Array.isArray(input?.doubt_notes) ? input.doubt_notes : [],
@@ -266,6 +270,17 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
   };
 }
 
+function normalizeLetterLines(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean);
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function nowIso() {
   return new Date().toISOString();
 }
@@ -432,7 +447,9 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     syncRepairItems
   ] = await Promise.all([
     client.query("SELECT id, email, password_hash, created_at, deleted_at FROM users"),
-    client.query("SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"),
+    client.query(
+      "SELECT id, user_id, raw_text, first_node_preview, last_node_preview, letter_title, letter_lines, letter_variant, letter_seal_text, created_at, archived_at, deleted_at FROM doubts"
+    ),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
     client.query(
       "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
@@ -637,7 +654,20 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     {
       table: "doubts",
       idColumn: "id",
-      columns: ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+      columns: [
+        "id",
+        "user_id",
+        "raw_text",
+        "first_node_preview",
+        "last_node_preview",
+        "letter_title",
+        "letter_lines",
+        "letter_variant",
+        "letter_seal_text",
+        "created_at",
+        "archived_at",
+        "deleted_at"
+      ],
       conflictColumns: ["id"],
       rows: db.doubts.map((row) => [
         row.id,
@@ -645,6 +675,10 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.raw_text,
         row.first_node_preview ?? null,
         row.last_node_preview ?? null,
+        row.letter_title ?? null,
+        JSON.stringify(row.letter_lines ?? []),
+        row.letter_variant ?? null,
+        row.letter_seal_text ?? null,
         row.created_at,
         row.archived_at,
         row.deleted_at
@@ -1016,7 +1050,7 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
   for (const table of scope) {
     if (table === "doubts") {
       const { rows } = await client.query(
-        "SELECT id, user_id, raw_text, first_node_preview, last_node_preview, created_at, archived_at, deleted_at FROM doubts"
+        "SELECT id, user_id, raw_text, first_node_preview, last_node_preview, letter_title, letter_lines, letter_variant, letter_seal_text, created_at, archived_at, deleted_at FROM doubts"
       );
       state.doubts = rows as DbState["doubts"];
       continue;
@@ -1207,7 +1241,20 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       planByScope.set(item, {
         table: "doubts",
         idColumn: "id",
-        columns: ["id", "user_id", "raw_text", "first_node_preview", "last_node_preview", "created_at", "archived_at", "deleted_at"],
+        columns: [
+          "id",
+          "user_id",
+          "raw_text",
+          "first_node_preview",
+          "last_node_preview",
+          "letter_title",
+          "letter_lines",
+          "letter_variant",
+          "letter_seal_text",
+          "created_at",
+          "archived_at",
+          "deleted_at"
+        ],
         conflictColumns: ["id"],
         rows: db.doubts.map((row) => [
           row.id,
@@ -1215,6 +1262,10 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.raw_text,
           row.first_node_preview ?? null,
           row.last_node_preview ?? null,
+          row.letter_title ?? null,
+          JSON.stringify(row.letter_lines ?? []),
+          row.letter_variant ?? null,
+          row.letter_seal_text ?? null,
           row.created_at,
           row.archived_at,
           row.deleted_at

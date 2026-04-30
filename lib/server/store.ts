@@ -73,6 +73,17 @@ function normalizeSpaceStatus(status: string | null | undefined): "active" | "hi
   return status === "active" ? "active" : "hidden";
 }
 
+function normalizeLetterLines(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean);
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return Array.isArray(parsed) ? parsed.map((line) => (typeof line === "string" ? line.trim() : "")).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
 function isSpaceActive(space: ThinkingSpaceRecord) {
   return normalizeSpaceStatus(space.status) === "active";
 }
@@ -828,6 +839,10 @@ export function createDoubtAt(
     raw_text: normalized,
     first_node_preview: null,
     last_node_preview: null,
+    letter_title: null,
+    letter_lines: [],
+    letter_variant: null,
+    letter_seal_text: null,
     created_at: createdAt,
     archived_at: null,
     deleted_at: null
@@ -855,6 +870,10 @@ export function replaceLifeSnapshot(
       raw_text?: string;
       first_node_preview?: string | null;
       last_node_preview?: string | null;
+      letter_title?: string | null;
+      letter_lines?: string[] | string | null;
+      letter_variant?: string | null;
+      letter_seal_text?: string | null;
       created_at?: string;
       archived_at?: string | null;
       deleted_at?: string | null;
@@ -876,6 +895,10 @@ export function replaceLifeSnapshot(
         typeof item.first_node_preview === "string" ? collapseWhitespace(item.first_node_preview) || null : null,
       last_node_preview:
         typeof item.last_node_preview === "string" ? collapseWhitespace(item.last_node_preview) || null : null,
+      letter_title: typeof item.letter_title === "string" ? item.letter_title.trim() || null : null,
+      letter_lines: normalizeLetterLines(item.letter_lines),
+      letter_variant: typeof item.letter_variant === "string" ? item.letter_variant.trim() || null : null,
+      letter_seal_text: typeof item.letter_seal_text === "string" ? item.letter_seal_text.trim() || null : null,
       created_at: typeof item.created_at === "string" ? item.created_at : nowIso(),
       archived_at: typeof item.archived_at === "string" ? item.archived_at : null,
       deleted_at: typeof item.deleted_at === "string" ? item.deleted_at : null
@@ -1351,7 +1374,14 @@ export function writeSpaceToTime(
   userId: string,
   spaceId: string,
   _writeNote?: string | null,
-  options?: { preserveOriginalTime?: boolean; clientDoubtId?: string | null }
+  options?: {
+    preserveOriginalTime?: boolean;
+    clientDoubtId?: string | null;
+    letterTitle?: string | null;
+    letterLines?: string[] | null;
+    letterVariant?: string | null;
+    letterSealText?: string | null;
+  }
 ) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
@@ -1364,10 +1394,18 @@ export function writeSpaceToTime(
     doubt = requireDoubt(db, userId, space.source_time_doubt_id);
   }
   const writtenAt = preserveOriginalTime ? doubt?.created_at ?? space.created_at : nowIso();
+  const letterTitle = typeof options?.letterTitle === "string" ? options.letterTitle.trim() || null : null;
+  const letterLines = normalizeLetterLines(options?.letterLines);
+  const letterVariant = typeof options?.letterVariant === "string" ? options.letterVariant.trim() || null : null;
+  const letterSealText = typeof options?.letterSealText === "string" ? options.letterSealText.trim() || null : null;
   if (doubt) {
     doubt.raw_text = space.root_question_text;
     doubt.first_node_preview = edgePreview.firstNode;
     doubt.last_node_preview = edgePreview.lastNode;
+    doubt.letter_title = letterTitle;
+    doubt.letter_lines = letterLines;
+    doubt.letter_variant = letterVariant;
+    doubt.letter_seal_text = letterSealText;
     doubt.created_at = writtenAt;
     doubt.archived_at = null;
   } else {
@@ -1383,6 +1421,10 @@ export function writeSpaceToTime(
     doubt.created_at = writtenAt;
     doubt.first_node_preview = edgePreview.firstNode;
     doubt.last_node_preview = edgePreview.lastNode;
+    doubt.letter_title = letterTitle;
+    doubt.letter_lines = letterLines;
+    doubt.letter_variant = letterVariant;
+    doubt.letter_seal_text = letterSealText;
     space.source_time_doubt_id = doubt.id;
   }
 

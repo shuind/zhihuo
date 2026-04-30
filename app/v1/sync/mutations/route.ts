@@ -246,7 +246,6 @@ function applyMutation(db: DbState, userId: string, item: NormalizedMutation): A
         repairItem: createRepair(db, userId, item, "active_space_limit", "space")
       };
     }
-    ensureDoubtArchived(db, userId, doubtId);
     return { kind: "applied", appliedRevision: getUserRevision(db, userId) };
   }
 
@@ -328,7 +327,13 @@ function applyMutation(db: DbState, userId: string, item: NormalizedMutation): A
           : null,
       {
         preserveOriginalTime: payload.preserve_original_time !== false,
-        clientDoubtId: typeof payload.client_doubt_id === "string" ? payload.client_doubt_id : null
+        clientDoubtId: typeof payload.client_doubt_id === "string" ? payload.client_doubt_id : null,
+        letterTitle: typeof payload.letter_title === "string" ? payload.letter_title : null,
+        letterLines: Array.isArray(payload.letter_lines)
+          ? payload.letter_lines.filter((line): line is string => typeof line === "string")
+          : null,
+        letterVariant: typeof payload.letter_variant === "string" ? payload.letter_variant : null,
+        letterSealText: typeof payload.letter_seal_text === "string" ? payload.letter_seal_text : null
       }
     );
     if (written.kind !== "ok") {

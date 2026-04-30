@@ -13,6 +13,11 @@ export const POST = withApiRoute(
       note_text?: string;
       freeze_note?: string;
       preserve_original_time?: boolean;
+      client_doubt_id?: string;
+      letter_title?: string | null;
+      letter_lines?: string[];
+      letter_variant?: string | null;
+      letter_seal_text?: string | null;
       client_mutation_id?: string;
       client_updated_at?: string;
     }>(request);
@@ -30,7 +35,14 @@ export const POST = withApiRoute(
     let writtenAt: string | null = null;
 
     await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
-      const written = writeSpaceToTime(db, userId, params.spaceId, noteText, { preserveOriginalTime });
+      const written = writeSpaceToTime(db, userId, params.spaceId, noteText, {
+        preserveOriginalTime,
+        clientDoubtId: typeof body?.client_doubt_id === "string" ? body.client_doubt_id : null,
+        letterTitle: typeof body?.letter_title === "string" ? body.letter_title : null,
+        letterLines: Array.isArray(body?.letter_lines) ? body.letter_lines : null,
+        letterVariant: typeof body?.letter_variant === "string" ? body.letter_variant : null,
+        letterSealText: typeof body?.letter_seal_text === "string" ? body.letter_seal_text : null
+      });
       resultKind = written.kind;
       if (written.kind !== "ok") return;
       spaceId = written.space.id;

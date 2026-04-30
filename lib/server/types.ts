@@ -8,6 +8,10 @@ export type DoubtRecord = {
   raw_text: string;
   first_node_preview: string | null;
   last_node_preview: string | null;
+  letter_title: string | null;
+  letter_lines: string[];
+  letter_variant: string | null;
+  letter_seal_text: string | null;
   created_at: string;
   archived_at: string | null;
   deleted_at: string | null;

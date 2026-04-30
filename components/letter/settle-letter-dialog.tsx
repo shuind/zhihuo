@@ -11,6 +11,13 @@ import { cn } from "@/lib/utils";
 
 type Phase = "preview" | "sealing" | "sealed";
 
+export type SettleLetterSnapshot = {
+  title: string | null;
+  lines: string[];
+  variant: PaperVariant;
+  sealText: string | null;
+};
+
 export type SettleLetterDialogProps = {
   open: boolean;
   doubtId?: string | null;
@@ -18,7 +25,7 @@ export type SettleLetterDialogProps = {
   nodes: string[];
   closingNote?: string;
   writtenAt: Date;
-  onConfirm: () => Promise<{ ok: boolean; message?: string }>;
+  onConfirm: (snapshot: SettleLetterSnapshot) => Promise<{ ok: boolean; message?: string }>;
   onClose: () => void;
   authorName?: string;
 };
@@ -81,7 +88,12 @@ export function SettleLetterDialog({
     setBusy(true);
     setErrMsg(null);
     setPhase("sealing");
-    const res = await onConfirm();
+    const res = await onConfirm({
+      title: (paperTitle || defaultPaperTitle).trim() || null,
+      lines: paperLines.map((line) => line.trim()).filter(Boolean),
+      variant,
+      sealText: ornamentSealText.trim() || null
+    });
     setBusy(false);
     if (!res.ok) {
       setPhase("preview");

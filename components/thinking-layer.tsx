@@ -23,7 +23,7 @@ import {
   type ThinkingSpaceStatus,
   type ThinkingStore,
 } from "@/components/zhihuo-model";
-import { SettleLetterDialog } from "@/components/letter/settle-letter-dialog";
+import { SettleLetterDialog, type SettleLetterSnapshot } from "@/components/letter/settle-letter-dialog";
 import { StarMapView } from "@/components/thinking/star-map";
 
 const ORGANIZE_IDLE_MS = 5000;
@@ -192,7 +192,13 @@ export function ThinkingLayer(props: {
   onSelectSpaceBackgroundImage: (spaceId: string, assetId: string | null) => Promise<boolean>;
   onWriteSpaceToTime: (
     spaceId: string,
-    options?: { preserveOriginalTime?: boolean }
+    options?: {
+      preserveOriginalTime?: boolean;
+      letterTitle?: string | null;
+      letterLines?: string[];
+      letterVariant?: string | null;
+      letterSealText?: string | null;
+    }
   ) => Promise<{ ok: true } | { ok: false; message: string }>;
   onDeleteSpace: (spaceId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   onRenameSpace: (spaceId: string, rootQuestionText: string) => Promise<{ ok: true; rootQuestionText: string } | { ok: false; message: string }>;
@@ -1086,12 +1092,17 @@ export function ThinkingLayer(props: {
 
   const [writeToTimeSealed, setWriteToTimeSealed] = useState(false);
 
-  const submitWriteToTime = useCallback(async (): Promise<{ ok: boolean; message?: string }> => {
+  const submitWriteToTime = useCallback(async (snapshot: SettleLetterSnapshot): Promise<{ ok: boolean; message?: string }> => {
     if (!activeSpace || activeSpace.status !== "active" || isWritingToTime) {
       return { ok: false, message: "正在写入" };
     }
     setIsWritingToTime(true);
-    const result = await props.onWriteSpaceToTime(activeSpace.id);
+    const result = await props.onWriteSpaceToTime(activeSpace.id, {
+      letterTitle: snapshot.title,
+      letterLines: snapshot.lines,
+      letterVariant: snapshot.variant,
+      letterSealText: snapshot.sealText
+    });
     setIsWritingToTime(false);
     if (!result.ok) {
       return { ok: false, message: result.message };

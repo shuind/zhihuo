@@ -1,0 +1,11 @@
+ALTER TABLE doubts
+  ADD COLUMN IF NOT EXISTS letter_title TEXT;
+
+ALTER TABLE doubts
+  ADD COLUMN IF NOT EXISTS letter_lines TEXT;
+
+ALTER TABLE doubts
+  ADD COLUMN IF NOT EXISTS letter_variant TEXT;
+
+ALTER TABLE doubts
+  ADD COLUMN IF NOT EXISTS letter_seal_text TEXT;
