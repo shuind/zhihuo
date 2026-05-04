@@ -5,6 +5,7 @@ import type { ThinkingTrackView } from "@/components/thinking-layer"
 import { cn } from "@/lib/utils"
 import { curateScene } from "./director/scene-curator"
 import { buildFallbackScene } from "./director/scene-fallback"
+import { validateScene } from "./director/scene-validator"
 import type { Scene } from "./stage/scene-types"
 import { StageRenderer } from "./stage/stage-renderer"
 import { ThoughtDetailPanel } from "./thought-detail-panel"
@@ -35,6 +36,14 @@ export interface StarMapViewProps {
 type CurateStatus = "idle" | "loading" | "error"
 
 const curatedSceneCache = new Map<string, Scene>()
+const STAR_MAP_CURATED_STORAGE_KEY = "zhihuo_star_map_curated_scenes_v1"
+const MAX_PERSISTED_CURATED_SCENES = 50
+
+type PersistedCuratedScene = {
+  signature: string
+  scene: Scene
+  updatedAt: string
+}
 
 export function StarMapView({
   rootQuestionText,
@@ -58,13 +67,21 @@ export function StarMapView({
     () => tracks.reduce((sum, track) => sum + track.nodes.length, 0),
     [tracks]
   )
-  const cacheKey = spaceId ? `${spaceId}:${thoughtCount}` : null
+  const sceneSignature = useMemo(
+    () => buildSceneSignature(rootQuestionText, tracks),
+    [rootQuestionText, tracks]
+  )
+  const cacheKey = spaceId ? `${spaceId}:${sceneSignature}` : null
 
   useEffect(() => {
-    setCuratedScene(cacheKey ? curatedSceneCache.get(cacheKey) ?? null : null)
+    const cached = cacheKey ? curatedSceneCache.get(cacheKey) ?? null : null
+    const persisted = spaceId && !cached ? loadPersistedCuratedScene(spaceId, sceneSignature) : null
+    const nextScene = cached ?? persisted
+    if (nextScene && cacheKey) curatedSceneCache.set(cacheKey, nextScene)
+    setCuratedScene(nextScene)
     setCurateStatus("idle")
     setCurateError(null)
-  }, [cacheKey])
+  }, [cacheKey, sceneSignature, spaceId])
 
   useEffect(() => {
     if (!selected) return
@@ -98,6 +115,7 @@ export function StarMapView({
     const result = await curateScene({ rootQuestionText, tracks })
     if (result.ok) {
       if (cacheKey) curatedSceneCache.set(cacheKey, result.scene)
+      if (spaceId) savePersistedCuratedScene(spaceId, sceneSignature, result.scene)
       setCuratedScene(result.scene)
       setCurateStatus("idle")
       return
@@ -112,6 +130,7 @@ export function StarMapView({
 
   function resetToFallback() {
     if (cacheKey) curatedSceneCache.delete(cacheKey)
+    if (spaceId) deletePersistedCuratedScene(spaceId)
     setCuratedScene(null)
     setCurateStatus("idle")
     setCurateError(null)
@@ -209,6 +228,94 @@ export function StarMapView({
 
 function hashTracks(tracks: ThinkingTrackView[]): string {
   return tracks.map((track) => track.id).join("|") || "default"
+}
+
+function buildSceneSignature(rootQuestionText: string, tracks: ThinkingTrackView[]) {
+  const payload = {
+    root: rootQuestionText.trim(),
+    tracks: tracks.map((track) => ({
+      id: track.id,
+      nodes: track.nodes.map((node) => ({
+        id: node.id,
+        text: node.questionText ?? "",
+        note: node.noteText ?? "",
+        answer: node.answerText ?? "",
+        image: node.imageAssetId ?? null,
+        createdAt: node.createdAt ?? null,
+      })),
+    })),
+  }
+  return `v1_${hashText(JSON.stringify(payload))}`
+}
+
+function hashText(value: string) {
+  let hash = 5381
+  for (let index = 0; index < value.length; index += 1) {
+    hash = (hash * 33) ^ value.charCodeAt(index)
+  }
+  return (hash >>> 0).toString(36)
+}
+
+function loadPersistedCuratedScene(spaceId: string, signature: string): Scene | null {
+  if (typeof window === "undefined") return null
+  try {
+    const store = readPersistedCuratedStore()
+    const item = store[spaceId]
+    if (!item || item.signature !== signature) return null
+    return validateScene(item.scene)
+  } catch {
+    return null
+  }
+}
+
+function savePersistedCuratedScene(spaceId: string, signature: string, scene: Scene) {
+  if (typeof window === "undefined") return
+  try {
+    const store = readPersistedCuratedStore()
+    store[spaceId] = { signature, scene, updatedAt: new Date().toISOString() }
+    const entries = Object.entries(store).sort(
+      (a, b) => new Date(b[1].updatedAt).getTime() - new Date(a[1].updatedAt).getTime()
+    )
+    window.localStorage.setItem(
+      STAR_MAP_CURATED_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(entries.slice(0, MAX_PERSISTED_CURATED_SCENES)))
+    )
+  } catch {
+    // Persistence is opportunistic; rendering should keep working if storage is full.
+  }
+}
+
+function deletePersistedCuratedScene(spaceId: string) {
+  if (typeof window === "undefined") return
+  try {
+    const store = readPersistedCuratedStore()
+    delete store[spaceId]
+    window.localStorage.setItem(STAR_MAP_CURATED_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+function readPersistedCuratedStore(): Record<string, PersistedCuratedScene> {
+  if (typeof window === "undefined") return {}
+  const raw = window.localStorage.getItem(STAR_MAP_CURATED_STORAGE_KEY)
+  if (!raw) return {}
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+  const store: Record<string, PersistedCuratedScene> = {}
+  for (const [spaceId, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue
+    const item = value as Record<string, unknown>
+    if (typeof item.signature !== "string" || typeof item.updatedAt !== "string") continue
+    const scene = validateScene(item.scene)
+    if (!scene) continue
+    store[spaceId] = {
+      signature: item.signature,
+      scene,
+      updatedAt: item.updatedAt,
+    }
+  }
+  return store
 }
 
 function SparkleIcon({ spinning }: { spinning: boolean }) {

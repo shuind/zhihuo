@@ -3,6 +3,7 @@ import { NextRequest } from "next/server"
 import { SCENE_CURATOR_SYSTEM_PROMPT } from "@/components/thinking/star-map/director/scene-prompt"
 import { validateScene } from "@/components/thinking/star-map/director/scene-validator"
 import type { Scene, SceneStar, SceneStrand } from "@/components/thinking/star-map/stage/scene-types"
+import { DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL, normalizeAiApiSettings, normalizeBaseUrl } from "@/lib/ai-settings"
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http"
 import { logWarn, withApiRoute } from "@/lib/server/observability"
 
@@ -22,6 +23,12 @@ type ThoughtInput = {
 type CurateRequest = {
   rootQuestion?: string
   thoughts?: ThoughtInput[]
+  ai?: {
+    provider?: string
+    apiKey?: string
+    baseUrl?: string
+    model?: string
+  }
 }
 
 const STAR_MAP_SCENE_SCHEMA = {
@@ -95,64 +102,54 @@ export const POST = withApiRoute(
     const userId = getUserId(request)
     if (!userId) return unauthorizedJson()
 
-    const apiKey = process.env.OPENAI_API_KEY
-    if (!apiKey) return errorJson(503, "OPENAI_API_KEY is not configured")
-
     const body = await parseJsonBody<CurateRequest>(request)
     if (!body || !Array.isArray(body.thoughts) || body.thoughts.length === 0) {
       return errorJson(400, "thoughts is required")
     }
 
+    const ai = normalizeAiApiSettings(body.ai)
+    const apiKey = ai.apiKey || process.env.DEEPSEEK_API_KEY || ""
+    if (!apiKey) return errorJson(503, "请先在设置里填写 DeepSeek API Key")
+
     const thoughts = sanitizeThoughts(body.thoughts)
     if (!thoughts.length) return errorJson(400, "valid thoughts is required")
 
     const rootQuestion = trimText(body.rootQuestion ?? "", 200)
-    const response = await fetch(`${openaiBaseUrl()}/responses`, {
+    const baseUrl = normalizeBaseUrl(ai.baseUrl || process.env.DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)
+    const model = ai.model || process.env.STAR_MAP_CURATOR_MODEL || DEFAULT_DEEPSEEK_MODEL
+    const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${apiKey}`,
         "content-type": "application/json",
       },
       body: JSON.stringify({
-        model: process.env.STAR_MAP_CURATOR_MODEL || "gpt-5-mini",
-        store: false,
-        input: [
+        model,
+        messages: [
           {
             role: "system",
-            content: [{ type: "input_text", text: SCENE_CURATOR_SYSTEM_PROMPT }],
+            content: `${SCENE_CURATOR_SYSTEM_PROMPT}\n\nReturn only valid json. Do not wrap it in markdown. The json object must follow the star_map_scene schema.`,
           },
           {
             role: "user",
-            content: [
-              {
-                type: "input_text",
-                text: JSON.stringify({ rootQuestion, thoughts }),
-              },
-            ],
+            content: `Please curate this thinking star map as json. Schema:\n${JSON.stringify(STAR_MAP_SCENE_SCHEMA)}\nInput:\n${JSON.stringify({ rootQuestion, thoughts })}`,
           },
         ],
-        text: {
-          format: {
-            type: "json_schema",
-            name: "star_map_scene",
-            strict: true,
-            schema: STAR_MAP_SCENE_SCHEMA,
-          },
-        },
-        max_output_tokens: 3000,
+        response_format: { type: "json_object" },
+        max_tokens: 3000,
       }),
     })
 
     const raw = (await response.json().catch(() => null)) as unknown
     if (!response.ok) {
-      logWarn("thinking.star_map.curate.openai_failed", {
+      logWarn("thinking.star_map.curate.deepseek_failed", {
         status: response.status,
-        error: summarizeOpenAiError(raw),
+        error: summarizeApiError(raw),
       })
       return errorJson(502, "star map curator failed")
     }
 
-    const text = extractOutputText(raw)
+    const text = extractChatCompletionText(raw) ?? extractOutputText(raw)
     if (!text) return errorJson(502, "star map curator returned empty output")
 
     const parsed = parseJsonObject(text)
@@ -166,10 +163,6 @@ export const POST = withApiRoute(
   },
   { rateLimit: { bucket: "thinking-star-map-curate", max: 12, windowMs: 60 * 1000 } }
 )
-
-function openaiBaseUrl() {
-  return (process.env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "")
-}
 
 function sanitizeThoughts(input: ThoughtInput[]) {
   return input
@@ -287,6 +280,21 @@ function extractOutputText(raw: unknown): string | null {
   return chunks.join("").trim() || null
 }
 
+function extractChatCompletionText(raw: unknown): string | null {
+  if (!raw || typeof raw !== "object") return null
+  const choices = (raw as Record<string, unknown>).choices
+  if (!Array.isArray(choices)) return null
+  const chunks: string[] = []
+  for (const choice of choices) {
+    if (!choice || typeof choice !== "object") continue
+    const message = (choice as Record<string, unknown>).message
+    if (!message || typeof message !== "object") continue
+    const content = (message as Record<string, unknown>).content
+    if (typeof content === "string") chunks.push(content)
+  }
+  return chunks.join("").trim() || null
+}
+
 function parseJsonObject(text: string) {
   try {
     return JSON.parse(text)
@@ -302,7 +310,7 @@ function parseJsonObject(text: string) {
   }
 }
 
-function summarizeOpenAiError(raw: unknown) {
+function summarizeApiError(raw: unknown) {
   if (!raw || typeof raw !== "object") return "unknown"
   const error = (raw as Record<string, unknown>).error
   if (!error || typeof error !== "object") return "unknown"

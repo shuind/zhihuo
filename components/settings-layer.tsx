@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import type { QueuedMutation } from "@/components/offline-store";
 import { Button } from "@/components/ui/button";
@@ -8,6 +8,13 @@ import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle }
 import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
+import {
+  DEFAULT_DEEPSEEK_BASE_URL,
+  DEFAULT_DEEPSEEK_MODEL,
+  clearAiApiSettings,
+  loadAiApiSettings,
+  saveAiApiSettings
+} from "@/lib/ai-settings";
 
 const TIMEZONE_OPTIONS = [
   { value: "Asia/Shanghai", label: "中国标准时间 (UTC+08:00)" },
@@ -68,6 +75,10 @@ export function SettingsLayer(props: {
   const [includeThinking, setIncludeThinking] = useState(true);
   const [exportText, setExportText] = useState("");
   const [loadingExport, setLoadingExport] = useState(false);
+  const [aiApiKey, setAiApiKey] = useState("");
+  const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_DEEPSEEK_BASE_URL);
+  const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
+  const [aiKeyVisible, setAiKeyVisible] = useState(false);
 
   const [pinMode, setPinMode] = useState<"enable" | "change" | "disable">("enable");
   const [pinCurrent, setPinCurrent] = useState("");
@@ -83,6 +94,31 @@ export function SettingsLayer(props: {
   const pinnedSet = useMemo(() => new Set(props.fixedTopSpaceIds), [props.fixedTopSpaceIds]);
 
   const pinLockedSeconds = Math.max(0, Math.ceil((props.pinLockedUntil - Date.now()) / 1000));
+
+  useEffect(() => {
+    const settings = loadAiApiSettings();
+    setAiApiKey(settings.apiKey);
+    setAiBaseUrl(settings.baseUrl);
+    setAiModel(settings.model);
+  }, []);
+
+  const saveAiSettings = () => {
+    saveAiApiSettings({
+      provider: "deepseek",
+      apiKey: aiApiKey,
+      baseUrl: aiBaseUrl,
+      model: aiModel
+    });
+    props.showNotice("AI API 设置已保存");
+  };
+
+  const clearAiSettings = () => {
+    clearAiApiSettings();
+    setAiApiKey("");
+    setAiBaseUrl(DEFAULT_DEEPSEEK_BASE_URL);
+    setAiModel(DEFAULT_DEEPSEEK_MODEL);
+    props.showNotice("AI API 设置已清空");
+  };
 
   const loadExport = () => {
     if (!includeLife && !includeThinking) {
@@ -240,6 +276,100 @@ export function SettingsLayer(props: {
               </div>
             </div>
           </CardContent>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>AI 策展 API</CardTitle>
+            <CardDescription>用于思考星图的“让 AI 策展”。默认使用 DeepSeek V4 Flash，API Key 只保存在本机。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="grid gap-3 rounded-lg border border-slate-300 bg-white p-3">
+              <label className="grid gap-2">
+                <span className="text-sm text-slate-700">服务商</span>
+                <select
+                  value="deepseek"
+                  disabled
+                  className="h-10 rounded-md border border-slate-300 bg-slate-50 px-3 text-sm text-slate-500 outline-none"
+                >
+                  <option value="deepseek">DeepSeek</option>
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm text-slate-700">API Key</span>
+                <div className="flex gap-2">
+                  <input
+                    type={aiKeyVisible ? "text" : "password"}
+                    value={aiApiKey}
+                    autoComplete="off"
+                    spellCheck={false}
+                    placeholder="sk-..."
+                    onChange={(event) => setAiApiKey(event.target.value)}
+                    className="h-10 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                  />
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-slate-700"
+                    onClick={() => setAiKeyVisible((visible) => !visible)}
+                  >
+                    {aiKeyVisible ? "隐藏" : "显示"}
+                  </Button>
+                </div>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm text-slate-700">模型</span>
+                <select
+                  value={aiModel}
+                  onChange={(event) => setAiModel(event.target.value)}
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                >
+                  <option value="deepseek-v4-flash">deepseek-v4-flash（默认）</option>
+                  <option value="deepseek-v4-pro">deepseek-v4-pro</option>
+                  <option value="deepseek-chat">deepseek-chat（兼容别名）</option>
+                </select>
+              </label>
+
+              <label className="grid gap-2">
+                <span className="text-sm text-slate-700">Base URL</span>
+                <input
+                  type="url"
+                  value={aiBaseUrl}
+                  onChange={(event) => setAiBaseUrl(event.target.value)}
+                  placeholder={DEFAULT_DEEPSEEK_BASE_URL}
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                />
+              </label>
+
+              <p className="text-xs leading-5 text-slate-500">
+                星图策展会把当前空间的根问题与思考节点发送给 DeepSeek。未填写 Key 时，会尝试使用服务端环境变量。
+              </p>
+            </div>
+          </CardContent>
+          <CardFooter className="gap-2">
+            <Button type="button" size="sm" variant="ghost" className="rounded-full border border-slate-400/40 bg-white text-slate-700" onClick={saveAiSettings}>
+              保存 API 设置
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={() => {
+                setAiBaseUrl(DEFAULT_DEEPSEEK_BASE_URL);
+                setAiModel(DEFAULT_DEEPSEEK_MODEL);
+                props.showNotice("已恢复 DeepSeek V4 默认项");
+              }}
+            >
+              恢复默认
+            </Button>
+            <Button type="button" size="sm" variant="ghost" className="rounded-full border border-red-400/40 bg-red-100/70 text-red-800" onClick={clearAiSettings}>
+              清空 Key
+            </Button>
+          </CardFooter>
         </Card>
 
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">

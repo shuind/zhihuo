@@ -601,7 +601,14 @@ function DetailBody(props: {
     () => (props.doubt.letterLines ?? []).map((line) => line.trim()).filter(Boolean),
     [props.doubt.letterLines]
   );
-  const hasSettled = Boolean(firstTrackNode || storedLetterLines.length);
+  const hasLetter = Boolean(
+    firstTrackNode ||
+      lastTrackNode ||
+      storedLetterLines.length ||
+      props.doubt.letterTitle ||
+      props.doubt.letterVariant ||
+      props.doubt.letterSealText
+  );
   const [viewMode, setViewMode] = useState<"letter" | "default">("default");
 
   useEffect(() => {
@@ -675,38 +682,37 @@ function DetailBody(props: {
       <div className={cn("flex items-center justify-between px-8 py-7", props.compact && "px-0")}>
         <div className="flex items-center gap-5">
           <span className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">{"\u7EC6\u8282"}</span>
-          {hasSettled ? (
-            <div className="flex items-center gap-3 text-[12px] tracking-[0.14em]">
-              <button
-                type="button"
-                onClick={() => setViewMode("letter")}
-                className={cn(
-                  "transition-colors duration-500",
-                  viewMode === "letter"
-                    ? "text-[rgba(220,210,180,0.82)]"
-                    : "text-[rgba(140,148,153,0.45)] hover:text-[rgba(190,196,200,0.7)]"
-                )}
-              >
-                笺
-              </button>
-              <span className="h-3 w-px bg-[rgba(140,148,153,0.18)]" />
+          {hasLetter ? (
+            <div className="flex items-center rounded-full border border-white/[0.08] bg-white/[0.03] p-0.5 text-[12px] tracking-[0.08em]">
               <button
                 type="button"
                 onClick={() => setViewMode("default")}
                 className={cn(
-                  "transition-colors duration-500",
+                  "rounded-full px-3 py-1.5 transition-colors duration-300",
                   viewMode === "default"
-                    ? "text-[rgba(210,216,220,0.82)]"
-                    : "text-[rgba(140,148,153,0.45)] hover:text-[rgba(190,196,200,0.7)]"
+                    ? "bg-white/[0.08] text-[rgba(210,216,220,0.9)]"
+                    : "text-[rgba(140,148,153,0.58)] hover:text-[rgba(190,196,200,0.78)]"
                 )}
               >
-                默认
+                原文
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewMode("letter")}
+                className={cn(
+                  "rounded-full px-3 py-1.5 transition-colors duration-300",
+                  viewMode === "letter"
+                    ? "bg-[rgba(220,210,180,0.12)] text-[rgba(230,218,186,0.92)]"
+                    : "text-[rgba(140,148,153,0.58)] hover:text-[rgba(210,199,170,0.82)]"
+                )}
+              >
+                笺纸
               </button>
             </div>
           ) : null}
         </div>
         <div className="flex items-center gap-3">
-          {viewMode === "letter" && hasSettled ? (
+          {viewMode === "letter" && hasLetter ? (
             <button type="button" className="text-[11px] tracking-[0.1em] text-[var(--time-text-soft)] transition-colors duration-500 hover:text-[var(--time-text)]" onClick={handleSaveLetter}>
               {"\u4FDD\u5B58"}
             </button>
@@ -731,7 +737,7 @@ function DetailBody(props: {
           exit={{ opacity: 0 }}
           transition={{ duration: 0.48, ease: EASE_GENTLE }}
         >
-          {viewMode === "letter" && hasSettled ? (
+          {viewMode === "letter" && hasLetter ? (
             <div className="flex flex-col items-center">
               <div className="w-full max-w-[420px]">
                 <LetterPaper
@@ -790,7 +796,7 @@ function DetailBody(props: {
                 </div>
               ) : null}
 
-              {hasSettled ? (
+              {firstTrackNode ? (
                 <div className="mb-12 space-y-4">
                   <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"初："}{firstTrackNode}</p>
                   <p className="text-[13px] leading-[1.84] text-[rgba(160,168,173,0.66)]">{"终："}{lastTrackNode}</p>

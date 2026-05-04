@@ -1,4 +1,5 @@
 import type { ThinkingTrackView } from "@/components/thinking-layer"
+import { loadAiApiSettings } from "@/lib/ai-settings"
 import type { Scene } from "../stage/scene-types"
 
 export interface CurateInput {
@@ -27,12 +28,14 @@ export async function curateScene(input: CurateInput): Promise<CurateResult> {
   if (!thoughts.length) return { ok: false, error: "empty" }
 
   try {
+    const ai = loadAiApiSettings()
     const response = await fetch("/v1/thinking/star-map/curate", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({
         rootQuestion: input.rootQuestionText,
         thoughts,
+        ai,
       }),
     })
 
