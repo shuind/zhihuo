@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as ReactPointerEvent } from "react"
 import { cn } from "@/lib/utils"
 import type { Scene } from "./scene-types"
 import { compileScene, type CompiledStar } from "./scene-compiler"
@@ -10,6 +10,14 @@ interface StageRendererProps {
   seed: string
   selectedStarId?: string | null
   onSelectStar?: (star: CompiledStar) => void
+  onMoveStar?: (
+    star: CompiledStar,
+    position: { x: number; y: number; width: number; height: number }
+  ) => void
+  onCommitStarMove?: (
+    star: CompiledStar,
+    position: { x: number; y: number; width: number; height: number }
+  ) => void
   className?: string
 }
 
@@ -18,11 +26,23 @@ export function StageRenderer({
   seed,
   selectedStarId,
   onSelectStar,
+  onMoveStar,
+  onCommitStarMove,
   className,
 }: StageRendererProps) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const svgRef = useRef<SVGSVGElement>(null)
+  const dragRef = useRef<{
+    pointerId: number
+    star: CompiledStar
+    startX: number
+    startY: number
+    moved: boolean
+    lastPosition: { x: number; y: number; width: number; height: number }
+  } | null>(null)
   const [size, setSize] = useState<{ w: number; h: number }>({ w: 1200, h: 720 })
   const [hoverId, setHoverId] = useState<string | null>(null)
+  const [dragId, setDragId] = useState<string | null>(null)
 
   useEffect(() => {
     const el = containerRef.current
@@ -47,6 +67,66 @@ export function StageRenderer({
     [compiled.core.text]
   )
 
+  function getLocalPointer(event: ReactPointerEvent<SVGElement>) {
+    const svg = svgRef.current
+    if (!svg) return null
+    const rect = svg.getBoundingClientRect()
+    const x = ((event.clientX - rect.left) / rect.width) * compiled.width
+    const y = ((event.clientY - rect.top) / rect.height) * compiled.height
+    return {
+      x: clamp(x, 12, compiled.width - 12),
+      y: clamp(y, 12, compiled.height - 12),
+      width: compiled.width,
+      height: compiled.height,
+    }
+  }
+
+  function beginDrag(event: ReactPointerEvent<SVGCircleElement>, star: CompiledStar) {
+    if (!onMoveStar) return
+    const point = getLocalPointer(event)
+    if (!point) return
+    event.preventDefault()
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    dragRef.current = {
+      pointerId: event.pointerId,
+      star,
+      startX: point.x,
+      startY: point.y,
+      moved: false,
+      lastPosition: point,
+    }
+    setDragId(star.id)
+  }
+
+  function moveDrag(event: ReactPointerEvent<SVGCircleElement>) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId || !onMoveStar) return
+    const point = getLocalPointer(event)
+    if (!point) return
+    event.preventDefault()
+    event.stopPropagation()
+    if (Math.hypot(point.x - drag.startX, point.y - drag.startY) > 3) drag.moved = true
+    drag.lastPosition = point
+    onMoveStar(drag.star, point)
+  }
+
+  function endDrag(event: ReactPointerEvent<SVGCircleElement>) {
+    const drag = dragRef.current
+    if (!drag || drag.pointerId !== event.pointerId) return
+    event.preventDefault()
+    event.stopPropagation()
+    try {
+      event.currentTarget.releasePointerCapture(event.pointerId)
+    } catch {
+      // The browser may already release capture when the pointer is cancelled.
+    }
+    dragRef.current = null
+    setDragId(null)
+    if (drag.moved) onCommitStarMove?.(drag.star, drag.lastPosition)
+    else onSelectStar?.(drag.star)
+  }
+
   return (
     <div
       ref={containerRef}
@@ -68,10 +148,11 @@ export function StageRenderer({
       />
 
       <svg
+        ref={svgRef}
         width={compiled.width}
         height={compiled.height}
         viewBox={`0 0 ${compiled.width} ${compiled.height}`}
-        className="absolute inset-0"
+        className="absolute inset-0 touch-none"
       >
         <defs>
           {/* core glow: three stacked radial gradients = no hard boundary */}
@@ -195,10 +276,17 @@ export function StageRenderer({
                   cy={star.y}
                   r={Math.max(star.r * 3, 10)}
                   fill="transparent"
-                  className="cursor-pointer"
+                  className={cn(onMoveStar ? "cursor-grab active:cursor-grabbing" : "cursor-pointer", dragId === star.id ? "cursor-grabbing" : null)}
+                  style={{ touchAction: "none" }}
                   onMouseEnter={() => setHoverId(star.id)}
                   onMouseLeave={() => setHoverId((h) => (h === star.id ? null : h))}
-                  onClick={() => onSelectStar?.(star)}
+                  onPointerDown={(event) => beginDrag(event, star)}
+                  onPointerMove={moveDrag}
+                  onPointerUp={endDrag}
+                  onPointerCancel={endDrag}
+                  onClick={() => {
+                    if (!onMoveStar) onSelectStar?.(star)
+                  }}
                 />
               </g>
             )

@@ -84,6 +84,18 @@ export type ThinkingSpaceMetaRecord = {
   empty_track_ids?: string[];
   milestone_node_ids?: string[];
   track_direction_hints?: Record<string, string | null>;
+  star_map_scene_signature?: string | null;
+  star_map_curated_scene?: Record<string, unknown> | null;
+  star_map_curated_at?: string | null;
+  star_map_star_placements?: Record<string, StarMapPlacementRecord>;
+  star_map_placements_signature?: string | null;
+  star_map_placements_updated_at?: string | null;
+};
+
+export type StarMapPlacementRecord = {
+  ring: 1 | 2 | 3 | 4;
+  angle: number;
+  drift: number;
 };
 
 export type ThinkingNodeLinkRecord = {
@@ -240,6 +252,12 @@ export type ThinkingSnapshot = {
     parkingTrackId?: string | null;
     pendingTrackId?: string | null;
     emptyTrackIds?: string[];
+    starMapSceneSignature?: string | null;
+    starMapCuratedScene?: Record<string, unknown> | null;
+    starMapCuratedAt?: string | null;
+    starMapStarPlacements?: Record<string, StarMapPlacementRecord>;
+    starMapPlacementsSignature?: string | null;
+    starMapPlacementsUpdatedAt?: string | null;
   }>;
   mediaAssets?: Array<{
     id: string;

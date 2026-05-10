@@ -20,11 +20,12 @@ import { cn } from "@/lib/utils";
 import {
   formatTimeInTimeZone,
   type ThinkingScratchItem,
+  type ThinkingSpaceMeta,
   type ThinkingSpaceStatus,
   type ThinkingStore,
 } from "@/components/zhihuo-model";
 import { SettleLetterDialog, type SettleLetterSnapshot } from "@/components/letter/settle-letter-dialog";
-import { StarMapView } from "@/components/thinking/star-map";
+import { StarMapView, type StarMapStatePatch } from "@/components/thinking/star-map";
 
 const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
@@ -190,6 +191,7 @@ export function ThinkingLayer(props: {
   onAddSpaceGalleryImage: (spaceId: string, file: File) => Promise<boolean>;
   onRemoveSpaceGalleryImage: (spaceId: string, assetId: string) => Promise<boolean>;
   onSelectSpaceBackgroundImage: (spaceId: string, assetId: string | null) => Promise<boolean>;
+  onSaveStarMapState: (spaceId: string, patch: StarMapStatePatch) => Promise<boolean>;
   onWriteSpaceToTime: (
     spaceId: string,
     options?: {
@@ -343,6 +345,10 @@ export function ThinkingLayer(props: {
   const activeSpaceView = useMemo(
     () => (activeSpace && props.spaceView?.spaceId === activeSpace.id ? props.spaceView : null),
     [activeSpace, props.spaceView]
+  );
+  const activeSpaceMeta = useMemo<ThinkingSpaceMeta | null>(
+    () => (activeSpace ? props.store.spaceMeta.find((meta) => meta.spaceId === activeSpace.id) ?? null : null),
+    [activeSpace, props.store.spaceMeta]
   );
   const tracks = useMemo(() => activeSpaceView?.tracks ?? [], [activeSpaceView]);
   const settleLetterLines = useMemo(() => buildSettleLetterLines(tracks), [tracks]);
@@ -1722,6 +1728,19 @@ export function ThinkingLayer(props: {
                     spaceId={activeSpace.id}
                     frozen={activeSpace.status === "hidden"}
                     mediaAssetSources={mediaAssetSources}
+                    starMapState={
+                      activeSpaceMeta
+                        ? {
+                            sceneSignature: activeSpaceMeta.starMapSceneSignature ?? null,
+                            curatedScene: activeSpaceMeta.starMapCuratedScene ?? null,
+                            curatedAt: activeSpaceMeta.starMapCuratedAt ?? null,
+                            placementsSignature: activeSpaceMeta.starMapPlacementsSignature ?? null,
+                            starPlacements: activeSpaceMeta.starMapStarPlacements ?? {},
+                            placementsUpdatedAt: activeSpaceMeta.starMapPlacementsUpdatedAt ?? null,
+                          }
+                        : null
+                    }
+                    onSaveStarMapState={(patch) => props.onSaveStarMapState(activeSpace.id, patch)}
                     mode="starmap"
                     onModeChange={(next) => {
                       if (next === "tracks") setThinkingLayout("tracks");

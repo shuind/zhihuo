@@ -14,6 +14,8 @@ export interface SceneStar {
   role: StarRole
   /** add a soft glow halo around this star. */
   halo?: boolean
+  /** user-pinned semantic position; renderer skips seeded jitter. */
+  pinned?: boolean
   /** optional content; if absent the star is silent (visual only). */
   text?: string
   timestamp?: string
@@ -44,4 +46,10 @@ export interface Scene {
   strands: SceneStrand[]
   /** background ambient noise stars (pure decoration). */
   ambientStarCount?: number
+}
+
+export type StarPlacement = {
+  ring: 1 | 2 | 3 | 4
+  angle: number
+  drift: number
 }

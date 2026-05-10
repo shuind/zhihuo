@@ -1,12 +1,12 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import type { ThinkingTrackView } from "@/components/thinking-layer"
 import { cn } from "@/lib/utils"
 import { curateScene } from "./director/scene-curator"
 import { buildFallbackScene } from "./director/scene-fallback"
 import { validateScene } from "./director/scene-validator"
-import type { Scene } from "./stage/scene-types"
+import type { Scene, StarPlacement } from "./stage/scene-types"
 import { StageRenderer } from "./stage/stage-renderer"
 import { ThoughtDetailPanel } from "./thought-detail-panel"
 
@@ -27,21 +27,49 @@ export interface StarMapViewProps {
 
   /** For rendering attached images inside hero cards. */
   mediaAssetSources?: Record<string, string>
+  starMapState?: StarMapSyncedState | null
+  onSaveStarMapState?: (patch: StarMapStatePatch) => Promise<unknown> | unknown
 
   // Kept so existing callsites can stay stable.
   mode?: "starmap" | "tracks"
   onModeChange?: (mode: "starmap" | "tracks") => void
 }
 
+export type StarMapSyncedState = {
+  sceneSignature?: string | null
+  curatedScene?: Scene | null
+  curatedAt?: string | null
+  placementsSignature?: string | null
+  starPlacements?: Record<string, StarPlacement> | null
+  placementsUpdatedAt?: string | null
+}
+
+export type StarMapStatePatch = {
+  sceneSignature?: string | null
+  curatedScene?: Scene | null
+  curatedAt?: string | null
+  placementsSignature?: string | null
+  starPlacements?: Record<string, StarPlacement> | null
+  placementsUpdatedAt?: string | null
+}
+
 type CurateStatus = "idle" | "loading" | "error"
 
 const curatedSceneCache = new Map<string, Scene>()
 const STAR_MAP_CURATED_STORAGE_KEY = "zhihuo_star_map_curated_scenes_v1"
+const STAR_MAP_PLACEMENTS_STORAGE_KEY = "zhihuo_star_map_star_placements_v1"
 const MAX_PERSISTED_CURATED_SCENES = 50
+const MAX_PERSISTED_PLACEMENT_SCENES = 50
 
 type PersistedCuratedScene = {
   signature: string
   scene: Scene
+  updatedAt: string
+}
+
+type PersistedStarPlacements = {
+  signature: string
+  placements: Record<string, StarPlacement>
   updatedAt: string
 }
 
@@ -56,11 +84,17 @@ export function StarMapView({
   composerEnabled = true,
   className,
   mediaAssetSources,
+  starMapState,
+  onSaveStarMapState,
 }: StarMapViewProps) {
   const [selected, setSelected] = useState<{ trackId: string; nodeId: string } | null>(null)
   const [curatedScene, setCuratedScene] = useState<Scene | null>(null)
   const [curateStatus, setCurateStatus] = useState<CurateStatus>("idle")
   const [curateError, setCurateError] = useState<string | null>(null)
+  const [starPlacements, setStarPlacements] = useState<Record<string, StarPlacement>>({})
+  const [loadedPlacementScope, setLoadedPlacementScope] = useState<string | null>(null)
+  const migratedLocalSceneRef = useRef<string | null>(null)
+  const migratedLocalPlacementsRef = useRef<string | null>(null)
 
   const seed = useMemo(() => spaceId || hashTracks(tracks), [spaceId, tracks])
   const thoughtCount = useMemo(
@@ -72,16 +106,79 @@ export function StarMapView({
     [rootQuestionText, tracks]
   )
   const cacheKey = spaceId ? `${spaceId}:${sceneSignature}` : null
+  const placementScope = spaceId ? `${spaceId}:${sceneSignature}` : null
 
   useEffect(() => {
-    const cached = cacheKey ? curatedSceneCache.get(cacheKey) ?? null : null
-    const persisted = spaceId && !cached ? loadPersistedCuratedScene(spaceId, sceneSignature) : null
-    const nextScene = cached ?? persisted
+    const syncedScene =
+      starMapState?.sceneSignature === sceneSignature && starMapState.curatedScene
+        ? validateScene(starMapState.curatedScene)
+        : null
+    const cached = !syncedScene && cacheKey ? curatedSceneCache.get(cacheKey) ?? null : null
+    const persisted = spaceId && !syncedScene && !cached ? loadPersistedCuratedScene(spaceId, sceneSignature) : null
+    const nextScene = syncedScene ?? cached ?? persisted
     if (nextScene && cacheKey) curatedSceneCache.set(cacheKey, nextScene)
     setCuratedScene(nextScene)
     setCurateStatus("idle")
     setCurateError(null)
-  }, [cacheKey, sceneSignature, spaceId])
+    if (
+      persisted &&
+      spaceId &&
+      onSaveStarMapState &&
+      migratedLocalSceneRef.current !== cacheKey &&
+      starMapState?.sceneSignature !== sceneSignature
+    ) {
+      migratedLocalSceneRef.current = cacheKey
+      void onSaveStarMapState({
+        sceneSignature,
+        curatedScene: persisted,
+        curatedAt: new Date().toISOString(),
+      })
+    }
+  }, [cacheKey, onSaveStarMapState, sceneSignature, spaceId, starMapState?.curatedScene, starMapState?.sceneSignature])
+
+  useEffect(() => {
+    const syncedPlacements =
+      starMapState?.placementsSignature === sceneSignature
+        ? normalizePlacements(starMapState.starPlacements)
+        : {}
+    const persisted =
+      spaceId && !Object.keys(syncedPlacements).length
+        ? loadPersistedStarPlacements(spaceId, sceneSignature)
+        : {}
+    const nextPlacements = Object.keys(syncedPlacements).length ? syncedPlacements : persisted
+    setStarPlacements(nextPlacements)
+    setLoadedPlacementScope(placementScope)
+    if (
+      Object.keys(persisted).length &&
+      spaceId &&
+      onSaveStarMapState &&
+      migratedLocalPlacementsRef.current !== placementScope &&
+      starMapState?.placementsSignature !== sceneSignature
+    ) {
+      migratedLocalPlacementsRef.current = placementScope
+      void onSaveStarMapState({
+        placementsSignature: sceneSignature,
+        starPlacements: persisted,
+        placementsUpdatedAt: new Date().toISOString(),
+      })
+    }
+  }, [
+    onSaveStarMapState,
+    placementScope,
+    sceneSignature,
+    spaceId,
+    starMapState?.placementsSignature,
+    starMapState?.starPlacements,
+  ])
+
+  useEffect(() => {
+    if (!spaceId || loadedPlacementScope !== placementScope) return
+    if (Object.keys(starPlacements).length) {
+      savePersistedStarPlacements(spaceId, sceneSignature, starPlacements)
+    } else {
+      deletePersistedStarPlacements(spaceId)
+    }
+  }, [loadedPlacementScope, placementScope, sceneSignature, spaceId, starPlacements])
 
   useEffect(() => {
     if (!selected) return
@@ -103,10 +200,21 @@ export function StarMapView({
   )
 
   const scene = curatedScene ?? fallbackScene
+  const positionedScene = useMemo(
+    () => applyStarPlacements(scene, starPlacements),
+    [scene, starPlacements]
+  )
   const selectedStarId = selected ? `s_${selected.nodeId}` : null
   const showDetail = selected !== null
   const canCurate = thoughtCount >= 2 && !frozen
   const isCurating = curateStatus === "loading"
+  const hasManualPlacements = Object.keys(starPlacements).length > 0
+  const showControls = canCurate || hasManualPlacements
+
+  function saveSyncedStarMapPatch(patch: StarMapStatePatch) {
+    if (!onSaveStarMapState) return
+    void onSaveStarMapState(patch)
+  }
 
   async function handleCurate() {
     if (!canCurate || isCurating) return
@@ -114,9 +222,15 @@ export function StarMapView({
     setCurateError(null)
     const result = await curateScene({ rootQuestionText, tracks })
     if (result.ok) {
+      const curatedAt = new Date().toISOString()
       if (cacheKey) curatedSceneCache.set(cacheKey, result.scene)
       if (spaceId) savePersistedCuratedScene(spaceId, sceneSignature, result.scene)
       setCuratedScene(result.scene)
+      saveSyncedStarMapPatch({
+        sceneSignature,
+        curatedScene: result.scene,
+        curatedAt,
+      })
       setCurateStatus("idle")
       return
     }
@@ -131,18 +245,75 @@ export function StarMapView({
   function resetToFallback() {
     if (cacheKey) curatedSceneCache.delete(cacheKey)
     if (spaceId) deletePersistedCuratedScene(spaceId)
+    if (spaceId) deletePersistedStarPlacements(spaceId)
+    setStarPlacements({})
+    setLoadedPlacementScope(placementScope)
     setCuratedScene(null)
     setCurateStatus("idle")
     setCurateError(null)
+    saveSyncedStarMapPatch({
+      sceneSignature: null,
+      curatedScene: null,
+      curatedAt: null,
+      placementsSignature: null,
+      starPlacements: null,
+      placementsUpdatedAt: null,
+    })
+  }
+
+  function resetStarPlacements() {
+    if (spaceId) deletePersistedStarPlacements(spaceId)
+    setStarPlacements({})
+    setLoadedPlacementScope(placementScope)
+    saveSyncedStarMapPatch({
+      placementsSignature: null,
+      starPlacements: null,
+      placementsUpdatedAt: null,
+    })
+  }
+
+  function handleMoveStar(
+    star: { id: string },
+    position: { x: number; y: number; width: number; height: number }
+  ) {
+    if (frozen) return
+    const placement = pointToPlacement(position)
+    setLoadedPlacementScope(placementScope)
+    setStarPlacements((current) => ({
+      ...current,
+      [star.id]: placement,
+    }))
+  }
+
+  function handleCommitStarMove(
+    star: { id: string },
+    position: { x: number; y: number; width: number; height: number }
+  ) {
+    if (frozen) return
+    const placement = pointToPlacement(position)
+    const nextPlacements = {
+      ...starPlacements,
+      [star.id]: placement,
+    }
+    setLoadedPlacementScope(placementScope)
+    setStarPlacements(nextPlacements)
+    if (spaceId) savePersistedStarPlacements(spaceId, sceneSignature, nextPlacements)
+    saveSyncedStarMapPatch({
+      placementsSignature: sceneSignature,
+      starPlacements: nextPlacements,
+      placementsUpdatedAt: new Date().toISOString(),
+    })
   }
 
   return (
     <div className={cn("relative flex h-full w-full overflow-hidden bg-[#0a0a0c]", className)}>
       <div className="relative h-full min-h-0 flex-1">
         <StageRenderer
-          scene={scene}
+          scene={positionedScene}
           seed={seed}
           selectedStarId={selectedStarId}
+          onMoveStar={frozen ? undefined : handleMoveStar}
+          onCommitStarMove={frozen ? undefined : handleCommitStarMove}
           onSelectStar={(star) => {
             if (star.trackId && star.nodeId) {
               setSelected({ trackId: star.trackId, nodeId: star.nodeId })
@@ -163,7 +334,7 @@ export function StarMapView({
           </div>
         ) : null}
 
-        {canCurate ? (
+        {showControls ? (
           <div className="pointer-events-auto absolute bottom-6 right-6 flex items-center gap-3">
             {curatedScene ? (
               <button
@@ -175,19 +346,31 @@ export function StarMapView({
                 返回原貌
               </button>
             ) : null}
-            <button
-              type="button"
-              disabled={isCurating}
-              className={cn(
-                "group flex items-center gap-2 rounded-full border border-[#1f1d18] bg-[#0f0e0b]/60 px-3.5 py-1.5 text-[12px] tracking-[0.06em] text-[#bdb6a4] backdrop-blur-sm transition",
-                "hover:border-[#3a352a] hover:bg-[#171511]/70 hover:text-[#EDE6D4]",
-                "disabled:cursor-not-allowed disabled:opacity-50"
-              )}
-              onClick={handleCurate}
-            >
-              <SparkleIcon spinning={isCurating} />
-              <span>{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "让 AI 策展"}</span>
-            </button>
+            {!curatedScene && hasManualPlacements ? (
+              <button
+                type="button"
+                disabled={isCurating}
+                className="text-[11px] tracking-[0.08em] text-[#5b584f] transition hover:text-[#9a978d] disabled:opacity-40"
+                onClick={resetStarPlacements}
+              >
+                重置星位
+              </button>
+            ) : null}
+            {canCurate ? (
+              <button
+                type="button"
+                disabled={isCurating}
+                className={cn(
+                  "group flex items-center gap-2 rounded-full border border-[#1f1d18] bg-[#0f0e0b]/60 px-3.5 py-1.5 text-[12px] tracking-[0.06em] text-[#bdb6a4] backdrop-blur-sm transition",
+                  "hover:border-[#3a352a] hover:bg-[#171511]/70 hover:text-[#EDE6D4]",
+                  "disabled:cursor-not-allowed disabled:opacity-50"
+                )}
+                onClick={handleCurate}
+              >
+                <SparkleIcon spinning={isCurating} />
+                <span>{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "让 AI 策展"}</span>
+              </button>
+            ) : null}
           </div>
         ) : null}
 
@@ -316,6 +499,142 @@ function readPersistedCuratedStore(): Record<string, PersistedCuratedScene> {
     }
   }
   return store
+}
+
+function applyStarPlacements(scene: Scene, placements: Record<string, StarPlacement>): Scene {
+  if (!Object.keys(placements).length) return scene
+  return {
+    ...scene,
+    stars: scene.stars.map((star) => {
+      const placement = placements[star.id]
+      if (!placement) return star
+      return {
+        ...star,
+        ring: placement.ring,
+        angle: placement.angle,
+        drift: placement.drift,
+        pinned: true,
+      }
+    }),
+  }
+}
+
+function pointToPlacement(position: { x: number; y: number; width: number; height: number }): StarPlacement {
+  const cx = position.width / 2
+  const cy = position.height / 2
+  const minDim = Math.min(position.width, position.height)
+  const dx = position.x - cx
+  const dy = position.y - cy
+  const distance = Math.hypot(dx, dy)
+  const rings: Record<StarPlacement["ring"], number> = {
+    1: minDim * 0.16,
+    2: minDim * 0.28,
+    3: minDim * 0.40,
+    4: minDim * 0.50,
+  }
+  const ring = ([1, 2, 3, 4] as const).reduce((best, candidate) =>
+    Math.abs(distance - rings[candidate]) < Math.abs(distance - rings[best]) ? candidate : best
+  )
+  const driftScale = minDim * 0.025
+  const drift = clamp((distance - rings[ring]) / driftScale, -2, 2)
+  return {
+    ring,
+    angle: wrapDegrees((Math.atan2(dy, dx) * 180) / Math.PI),
+    drift,
+  }
+}
+
+function loadPersistedStarPlacements(spaceId: string, signature: string): Record<string, StarPlacement> {
+  if (typeof window === "undefined") return {}
+  try {
+    const store = readPersistedPlacementStore()
+    const item = store[spaceId]
+    if (!item || item.signature !== signature) return {}
+    return item.placements
+  } catch {
+    return {}
+  }
+}
+
+function savePersistedStarPlacements(
+  spaceId: string,
+  signature: string,
+  placements: Record<string, StarPlacement>
+) {
+  if (typeof window === "undefined") return
+  try {
+    const store = readPersistedPlacementStore()
+    store[spaceId] = { signature, placements, updatedAt: new Date().toISOString() }
+    const entries = Object.entries(store).sort(
+      (a, b) => new Date(b[1].updatedAt).getTime() - new Date(a[1].updatedAt).getTime()
+    )
+    window.localStorage.setItem(
+      STAR_MAP_PLACEMENTS_STORAGE_KEY,
+      JSON.stringify(Object.fromEntries(entries.slice(0, MAX_PERSISTED_PLACEMENT_SCENES)))
+    )
+  } catch {
+    // Persistence is opportunistic; dragging should keep working if storage is full.
+  }
+}
+
+function deletePersistedStarPlacements(spaceId: string) {
+  if (typeof window === "undefined") return
+  try {
+    const store = readPersistedPlacementStore()
+    delete store[spaceId]
+    window.localStorage.setItem(STAR_MAP_PLACEMENTS_STORAGE_KEY, JSON.stringify(store))
+  } catch {
+    // Ignore local storage failures.
+  }
+}
+
+function readPersistedPlacementStore(): Record<string, PersistedStarPlacements> {
+  if (typeof window === "undefined") return {}
+  const raw = window.localStorage.getItem(STAR_MAP_PLACEMENTS_STORAGE_KEY)
+  if (!raw) return {}
+  const parsed = JSON.parse(raw) as unknown
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return {}
+  const store: Record<string, PersistedStarPlacements> = {}
+  for (const [spaceId, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue
+    const item = value as Record<string, unknown>
+    if (typeof item.signature !== "string" || typeof item.updatedAt !== "string") continue
+    const placements = normalizePlacements(item.placements)
+    if (!Object.keys(placements).length) continue
+    store[spaceId] = {
+      signature: item.signature,
+      placements,
+      updatedAt: item.updatedAt,
+    }
+  }
+  return store
+}
+
+function normalizePlacements(value: unknown): Record<string, StarPlacement> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {}
+  const placements: Record<string, StarPlacement> = {}
+  for (const [starId, rawPlacement] of Object.entries(value as Record<string, unknown>)) {
+    if (!rawPlacement || typeof rawPlacement !== "object" || Array.isArray(rawPlacement)) continue
+    const item = rawPlacement as Record<string, unknown>
+    const ringValue = Number(item.ring)
+    if (ringValue !== 1 && ringValue !== 2 && ringValue !== 3 && ringValue !== 4) continue
+    placements[starId] = {
+      ring: ringValue,
+      angle: wrapDegrees(Number(item.angle)),
+      drift: clamp(Number(item.drift), -2, 2),
+    }
+  }
+  return placements
+}
+
+function wrapDegrees(value: number) {
+  if (!Number.isFinite(value)) return 0
+  return ((value % 360) + 360) % 360
+}
+
+function clamp(value: number, min: number, max: number) {
+  if (!Number.isFinite(value)) return min
+  return Math.min(max, Math.max(min, value))
 }
 
 function SparkleIcon({ spinning }: { spinning: boolean }) {

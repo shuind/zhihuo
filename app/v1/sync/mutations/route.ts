@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 
+import { validateScene } from "@/components/thinking/star-map/director/scene-validator";
 import { updateDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
@@ -30,6 +31,7 @@ import {
   updateNodeAnswer,
   updateNodeQuestion,
   updateSpaceBackground,
+  updateSpaceStarMapState,
   updateSpaceRootQuestion,
   upsertDoubtNote,
   writeSpaceToTime,
@@ -38,6 +40,7 @@ import {
   feedScratchToTime
 } from "@/lib/server/store";
 import type { DbState, SyncRepairItemRecord } from "@/lib/server/types";
+import type { StarMapStatePatch } from "@/lib/server/store";
 
 type SyncMutation = {
   clientMutationId?: string;
@@ -75,6 +78,56 @@ function requireString(record: Record<string, unknown> | null | undefined, key: 
 
 function toPayloadRecord(value: unknown) {
   return value && typeof value === "object" && !Array.isArray(value) ? (value as Record<string, unknown>) : {};
+}
+
+function normalizeStarMapPlacements(value: unknown): StarMapStatePatch["starPlacements"] {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const placements: NonNullable<StarMapStatePatch["starPlacements"]> = {};
+  for (const [starId, rawPlacement] of Object.entries(value as Record<string, unknown>)) {
+    if (!rawPlacement || typeof rawPlacement !== "object" || Array.isArray(rawPlacement)) continue;
+    const item = rawPlacement as Record<string, unknown>;
+    const ring = Number(item.ring);
+    if (ring !== 1 && ring !== 2 && ring !== 3 && ring !== 4) continue;
+    const angle = Number(item.angle);
+    const drift = Number(item.drift);
+    placements[starId] = {
+      ring,
+      angle: Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0,
+      drift: Number.isFinite(drift) ? Math.max(-2, Math.min(2, drift)) : 0
+    };
+  }
+  return placements;
+}
+
+function buildStarMapPatch(payload: Record<string, unknown>): StarMapStatePatch | null {
+  const patch: StarMapStatePatch = {};
+  if (Object.prototype.hasOwnProperty.call(payload, "curated_scene")) {
+    if (payload.curated_scene === null) {
+      patch.curatedScene = null;
+      patch.sceneSignature = null;
+      patch.curatedAt = null;
+    } else {
+      const scene = validateScene(payload.curated_scene);
+      if (!scene) return null;
+      patch.curatedScene = scene as unknown as Record<string, unknown>;
+      patch.sceneSignature = typeof payload.scene_signature === "string" ? payload.scene_signature : null;
+      patch.curatedAt = typeof payload.curated_at === "string" ? payload.curated_at : null;
+    }
+  }
+  if (Object.prototype.hasOwnProperty.call(payload, "star_placements")) {
+    if (payload.star_placements === null) {
+      patch.starPlacements = null;
+      patch.placementsSignature = null;
+      patch.placementsUpdatedAt = null;
+    } else {
+      const placements = normalizeStarMapPlacements(payload.star_placements);
+      if (!placements) return null;
+      patch.starPlacements = placements;
+      patch.placementsSignature = typeof payload.placements_signature === "string" ? payload.placements_signature : null;
+      patch.placementsUpdatedAt = typeof payload.placements_updated_at === "string" ? payload.placements_updated_at : null;
+    }
+  }
+  return patch;
 }
 
 function findUserDoubt(db: DbState, userId: string, doubtId: string) {
@@ -369,6 +422,27 @@ function applyMutation(db: DbState, userId: string, item: NormalizedMutation): A
       return { kind: "repair", appliedRevision: getUserRevision(db, userId), repairItem: createRepair(db, userId, item, `background_${result.kind}`, "space") };
     }
     return { kind: "applied", appliedRevision: getUserRevision(db, userId) };
+  }
+
+  const starMapMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/star-map$/);
+  if (starMapMatch) {
+    const spaceId = starMapMatch[1]!;
+    const space = findUserSpace(db, userId, spaceId);
+    if (!space) {
+      return { kind: "repair", appliedRevision: getUserRevision(db, userId), repairItem: createRepair(db, userId, item, "space_missing", "space") };
+    }
+    if (space.status !== "active") {
+      return { kind: "repair", appliedRevision: getUserRevision(db, userId), repairItem: createRepair(db, userId, item, "space_readonly", "space") };
+    }
+    const patch = buildStarMapPatch(payload);
+    if (!patch) {
+      return { kind: "repair", appliedRevision: getUserRevision(db, userId), repairItem: createRepair(db, userId, item, "star_map_invalid", "space") };
+    }
+    const result = updateSpaceStarMapState(db, userId, spaceId, patch);
+    if (result.kind !== "ok") {
+      return { kind: "repair", appliedRevision: getUserRevision(db, userId), repairItem: createRepair(db, userId, item, `star_map_${result.kind}`, "space") };
+    }
+    return { kind: result.changed ? "applied" : "skipped", appliedRevision: getUserRevision(db, userId) };
   }
 
   const setActiveTrackMatch = item.op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/active-track$/);

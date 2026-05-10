@@ -2,6 +2,8 @@
 export type OpeningPhase = "black" | "stars" | "text" | "ready";
 export type LifeRange = "week" | "month" | "all";
 
+import type { Scene, StarPlacement } from "@/components/thinking/star-map/stage/scene-types";
+
 export type LifeDoubt = {
   id: string;
   rawText: string;
@@ -110,6 +112,12 @@ export type ThinkingSpaceMeta = {
   parkingTrackId?: string | null;
   pendingTrackId?: string | null;
   emptyTrackIds?: string[];
+  starMapSceneSignature?: string | null;
+  starMapCuratedScene?: Scene | null;
+  starMapCuratedAt?: string | null;
+  starMapStarPlacements?: Record<string, StarPlacement>;
+  starMapPlacementsSignature?: string | null;
+  starMapPlacementsUpdatedAt?: string | null;
 };
 
 export type ThinkingInboxItem = {
@@ -515,7 +523,13 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     lastOrganizedOrder: typeof meta.lastOrganizedOrder === "number" ? meta.lastOrganizedOrder : -1,
     parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
     pendingTrackId: typeof meta.pendingTrackId === "string" ? meta.pendingTrackId : null,
-    emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : []
+    emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : [],
+    starMapSceneSignature: typeof meta.starMapSceneSignature === "string" ? meta.starMapSceneSignature : null,
+    starMapCuratedScene: normalizeSceneLike(meta.starMapCuratedScene),
+    starMapCuratedAt: typeof meta.starMapCuratedAt === "string" ? meta.starMapCuratedAt : null,
+    starMapStarPlacements: normalizeStarPlacements(meta.starMapStarPlacements),
+    starMapPlacementsSignature: typeof meta.starMapPlacementsSignature === "string" ? meta.starMapPlacementsSignature : null,
+    starMapPlacementsUpdatedAt: typeof meta.starMapPlacementsUpdatedAt === "string" ? meta.starMapPlacementsUpdatedAt : null
   })).filter((meta) => meta.spaceId);
   const mediaAssets: ThinkingMediaAsset[] = (store.mediaAssets ?? [])
     .map((item) => ({
@@ -578,6 +592,29 @@ function toIso(input: unknown) {
   if (typeof input !== "string") return new Date().toISOString();
   const date = new Date(input);
   return Number.isNaN(date.getTime()) ? new Date().toISOString() : date.toISOString();
+}
+
+function normalizeSceneLike(value: unknown): Scene | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? (value as Scene) : null;
+}
+
+function normalizeStarPlacements(value: unknown): Record<string, StarPlacement> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const placements: Record<string, StarPlacement> = {};
+  for (const [starId, rawPlacement] of Object.entries(value as Record<string, unknown>)) {
+    if (!rawPlacement || typeof rawPlacement !== "object" || Array.isArray(rawPlacement)) continue;
+    const item = rawPlacement as Record<string, unknown>;
+    const ring = Number(item.ring);
+    if (ring !== 1 && ring !== 2 && ring !== 3 && ring !== 4) continue;
+    const angle = Number(item.angle);
+    const drift = Number(item.drift);
+    placements[starId] = {
+      ring,
+      angle: Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0,
+      drift: Number.isFinite(drift) ? Math.max(-2, Math.min(2, drift)) : 0
+    };
+  }
+  return placements;
 }
 
 function hashText(input: string) {

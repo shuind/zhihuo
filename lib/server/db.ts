@@ -46,6 +46,30 @@ function normalizeVerificationPurpose(input: unknown): "register" | "reset_passw
   return input === "reset_password" ? "reset_password" : "register";
 }
 
+function normalizePlainRecord(input: unknown): Record<string, unknown> | null {
+  return input && typeof input === "object" && !Array.isArray(input) ? (input as Record<string, unknown>) : null;
+}
+
+function normalizeStarMapPlacements(input: unknown) {
+  const raw = normalizePlainRecord(input);
+  if (!raw) return {};
+  const placements: Record<string, { ring: 1 | 2 | 3 | 4; angle: number; drift: number }> = {};
+  for (const [starId, value] of Object.entries(raw)) {
+    const item = normalizePlainRecord(value);
+    if (!starId || !item) continue;
+    const ring = Number(item.ring);
+    if (ring !== 1 && ring !== 2 && ring !== 3 && ring !== 4) continue;
+    const angle = Number(item.angle);
+    const drift = Number(item.drift);
+    placements[starId] = {
+      ring,
+      angle: Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0,
+      drift: Number.isFinite(drift) ? Math.max(-2, Math.min(2, drift)) : 0
+    };
+  }
+  return placements;
+}
+
 const EMPTY_DB: DbState = {
   doubts: [],
   doubt_notes: [],
@@ -158,7 +182,14 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
                         hint === "aside")
                   )
             )
-          : {}
+          : {},
+          star_map_scene_signature: typeof row.star_map_scene_signature === "string" ? row.star_map_scene_signature : null,
+          star_map_curated_scene: normalizePlainRecord(row.star_map_curated_scene),
+          star_map_curated_at: typeof row.star_map_curated_at === "string" ? row.star_map_curated_at : null,
+          star_map_star_placements: normalizeStarMapPlacements(row.star_map_star_placements),
+          star_map_placements_signature: typeof row.star_map_placements_signature === "string" ? row.star_map_placements_signature : null,
+          star_map_placements_updated_at:
+            typeof row.star_map_placements_updated_at === "string" ? row.star_map_placements_updated_at : null
         }))
       : [],
     thinking_media_assets: Array.isArray(input?.thinking_media_assets)
@@ -460,7 +491,7 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox"),
     client.query("SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"),
     client.query(
-      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+      "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints, star_map_scene_signature, star_map_curated_scene, star_map_curated_at, star_map_star_placements, star_map_placements_signature, star_map_placements_updated_at FROM thinking_space_meta"
     ),
     client.query(
       "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
@@ -539,7 +570,14 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
                     hint === "aside")
               )
             )
-          : {}
+          : {},
+      star_map_scene_signature: typeof row.star_map_scene_signature === "string" ? row.star_map_scene_signature : null,
+      star_map_curated_scene: normalizePlainRecord(row.star_map_curated_scene),
+      star_map_curated_at: typeof row.star_map_curated_at === "string" ? row.star_map_curated_at : null,
+      star_map_star_placements: normalizeStarMapPlacements(row.star_map_star_placements),
+      star_map_placements_signature: typeof row.star_map_placements_signature === "string" ? row.star_map_placements_signature : null,
+      star_map_placements_updated_at:
+        typeof row.star_map_placements_updated_at === "string" ? row.star_map_placements_updated_at : null
     })) as DbState["thinking_space_meta"],
     thinking_node_links: nodeLinks.rows.map((row) => ({
       ...row,
@@ -724,7 +762,13 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         "pending_track_id",
         "empty_track_ids",
         "milestone_node_ids",
-        "track_direction_hints"
+        "track_direction_hints",
+        "star_map_scene_signature",
+        "star_map_curated_scene",
+        "star_map_curated_at",
+        "star_map_star_placements",
+        "star_map_placements_signature",
+        "star_map_placements_updated_at"
       ],
       conflictColumns: ["space_id"],
       rows: db.thinking_space_meta.map((row) => [
@@ -742,7 +786,13 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.pending_track_id ?? null,
         row.empty_track_ids ?? [],
         row.milestone_node_ids ?? [],
-        row.track_direction_hints ?? {}
+        row.track_direction_hints ?? {},
+        row.star_map_scene_signature ?? null,
+        row.star_map_curated_scene ?? null,
+        row.star_map_curated_at ?? null,
+        row.star_map_star_placements ?? {},
+        row.star_map_placements_signature ?? null,
+        row.star_map_placements_updated_at ?? null
       ])
     },
     {
@@ -1069,7 +1119,7 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     }
     if (table === "thinking_space_meta") {
       const { rows } = await client.query(
-        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints FROM thinking_space_meta"
+        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints, star_map_scene_signature, star_map_curated_scene, star_map_curated_at, star_map_star_placements, star_map_placements_signature, star_map_placements_updated_at FROM thinking_space_meta"
       );
       state.thinking_space_meta = rows.map((row) => ({
         ...row,
@@ -1105,7 +1155,14 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
                       hint === "aside")
                 )
               )
-            : {}
+            : {},
+        star_map_scene_signature: typeof row.star_map_scene_signature === "string" ? row.star_map_scene_signature : null,
+        star_map_curated_scene: normalizePlainRecord(row.star_map_curated_scene),
+        star_map_curated_at: typeof row.star_map_curated_at === "string" ? row.star_map_curated_at : null,
+        star_map_star_placements: normalizeStarMapPlacements(row.star_map_star_placements),
+        star_map_placements_signature: typeof row.star_map_placements_signature === "string" ? row.star_map_placements_signature : null,
+        star_map_placements_updated_at:
+          typeof row.star_map_placements_updated_at === "string" ? row.star_map_placements_updated_at : null
       })) as DbState["thinking_space_meta"];
       continue;
     }
@@ -1320,7 +1377,13 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           "pending_track_id",
           "empty_track_ids",
           "milestone_node_ids",
-          "track_direction_hints"
+          "track_direction_hints",
+          "star_map_scene_signature",
+          "star_map_curated_scene",
+          "star_map_curated_at",
+          "star_map_star_placements",
+          "star_map_placements_signature",
+          "star_map_placements_updated_at"
         ],
         conflictColumns: ["space_id"],
         rows: db.thinking_space_meta.map((row) => [
@@ -1338,7 +1401,13 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.pending_track_id ?? null,
           row.empty_track_ids ?? [],
           row.milestone_node_ids ?? [],
-          row.track_direction_hints ?? {}
+          row.track_direction_hints ?? {},
+          row.star_map_scene_signature ?? null,
+          row.star_map_curated_scene ?? null,
+          row.star_map_curated_at ?? null,
+          row.star_map_star_placements ?? {},
+          row.star_map_placements_signature ?? null,
+          row.star_map_placements_updated_at ?? null
         ])
       });
       continue;

@@ -84,8 +84,8 @@ export function compileScene(
     const driftPx = (star.drift ?? 0) * (minDim * 0.025)
     // hand-placed jitter: small radial + angular wobble seeded so a given
     // space always renders the same way
-    const jitterR = (rng() - 0.5) * minDim * 0.018
-    const jitterA = (rng() - 0.5) * 0.06
+    const jitterR = star.pinned ? 0 : (rng() - 0.5) * minDim * 0.018
+    const jitterA = star.pinned ? 0 : (rng() - 0.5) * 0.06
     const r = Math.max(0, baseR + driftPx + jitterR)
     const a = (star.angle * Math.PI) / 180 + jitterA
     return {

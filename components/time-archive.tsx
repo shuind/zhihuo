@@ -8,6 +8,7 @@ import { cn } from "@/lib/utils";
 
 import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
+import type { StarMapStatePatch } from "@/components/thinking/star-map";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
   changePin,
@@ -131,6 +132,12 @@ type ApiThinkingSpaceMeta = {
   user_freeze_note?: string | null;
   milestone_node_ids?: string[];
   track_direction_hints?: Record<string, string | null>;
+  star_map_scene_signature?: string | null;
+  star_map_curated_scene?: unknown;
+  star_map_curated_at?: string | null;
+  star_map_star_placements?: unknown;
+  star_map_placements_signature?: string | null;
+  star_map_placements_updated_at?: string | null;
 };
 
 type ApiThinkingTrackNode = {
@@ -258,6 +265,12 @@ type UserExportPayload = {
       parkingTrackId?: string | null;
       pendingTrackId?: string | null;
       emptyTrackIds?: string[];
+      starMapSceneSignature?: string | null;
+      starMapCuratedScene?: unknown;
+      starMapCuratedAt?: string | null;
+      starMapStarPlacements?: unknown;
+      starMapPlacementsSignature?: string | null;
+      starMapPlacementsUpdatedAt?: string | null;
     }>;
     inbox: Record<string, Array<{ id: string; rawText: string; createdAt: string }>>;
     scratch?: Array<{
@@ -350,6 +363,12 @@ type SyncSnapshotResponse = {
       userFreezeNote?: string | null;
       milestoneNodeIds?: string[];
       trackDirectionHints?: Record<string, string | null>;
+      starMapSceneSignature?: string | null;
+      starMapCuratedScene?: unknown;
+      starMapCuratedAt?: string | null;
+      starMapStarPlacements?: unknown;
+      starMapPlacementsSignature?: string | null;
+      starMapPlacementsUpdatedAt?: string | null;
     }>;
     nodeLinks?: Array<Record<string, unknown>>;
     mediaAssets?: Array<{
@@ -550,6 +569,31 @@ function normalizeLetterLines(value: unknown): string[] {
   }
 }
 
+function normalizeSceneLike(value: unknown): NonNullable<StarMapStatePatch["curatedScene"]> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as NonNullable<StarMapStatePatch["curatedScene"]>)
+    : null;
+}
+
+function normalizeStarPlacements(value: unknown): NonNullable<StarMapStatePatch["starPlacements"]> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const placements: NonNullable<StarMapStatePatch["starPlacements"]> = {};
+  for (const [starId, rawPlacement] of Object.entries(value as Record<string, unknown>)) {
+    if (!rawPlacement || typeof rawPlacement !== "object" || Array.isArray(rawPlacement)) continue;
+    const item = rawPlacement as Record<string, unknown>;
+    const ring = Number(item.ring);
+    if (ring !== 1 && ring !== 2 && ring !== 3 && ring !== 4) continue;
+    const angle = Number(item.angle);
+    const drift = Number(item.drift);
+    placements[starId] = {
+      ring,
+      angle: Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0,
+      drift: Number.isFinite(drift) ? Math.max(-2, Math.min(2, drift)) : 0
+    };
+  }
+  return placements;
+}
+
 function canonicalizeExportPayload(payload: UserExportPayload) {
   const rawSpaces = Array.isArray(payload.thinking.spaces) ? (payload.thinking.spaces as Array<Record<string, unknown>>) : [];
   const rawNodes = Array.isArray(payload.thinking.nodes) ? (payload.thinking.nodes as Array<Record<string, unknown>>) : [];
@@ -730,7 +774,33 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
               : typeof item.pending_track_id === "string"
                 ? item.pending_track_id
                 : null,
-          emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort()
+          emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort(),
+          starMapSceneSignature:
+            typeof item.starMapSceneSignature === "string"
+              ? item.starMapSceneSignature
+              : typeof item.star_map_scene_signature === "string"
+                ? item.star_map_scene_signature
+                : null,
+          starMapCuratedScene: normalizeSceneLike(item.starMapCuratedScene ?? item.star_map_curated_scene),
+          starMapCuratedAt:
+            typeof item.starMapCuratedAt === "string"
+              ? item.starMapCuratedAt
+              : typeof item.star_map_curated_at === "string"
+                ? item.star_map_curated_at
+                : null,
+          starMapStarPlacements: normalizeStarPlacements(item.starMapStarPlacements ?? item.star_map_star_placements),
+          starMapPlacementsSignature:
+            typeof item.starMapPlacementsSignature === "string"
+              ? item.starMapPlacementsSignature
+              : typeof item.star_map_placements_signature === "string"
+                ? item.star_map_placements_signature
+                : null,
+          starMapPlacementsUpdatedAt:
+            typeof item.starMapPlacementsUpdatedAt === "string"
+              ? item.starMapPlacementsUpdatedAt
+              : typeof item.star_map_placements_updated_at === "string"
+                ? item.star_map_placements_updated_at
+                : null
         }))
         .sort((a, b) => a.spaceId.localeCompare(b.spaceId)),
       media_assets: rawMediaAssets
@@ -1072,7 +1142,15 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
     lastOrganizedOrder: Number.isFinite(item.last_organized_order) ? Number(item.last_organized_order) : -1,
     parkingTrackId: typeof item.parking_track_id === "string" ? item.parking_track_id : null,
     pendingTrackId: typeof item.pending_track_id === "string" ? item.pending_track_id : null,
-    emptyTrackIds: Array.isArray(item.empty_track_ids) ? item.empty_track_ids.filter((id) => typeof id === "string") : []
+    emptyTrackIds: Array.isArray(item.empty_track_ids) ? item.empty_track_ids.filter((id) => typeof id === "string") : [],
+    starMapSceneSignature: typeof item.star_map_scene_signature === "string" ? item.star_map_scene_signature : null,
+    starMapCuratedScene: normalizeSceneLike(item.star_map_curated_scene),
+    starMapCuratedAt: typeof item.star_map_curated_at === "string" ? item.star_map_curated_at : null,
+    starMapStarPlacements: normalizeStarPlacements(item.star_map_star_placements),
+    starMapPlacementsSignature:
+      typeof item.star_map_placements_signature === "string" ? item.star_map_placements_signature : null,
+    starMapPlacementsUpdatedAt:
+      typeof item.star_map_placements_updated_at === "string" ? item.star_map_placements_updated_at : null
   };
 }
 
@@ -1168,7 +1246,15 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             lastOrganizedOrder: Number.isFinite(item.lastOrganizedOrder) ? Number(item.lastOrganizedOrder) : -1,
             parkingTrackId: typeof item.parkingTrackId === "string" ? item.parkingTrackId : null,
             pendingTrackId: typeof item.pendingTrackId === "string" ? item.pendingTrackId : null,
-            emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : []
+            emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : [],
+            starMapSceneSignature: typeof item.starMapSceneSignature === "string" ? item.starMapSceneSignature : null,
+            starMapCuratedScene: normalizeSceneLike(item.starMapCuratedScene),
+            starMapCuratedAt: typeof item.starMapCuratedAt === "string" ? item.starMapCuratedAt : null,
+            starMapStarPlacements: normalizeStarPlacements(item.starMapStarPlacements),
+            starMapPlacementsSignature:
+              typeof item.starMapPlacementsSignature === "string" ? item.starMapPlacementsSignature : null,
+            starMapPlacementsUpdatedAt:
+              typeof item.starMapPlacementsUpdatedAt === "string" ? item.starMapPlacementsUpdatedAt : null
           }))
       : [],
     inbox:
@@ -1985,7 +2071,13 @@ export function TimeArchive() {
             lastOrganizedOrder: item.lastOrganizedOrder ?? -1,
             parkingTrackId: item.parkingTrackId ?? null,
             pendingTrackId: item.pendingTrackId ?? null,
-            emptyTrackIds: item.emptyTrackIds ?? []
+            emptyTrackIds: item.emptyTrackIds ?? [],
+            starMapSceneSignature: item.starMapSceneSignature ?? null,
+            starMapCuratedScene: item.starMapCuratedScene ?? null,
+            starMapCuratedAt: item.starMapCuratedAt ?? null,
+            starMapStarPlacements: item.starMapStarPlacements ?? {},
+            starMapPlacementsSignature: item.starMapPlacementsSignature ?? null,
+            starMapPlacementsUpdatedAt: item.starMapPlacementsUpdatedAt ?? null
           })),
           inbox: thinkingStore.inbox,
           scratch: thinkingStore.scratch.map((item) => ({
@@ -6163,6 +6255,62 @@ export function TimeArchive() {
     [applyLocalSpaceGalleryState, getLocalSpaceView, queueMutation]
   );
 
+  const handleThinkingSaveStarMapState = useCallback(
+    async (spaceId: string, patch: StarMapStatePatch) => {
+      const space = thinkingStore.spaces.find((item) => item.id === spaceId);
+      if (!space || space.status !== "active") return false;
+      const now = new Date().toISOString();
+      const body: Record<string, unknown> = { client_updated_at: now };
+      if (Object.prototype.hasOwnProperty.call(patch, "sceneSignature")) body.scene_signature = patch.sceneSignature ?? null;
+      if (Object.prototype.hasOwnProperty.call(patch, "curatedScene")) body.curated_scene = patch.curatedScene ?? null;
+      if (Object.prototype.hasOwnProperty.call(patch, "curatedAt")) body.curated_at = patch.curatedAt ?? null;
+      if (Object.prototype.hasOwnProperty.call(patch, "placementsSignature")) body.placements_signature = patch.placementsSignature ?? null;
+      if (Object.prototype.hasOwnProperty.call(patch, "starPlacements")) body.star_placements = patch.starPlacements ?? null;
+      if (Object.prototype.hasOwnProperty.call(patch, "placementsUpdatedAt")) body.placements_updated_at = patch.placementsUpdatedAt ?? null;
+
+      await queueMutation(`/v1/thinking/spaces/${spaceId}/star-map`, body);
+      setThinkingStore((prev) => {
+        const existingMeta = prev.spaceMeta.find((meta) => meta.spaceId === spaceId);
+        const nextMeta: ThinkingSpaceMeta = {
+          ...(existingMeta ?? {
+            spaceId,
+            exportVersion: 1,
+            backgroundText: null,
+            backgroundVersion: 0,
+            backgroundAssetIds: [],
+            backgroundSelectedAssetId: null,
+            suggestionDecay: 0,
+            lastTrackId: null,
+            lastOrganizedOrder: -1,
+            parkingTrackId: createId(),
+            pendingTrackId: null,
+            emptyTrackIds: [],
+          }),
+        };
+        if (Object.prototype.hasOwnProperty.call(patch, "curatedScene")) {
+          nextMeta.starMapCuratedScene = patch.curatedScene ?? null;
+          nextMeta.starMapSceneSignature = patch.curatedScene ? patch.sceneSignature ?? null : null;
+          nextMeta.starMapCuratedAt = patch.curatedScene ? patch.curatedAt ?? now : null;
+        }
+        if (Object.prototype.hasOwnProperty.call(patch, "starPlacements")) {
+          const placements = patch.starPlacements ? normalizeStarPlacements(patch.starPlacements) : {};
+          nextMeta.starMapStarPlacements = placements;
+          nextMeta.starMapPlacementsSignature = Object.keys(placements).length ? patch.placementsSignature ?? null : null;
+          nextMeta.starMapPlacementsUpdatedAt = Object.keys(placements).length ? patch.placementsUpdatedAt ?? now : null;
+        }
+        return {
+          ...prev,
+          spaceMeta: existingMeta
+            ? prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? nextMeta : meta))
+            : [nextMeta, ...prev.spaceMeta],
+        };
+      });
+      markLocalChange();
+      return true;
+    },
+    [markLocalChange, queueMutation, thinkingStore.spaces]
+  );
+
   /* const handleThinkingWriteToTime = useCallback(
     async (spaceId: string, options?: { preserveOriginalTime?: boolean }) => {
       const now = new Date().toISOString();
@@ -6884,6 +7032,7 @@ export function TimeArchive() {
                 onAddSpaceGalleryImage={handleThinkingAddSpaceGalleryImage}
                 onRemoveSpaceGalleryImage={handleThinkingRemoveSpaceGalleryImage}
                 onSelectSpaceBackgroundImage={handleThinkingSelectSpaceBackgroundImage}
+                onSaveStarMapState={handleThinkingSaveStarMapState}
                 onWriteSpaceToTime={handleThinkingWriteToTime}
                 onDeleteSpace={handleThinkingDeleteSpace}
                 onRenameSpace={handleThinkingRenameSpace}

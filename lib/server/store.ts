@@ -10,6 +10,7 @@
   ThinkingSnapshot,
   ThinkingSpaceMetaRecord,
   ThinkingSpaceRecord,
+  StarMapPlacementRecord,
   UserSyncStateRecord,
   AppliedClientMutationRecord,
   SyncOperationLogRecord,
@@ -47,6 +48,32 @@ function isTrackDirectionHint(value: unknown): value is LegacyTrackDirectionHint
 
 function isTrackDirectionSetting(value: unknown): value is LegacyTrackDirectionHint | null {
   return value === null || isTrackDirectionHint(value);
+}
+
+function isPlainRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function normalizeStarMapPlacements(value: unknown): Record<string, StarMapPlacementRecord> {
+  if (!isPlainRecord(value)) return {};
+  const placements: Record<string, StarMapPlacementRecord> = {};
+  for (const [starId, rawPlacement] of Object.entries(value)) {
+    if (!starId || !isPlainRecord(rawPlacement)) continue;
+    const ring = Number(rawPlacement.ring);
+    if (ring !== 1 && ring !== 2 && ring !== 3 && ring !== 4) continue;
+    const angle = Number(rawPlacement.angle);
+    const drift = Number(rawPlacement.drift);
+    placements[starId] = {
+      ring,
+      angle: Number.isFinite(angle) ? ((angle % 360) + 360) % 360 : 0,
+      drift: Number.isFinite(drift) ? Math.max(-2, Math.min(2, drift)) : 0
+    };
+  }
+  return placements;
+}
+
+function stableJson(value: unknown) {
+  return JSON.stringify(value ?? null);
 }
 
 function parseRange(range: string | null) {
@@ -367,6 +394,12 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
   if (!Object.prototype.hasOwnProperty.call(meta, "empty_track_ids")) meta.empty_track_ids = [];
   if (!Object.prototype.hasOwnProperty.call(meta, "milestone_node_ids")) meta.milestone_node_ids = [];
   if (!Object.prototype.hasOwnProperty.call(meta, "track_direction_hints")) meta.track_direction_hints = {};
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_scene_signature")) meta.star_map_scene_signature = null;
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_curated_scene")) meta.star_map_curated_scene = null;
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_curated_at")) meta.star_map_curated_at = null;
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_star_placements")) meta.star_map_star_placements = {};
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_placements_signature")) meta.star_map_placements_signature = null;
+  if (!Object.prototype.hasOwnProperty.call(meta, "star_map_placements_updated_at")) meta.star_map_placements_updated_at = null;
   if (typeof meta.background_version !== "number" || !Number.isFinite(meta.background_version) || meta.background_version < 0) {
     meta.background_version = 0;
   }
@@ -413,6 +446,22 @@ function sanitizeMeta(meta: ThinkingSpaceMetaRecord) {
       Object.entries(meta.track_direction_hints).filter(([trackId, hint]) => typeof trackId === "string" && isTrackDirectionSetting(hint))
     );
   }
+  if (typeof meta.star_map_scene_signature !== "string" || !meta.star_map_scene_signature.trim()) {
+    meta.star_map_scene_signature = null;
+  }
+  if (!isPlainRecord(meta.star_map_curated_scene)) {
+    meta.star_map_curated_scene = null;
+  }
+  if (typeof meta.star_map_curated_at !== "string" || !meta.star_map_curated_at.trim()) {
+    meta.star_map_curated_at = null;
+  }
+  meta.star_map_star_placements = normalizeStarMapPlacements(meta.star_map_star_placements);
+  if (typeof meta.star_map_placements_signature !== "string" || !meta.star_map_placements_signature.trim()) {
+    meta.star_map_placements_signature = null;
+  }
+  if (typeof meta.star_map_placements_updated_at !== "string" || !meta.star_map_placements_updated_at.trim()) {
+    meta.star_map_placements_updated_at = null;
+  }
   return meta;
 }
 
@@ -432,7 +481,13 @@ function createDefaultMeta(spaceId: string) {
     pending_track_id: null,
     empty_track_ids: [],
     milestone_node_ids: [],
-    track_direction_hints: {}
+    track_direction_hints: {},
+    star_map_scene_signature: null,
+    star_map_curated_scene: null,
+    star_map_curated_at: null,
+    star_map_star_placements: {},
+    star_map_placements_signature: null,
+    star_map_placements_updated_at: null
   } satisfies ThinkingSpaceMetaRecord;
 }
 
@@ -1798,6 +1853,87 @@ export function updateSpaceBackground(
   };
 }
 
+export type StarMapStatePatch = {
+  sceneSignature?: string | null;
+  curatedScene?: Record<string, unknown> | null;
+  curatedAt?: string | null;
+  placementsSignature?: string | null;
+  starPlacements?: Record<string, StarMapPlacementRecord> | null;
+  placementsUpdatedAt?: string | null;
+};
+
+export function updateSpaceStarMapState(db: DbState, userId: string, spaceId: string, patch: StarMapStatePatch) {
+  const space = requireSpace(db, userId, spaceId);
+  if (!space) return { kind: "not_found" as const };
+  if (!isSpaceActive(space)) return { kind: "readonly" as const };
+
+  const meta = ensureMeta(db, spaceId);
+  const before = stableJson({
+    sceneSignature: meta.star_map_scene_signature ?? null,
+    curatedScene: meta.star_map_curated_scene ?? null,
+    curatedAt: meta.star_map_curated_at ?? null,
+    placementsSignature: meta.star_map_placements_signature ?? null,
+    starPlacements: meta.star_map_star_placements ?? {},
+    placementsUpdatedAt: meta.star_map_placements_updated_at ?? null
+  });
+
+  if (Object.prototype.hasOwnProperty.call(patch, "curatedScene")) {
+    if (patch.curatedScene === null) {
+      meta.star_map_curated_scene = null;
+      meta.star_map_scene_signature = null;
+      meta.star_map_curated_at = null;
+    } else {
+      const sceneSignature = typeof patch.sceneSignature === "string" && patch.sceneSignature.trim() ? patch.sceneSignature : null;
+      if (!sceneSignature || !isPlainRecord(patch.curatedScene)) return { kind: "invalid_scene" as const };
+      meta.star_map_curated_scene = patch.curatedScene;
+      meta.star_map_scene_signature = sceneSignature;
+      meta.star_map_curated_at = typeof patch.curatedAt === "string" && patch.curatedAt.trim() ? patch.curatedAt : nowIso();
+    }
+  }
+
+  if (Object.prototype.hasOwnProperty.call(patch, "starPlacements")) {
+    const nextStarPlacements = patch.starPlacements ?? null;
+    if (!nextStarPlacements || !Object.keys(nextStarPlacements).length) {
+      meta.star_map_star_placements = {};
+      meta.star_map_placements_signature = null;
+      meta.star_map_placements_updated_at = null;
+    } else {
+      const placementsSignature =
+        typeof patch.placementsSignature === "string" && patch.placementsSignature.trim() ? patch.placementsSignature : null;
+      const placements = normalizeStarMapPlacements(nextStarPlacements);
+      if (!placementsSignature || !Object.keys(placements).length) return { kind: "invalid_placements" as const };
+      meta.star_map_star_placements = placements;
+      meta.star_map_placements_signature = placementsSignature;
+      meta.star_map_placements_updated_at =
+        typeof patch.placementsUpdatedAt === "string" && patch.placementsUpdatedAt.trim()
+          ? patch.placementsUpdatedAt
+          : nowIso();
+    }
+  }
+
+  const after = stableJson({
+    sceneSignature: meta.star_map_scene_signature ?? null,
+    curatedScene: meta.star_map_curated_scene ?? null,
+    curatedAt: meta.star_map_curated_at ?? null,
+    placementsSignature: meta.star_map_placements_signature ?? null,
+    starPlacements: meta.star_map_star_placements ?? {},
+    placementsUpdatedAt: meta.star_map_placements_updated_at ?? null
+  });
+  const changed = before !== after;
+  if (changed) bumpUserRevision(db, userId);
+
+  return {
+    kind: "ok" as const,
+    changed,
+    star_map_scene_signature: meta.star_map_scene_signature ?? null,
+    star_map_curated_scene: meta.star_map_curated_scene ?? null,
+    star_map_curated_at: meta.star_map_curated_at ?? null,
+    star_map_star_placements: meta.star_map_star_placements ?? {},
+    star_map_placements_signature: meta.star_map_placements_signature ?? null,
+    star_map_placements_updated_at: meta.star_map_placements_updated_at ?? null
+  };
+}
+
 export function updateSpaceRootQuestion(db: DbState, userId: string, spaceId: string, rootQuestionText: string) {
   const space = requireSpace(db, userId, spaceId);
   if (!space) return { kind: "not_found" as const };
@@ -2096,7 +2232,13 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       lastOrganizedOrder: meta.last_organized_order ?? -1,
       parkingTrackId: meta.parking_track_id ?? null,
       pendingTrackId: meta.pending_track_id ?? null,
-      emptyTrackIds: meta.empty_track_ids ?? []
+      emptyTrackIds: meta.empty_track_ids ?? [],
+      starMapSceneSignature: meta.star_map_scene_signature ?? null,
+      starMapCuratedScene: meta.star_map_curated_scene ?? null,
+      starMapCuratedAt: meta.star_map_curated_at ?? null,
+      starMapStarPlacements: meta.star_map_star_placements ?? {},
+      starMapPlacementsSignature: meta.star_map_placements_signature ?? null,
+      starMapPlacementsUpdatedAt: meta.star_map_placements_updated_at ?? null
     })),
     mediaAssets: listThinkingMediaAssets(db, userId).map((asset) => ({
       id: asset.id,
@@ -2184,7 +2326,23 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
           ? meta.emptyTrackIds.filter((id) => typeof id === "string")
           : [],
         milestone_node_ids: [],
-        track_direction_hints: {}
+        track_direction_hints: {},
+        star_map_scene_signature:
+          typeof meta.starMapSceneSignature === "string" && meta.starMapSceneSignature.trim()
+            ? meta.starMapSceneSignature
+            : null,
+        star_map_curated_scene: isPlainRecord(meta.starMapCuratedScene) ? meta.starMapCuratedScene : null,
+        star_map_curated_at:
+          typeof meta.starMapCuratedAt === "string" && meta.starMapCuratedAt.trim() ? meta.starMapCuratedAt : null,
+        star_map_star_placements: normalizeStarMapPlacements(meta.starMapStarPlacements),
+        star_map_placements_signature:
+          typeof meta.starMapPlacementsSignature === "string" && meta.starMapPlacementsSignature.trim()
+            ? meta.starMapPlacementsSignature
+            : null,
+        star_map_placements_updated_at:
+          typeof meta.starMapPlacementsUpdatedAt === "string" && meta.starMapPlacementsUpdatedAt.trim()
+            ? meta.starMapPlacementsUpdatedAt
+            : null
       })
     );
 
