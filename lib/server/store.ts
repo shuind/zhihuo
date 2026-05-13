@@ -1760,13 +1760,29 @@ export function createEmptyTrack(db: DbState, userId: string, spaceId: string, p
   if (space.status !== "active") return { kind: "readonly" as const };
 
   const meta = ensureMeta(db, spaceId);
+  const nodes = getSpaceNodes(db, spaceId);
+  const trackMap = getTrackMap(nodes);
   const existing = getPendingTrackId(meta);
+  let clearedStalePending = false;
   if (existing) {
-    meta.last_track_id = existing;
-    return { kind: "ok" as const, track_id: existing };
+    if (trackMap.has(existing)) {
+      removeEmptyTrackId(meta, existing);
+      clearedStalePending = true;
+    } else {
+      meta.last_track_id = existing;
+      return { kind: "ok" as const, track_id: existing };
+    }
   }
-  const trackId =
-    typeof preferredTrackId === "string" && preferredTrackId.trim() ? preferredTrackId : createId();
+  const preferred =
+    typeof preferredTrackId === "string" && preferredTrackId.trim() ? normalizeTrackId(preferredTrackId) : null;
+  const preferredExisting = preferred && preferred !== "__new__" && trackMap.has(preferred) ? preferred : null;
+  if (preferredExisting) {
+    const changed = clearedStalePending || meta.last_track_id !== preferredExisting;
+    meta.last_track_id = preferredExisting;
+    if (changed) bumpUserRevision(db, userId);
+    return { kind: "ok" as const, track_id: preferredExisting };
+  }
+  const trackId = preferred && preferred !== "__new__" ? preferred : createId();
   setPendingTrackId(meta, trackId);
   meta.last_track_id = trackId;
   bumpUserRevision(db, userId);

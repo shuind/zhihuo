@@ -359,7 +359,12 @@ export function ThinkingLayer(props: {
     return fallbackTrackId;
   }, [activeSpaceView, fallbackTrackId, localPendingTrackId, tracks]);
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
-  const pendingTrackId = activeSpaceView?.pendingTrackId ?? null;
+  const pendingTrackId = useMemo(() => {
+    const id = activeSpaceView?.pendingTrackId ?? null;
+    if (!id) return null;
+    const pendingTrack = tracks.find((track) => track.id === id);
+    return pendingTrack && pendingTrack.nodes.length === 0 ? id : null;
+  }, [activeSpaceView?.pendingTrackId, tracks]);
   const otherTracks = useMemo(
     () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
     [activeTrackId, pendingTrackId, tracks]
@@ -1002,7 +1007,11 @@ export function ThinkingLayer(props: {
           setJustAddedNodeId(result.nodeId);
           clearAddedFlagLater();
           setFocusMenuNodeId(null);
-          if (result.trackId !== activeTrackId) setLocalPendingTrackId(result.trackId);
+          if (localPendingTrackId && result.trackId === localPendingTrackId) {
+            setLocalPendingTrackId(null);
+          } else if (result.trackId !== activeTrackId) {
+            setLocalPendingTrackId(result.trackId);
+          }
           centerAddedNodeWithRetry(result.nodeId, activeSpace.id, result.trackId);
           window.requestAnimationFrame(() => {
             if (Date.now() >= suppressQuestionFocusUntilRef.current) {
@@ -1014,7 +1023,7 @@ export function ThinkingLayer(props: {
         }
       })();
     },
-    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, props, writeEnabled]
+    [activeSpace, activeTrackId, centerAddedNodeWithRetry, clearAddedFlagLater, isAddingQuestion, localPendingTrackId, props, writeEnabled]
   );
 
   const openSpaceGalleryPicker = useCallback(() => {

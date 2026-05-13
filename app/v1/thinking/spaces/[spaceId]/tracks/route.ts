@@ -9,7 +9,11 @@ import { nowIso } from "@/lib/server/utils";
 export const POST = withApiRoute(
   "thinking.spaces.tracks.create",
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
-    const body = await parseJsonBody<{ client_mutation_id?: string; client_updated_at?: string }>(request);
+    const body = await parseJsonBody<{
+      client_track_id?: string;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
     const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
 
     const userId = getUserId(request);
@@ -17,8 +21,13 @@ export const POST = withApiRoute(
 
     let kind: "ok" | "not_found" | "readonly" = "not_found";
     let trackId = "";
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta"], (db) => {
-      const result = createEmptyTrack(db, userId, params.spaceId);
+    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
+      const result = createEmptyTrack(
+        db,
+        userId,
+        params.spaceId,
+        typeof body?.client_track_id === "string" ? body.client_track_id : null
+      );
       kind = result.kind;
       if (result.kind === "ok") trackId = result.track_id;
     });

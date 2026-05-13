@@ -4863,6 +4863,7 @@ export function TimeArchive() {
               const nextNodes = [...track.nodes, patchNode];
               return {
                 ...track,
+                isEmpty: false,
                 titleQuestionText:
                   !track.isParking && (!track.titleQuestionText.trim() || track.titleQuestionText === "New track")
                     ? patchNode.questionText
@@ -4888,10 +4889,34 @@ export function TimeArchive() {
         const nextView = {
           ...current,
           currentTrackId: normalizedTrackId,
+          pendingTrackId: current.pendingTrackId === normalizedTrackId ? null : current.pendingTrackId,
           tracks: normalizeTrackList(nextTracks)
         };
         commitLocalSpaceView(spaceId, nextView);
-        setThinkingStore((prev) => syncStoreNodesFromView(prev, spaceId, nextView));
+        setThinkingStore((prev) => {
+          const synced = syncStoreNodesFromView(prev, spaceId, nextView);
+          return {
+            ...synced,
+            spaces: synced.spaces.map((space) =>
+              space.id === spaceId
+                ? {
+                    ...space,
+                    lastActivityAt: now
+                  }
+                : space
+            ),
+            spaceMeta: synced.spaceMeta.map((meta) =>
+              meta.spaceId === spaceId
+                ? {
+                    ...meta,
+                    lastTrackId: normalizedTrackId,
+                    pendingTrackId: meta.pendingTrackId === normalizedTrackId ? null : meta.pendingTrackId,
+                    emptyTrackIds: (meta.emptyTrackIds ?? []).filter((trackId) => trackId !== normalizedTrackId)
+                  }
+                : meta
+            )
+          };
+        });
       }
       markLocalChange();
       return {
@@ -5888,11 +5913,38 @@ export function TimeArchive() {
     async (spaceId: string) => {
       const currentView = getLocalSpaceView(spaceId);
       if (!currentView) return null;
-      const trackId = createId();
+      const reusablePendingTrack = currentView.pendingTrackId
+        ? currentView.tracks.find(
+            (track) => track.id === currentView.pendingTrackId && !track.isParking && track.nodes.length === 0
+          )
+        : null;
+      const trackId = reusablePendingTrack?.id ?? createId();
       await queueMutation(`/v1/thinking/spaces/${spaceId}/tracks`, {
         client_track_id: trackId,
         client_updated_at: new Date().toISOString()
       });
+      if (reusablePendingTrack) {
+        commitLocalSpaceView(spaceId, {
+          ...currentView,
+          currentTrackId: trackId,
+          pendingTrackId: trackId
+        });
+        setThinkingStore((prev) => ({
+          ...prev,
+          spaceMeta: prev.spaceMeta.map((meta) =>
+            meta.spaceId === spaceId
+              ? {
+                  ...meta,
+                  lastTrackId: trackId,
+                  pendingTrackId: trackId,
+                  emptyTrackIds: [trackId]
+                }
+              : meta
+          )
+        }));
+        markLocalChange();
+        return trackId;
+      }
       const nextTrack = {
         id: trackId,
         titleQuestionText: "New track",
@@ -5908,11 +5960,21 @@ export function TimeArchive() {
       commitLocalSpaceView(spaceId, {
         ...currentView,
         currentTrackId: trackId,
+        pendingTrackId: trackId,
         tracks: nextTracks
       });
       setThinkingStore((prev) => ({
         ...prev,
-        spaceMeta: prev.spaceMeta.map((meta) => (meta.spaceId === spaceId ? { ...meta, lastTrackId: trackId } : meta))
+        spaceMeta: prev.spaceMeta.map((meta) =>
+          meta.spaceId === spaceId
+            ? {
+                ...meta,
+                lastTrackId: trackId,
+                pendingTrackId: trackId,
+                emptyTrackIds: [trackId]
+              }
+            : meta
+        )
       }));
       markLocalChange();
       return trackId;
