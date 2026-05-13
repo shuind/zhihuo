@@ -419,7 +419,7 @@ type SyncRepairItemSummary = {
   createdAt: string;
 };
 
-type SyncPhase = "idle" | "bootstrap" | "push" | "conflict" | "repairing" | "ready" | "error";
+type SyncPhase = "idle" | "checking" | "bootstrap" | "pull" | "push" | "conflict" | "repairing" | "ready" | "error";
 
 type SyncRepairSummary = {
   startedAt: string;
@@ -443,6 +443,7 @@ type OfflineRuntimeState =
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
 const OFFLINE_RETRY_BASE_MS = 1200;
 const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
+const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
 function stableStringify(value: unknown): string {
@@ -1409,6 +1410,9 @@ export function TimeArchive() {
   const [pendingMutationCount, setPendingMutationCount] = useState(0);
   const [cloudRevision, setCloudRevision] = useState<number | null>(null);
   const [cloudServerTime, setCloudServerTime] = useState<string | null>(null);
+  const [lastCloudCheckedAt, setLastCloudCheckedAt] = useState<string | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
+  const [nextSyncRetryAt, setNextSyncRetryAt] = useState<number | null>(null);
   const [cloudLastSequence, setCloudLastSequence] = useState<number | null>(null);
   const [cloudRepairCount, setCloudRepairCount] = useState(0);
   const [syncPhase, setSyncPhase] = useState<SyncPhase>("idle");
@@ -1460,6 +1464,7 @@ export function TimeArchive() {
       if (response.status !== 401) return false;
       setSessionUser(null);
       setAuthReady(true);
+      setLastSyncError("unauthorized");
       if (sessionUser) showNotice("登录已失效，请重新登录");
       return true;
     },
@@ -1495,18 +1500,54 @@ export function TimeArchive() {
     offlineRuntimeState === "user_syncing" ||
     offlineRuntimeState === "binding_required" ||
     offlineRuntimeState === "switching_account";
+  const hasTrackedLocalChanges = offlineMeta?.syncState.hasLocalChanges === true;
+  const hasUnqueuedLocalChanges = hasTrackedLocalChanges && pendingMutationCount === 0;
   const syncModeLabel = useMemo(
-    () =>
-      describeOfflineRuntimeState(offlineRuntimeState, {
-        sessionEmail: sessionUser?.email ?? null,
+    () => {
+      if (!sessionUser) {
+        if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
+        return describeOfflineRuntimeState(offlineRuntimeState, {
+          sessionEmail: null,
+          isOnline
+        });
+      }
+      if (!isOnline) {
+        return pendingMutationCount > 0 || hasTrackedLocalChanges ? "离线可用，网络恢复后自动同步" : "离线可用";
+      }
+      if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
+      if (lastSyncError) return "云端暂不可达，稍后重试";
+      if (syncPhase === "checking") return "正在检查云端";
+      if (syncPhase === "bootstrap" || syncPhase === "pull") return "正在拉取云端更新";
+      if (syncPhase === "conflict") return "正在基于最新云端版本重放本地改动";
+      if (cloudRepairCount > 0 || deadLetterMutations.length > 0) return "发现同步异常，需要处理";
+      if (pendingMutationCount > 0 || hasTrackedLocalChanges) return "有本地改动等待同步";
+      if (cloudSyncReady || offlineRuntimeState === "user_sync_ready") return "云同步正常";
+      return describeOfflineRuntimeState(offlineRuntimeState, {
+        sessionEmail: sessionUser.email,
         isOnline
-      }),
-    [isOnline, offlineRuntimeState, sessionUser?.email]
+      });
+    },
+    [
+      cloudRepairCount,
+      cloudSyncReady,
+      deadLetterMutations.length,
+      hasTrackedLocalChanges,
+      isOnline,
+      lastSyncError,
+      offlineRuntimeState,
+      pendingMutationCount,
+      sessionUser,
+      syncPhase
+    ]
   );
   const syncPhaseLabel = useMemo(() => {
     switch (syncPhase) {
+      case "checking":
+        return "检查云端";
       case "bootstrap":
-        return "初始化";
+        return "拉取云端";
+      case "pull":
+        return "拉取云端";
       case "push":
         return "推送中";
       case "conflict":
@@ -1554,7 +1595,18 @@ export function TimeArchive() {
   }, [activeOwnerKey, cloudRevision, deadLetterMutations, offlineMeta?.revision, serverRepairItems]);
   const syncWarning = useMemo(() => {
     if (cloudRepairCount > 0) {
-      return `浜戠浠嶆湁 ${cloudRepairCount} 鏉″緟淇鐨勫悓姝ユ潯鐩紝寤鸿鎵ц鍚屾鍒锋柊`;
+      return `云端仍有 ${cloudRepairCount} 条待修复的同步条目，建议执行同步刷新`;
+    }
+    if (hasUnqueuedLocalChanges) {
+      return "检测到本地已变更，但没有对应的待上传队列。已阻止自动云端覆盖，请复制诊断排查这次操作为何未入队。";
+    }
+    if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
+    if (lastSyncError) {
+      const retryText =
+        typeof nextSyncRetryAt === "number" && Number.isFinite(nextSyncRetryAt)
+          ? `，将在 ${new Date(nextSyncRetryAt).toLocaleTimeString("zh-CN")} 后重试`
+          : "";
+      return `同步失败：${lastSyncError}${retryText}`;
     }
     if (lastCanonicalSyncError) return `检测到快照重建异常：${lastCanonicalSyncError}`;
     if (
@@ -1575,7 +1627,17 @@ export function TimeArchive() {
       return "待同步改动停留较久，建议执行同步刷新";
     }
     return null;
-  }, [cloudRepairCount, cloudRevision, cloudSyncReady, lastCanonicalSyncError, offlineMeta, pendingMutationCount]);
+  }, [
+    cloudRepairCount,
+    cloudRevision,
+    cloudSyncReady,
+    hasUnqueuedLocalChanges,
+    lastCanonicalSyncError,
+    lastSyncError,
+    nextSyncRetryAt,
+    offlineMeta,
+    pendingMutationCount
+  ]);
   const syncDiagnosticsReport = useMemo(
     () =>
       JSON.stringify(
@@ -1588,12 +1650,21 @@ export function TimeArchive() {
           cloud_last_sequence: cloudLastSequence,
           cloud_repair_count: cloudRepairCount,
           cloud_server_time: cloudServerTime,
+          last_cloud_checked_at: lastCloudCheckedAt,
           pending_mutations: pendingMutationCount,
+          visible_pending_changes: pendingMutationCount > 0 ? pendingMutationCount : hasTrackedLocalChanges ? 1 : 0,
+          unqueued_local_changes: hasUnqueuedLocalChanges,
+          offline_media_pending: offlineMediaAssets.filter((asset) => asset.status === "pending").length,
           dead_letters: syncIssueMutations.length,
           last_synced_at: offlineMeta?.syncState.lastSyncedAt ?? null,
           has_local_changes: offlineMeta?.syncState.hasLocalChanges === true,
           sync_phase: syncPhase,
           warning: syncWarning,
+          last_sync_error: lastSyncError,
+          next_retry_at:
+            typeof nextSyncRetryAt === "number" && Number.isFinite(nextSyncRetryAt)
+              ? new Date(nextSyncRetryAt).toISOString()
+              : null,
           last_repair: lastRepairSummary
         },
         null,
@@ -1604,8 +1675,14 @@ export function TimeArchive() {
       cloudRepairCount,
       cloudRevision,
       cloudServerTime,
+      hasTrackedLocalChanges,
+      hasUnqueuedLocalChanges,
+      lastCloudCheckedAt,
       lastRepairSummary,
+      lastSyncError,
+      nextSyncRetryAt,
       offlineMeta,
+      offlineMediaAssets,
       offlineRuntimeState,
       pendingMutationCount,
       syncIssueMutations.length,
@@ -1644,10 +1721,18 @@ export function TimeArchive() {
   const refreshPendingMutationCount = useCallback(async (ownerKey: OfflineOwnerKey | null, includeDeferred = true) => {
     if (!ownerKey) {
       setPendingMutationCount(0);
+      setNextSyncRetryAt(null);
       return 0;
     }
     const items = await listOfflineMutationsByOwner(ownerKey, includeDeferred ? Number.MAX_SAFE_INTEGER : Date.now());
     setPendingMutationCount(items.length);
+    const now = Date.now();
+    const retryAt =
+      items
+        .map((item) => item.nextRetryAt)
+        .filter((value) => Number.isFinite(value) && value > now && value < Number.MAX_SAFE_INTEGER)
+        .sort((a, b) => a - b)[0] ?? null;
+    setNextSyncRetryAt(retryAt);
     return items.length;
   }, []);
 
@@ -1822,7 +1907,11 @@ export function TimeArchive() {
       if (!userId) return null;
       try {
         const response = await apiFetch("/v1/sync/state", { method: "GET", cache: "no-store" });
-        if (!response.ok) return null;
+        setLastCloudCheckedAt(new Date().toISOString());
+        if (!response.ok) {
+          setLastSyncError(`state_status_${response.status}`);
+          return null;
+        }
         const payload = (await response.json()) as SyncStateResponse;
         const revision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
         setCloudRevision(revision);
@@ -1835,6 +1924,7 @@ export function TimeArchive() {
               ? payload.serverTime
               : null
         );
+        setLastSyncError(null);
         if (revision === null) return null;
         updateOfflineMeta((current) => ({
           ...current,
@@ -1852,19 +1942,42 @@ export function TimeArchive() {
   );
 
   const refreshCloudSyncState = useCallback(
-    async (userId?: string | null) => {
+    async (userId?: string | null, options?: { showCheckingPhase?: boolean }) => {
       if (!userId) {
         setCloudRevision(null);
         setCloudLastSequence(null);
         setCloudRepairCount(0);
         setCloudServerTime(null);
+        setLastCloudCheckedAt(null);
         return null;
       }
       try {
+        if (options?.showCheckingPhase) {
+          setSyncPhase((current) =>
+            current === "push" || current === "bootstrap" || current === "repairing" || current === "conflict" ? current : "checking"
+          );
+        }
         const response = await apiFetch("/v1/sync/state", { method: "GET", cache: "no-store" });
-        if (handleUnauthorized(response) || !response.ok) return null;
+        if (handleUnauthorized(response)) {
+          setLastSyncError("unauthorized");
+          setSyncPhase("error");
+          return null;
+        }
+        if (!response.ok) {
+          setLastCloudCheckedAt(new Date().toISOString());
+          setLastSyncError(`state_status_${response.status}`);
+          setNextSyncRetryAt(Date.now() + CLOUD_SYNC_CHECK_INTERVAL_MS);
+          setSyncPhase("error");
+          return null;
+        }
         const payload = (await response.json().catch(() => null)) as SyncStateResponse | null;
-        if (!payload) return null;
+        setLastCloudCheckedAt(new Date().toISOString());
+        if (!payload) {
+          setLastSyncError("state_payload_invalid");
+          setNextSyncRetryAt(Date.now() + CLOUD_SYNC_CHECK_INTERVAL_MS);
+          setSyncPhase("error");
+          return null;
+        }
         const nextRevision = Number.isFinite(payload.revision) ? Number(payload.revision) : null;
         setCloudRevision(nextRevision);
         setCloudLastSequence(Number.isFinite(payload.lastSequence) ? Number(payload.lastSequence) : null);
@@ -1876,8 +1989,13 @@ export function TimeArchive() {
               ? payload.serverTime
               : null
         );
+        setLastSyncError(null);
         return nextRevision;
-      } catch {
+      } catch (error) {
+        setLastCloudCheckedAt(new Date().toISOString());
+        setLastSyncError(error instanceof Error ? error.message : String(error));
+        setNextSyncRetryAt(Date.now() + CLOUD_SYNC_CHECK_INTERVAL_MS);
+        setSyncPhase("error");
         return null;
       }
     },
@@ -2161,6 +2279,7 @@ export function TimeArchive() {
         return false;
       }
       setSessionUser({ userId: payload.user_id, email: payload.email });
+      setLastSyncError((current) => (current === "unauthorized" ? null : current));
       setAuthReady(true);
       return true;
     } catch {
@@ -2345,7 +2464,7 @@ export function TimeArchive() {
   }, [handleUnauthorized]);
 
   const refreshFromCloud = useCallback(
-    async (preferredSpaceId?: string | null, userId?: string | null) => {
+    async (preferredSpaceId?: string | null, userId?: string | null, options?: { allowLocalOverwrite?: boolean }) => {
       const targetUserId = userId ?? sessionUser?.userId ?? null;
       const targetOwnerKey = targetUserId ? getUserOwnerKey(targetUserId) : null;
       setSyncPhase((current) => (current === "repairing" ? current : targetUserId ? "bootstrap" : current));
@@ -2359,6 +2478,7 @@ export function TimeArchive() {
       const payload = await fetchSyncSnapshot();
       if (!payload) {
         setLastCanonicalSyncError("snapshot_unavailable");
+        setLastSyncError("snapshot_unavailable");
         setSyncPhase("error");
         updateOfflineMeta((current) => ({
           ...current,
@@ -2367,6 +2487,7 @@ export function TimeArchive() {
         return;
       }
       try {
+        setLastCloudCheckedAt(new Date().toISOString());
         const snapshotRepairItems: SyncRepairItemSummary[] = Array.isArray(payload.repairItems)
           ? payload.repairItems
               .filter((item) => item && typeof item.id === "string")
@@ -2402,6 +2523,23 @@ export function TimeArchive() {
           (preferredSpaceId && nextThinkingStore.spaces.some((space) => space.id === preferredSpaceId) ? preferredSpaceId : null) ??
           pickDefaultSpaceId(nextThinkingStore.spaces);
         const pendingCount = await refreshPendingMutationCount(targetOwnerKey, true);
+        const hasUnqueuedChangesBeforePull =
+          offlineMeta?.syncState.hasLocalChanges === true && pendingCount === 0 && options?.allowLocalOverwrite !== true;
+        if (hasUnqueuedChangesBeforePull) {
+          setLastCanonicalSyncError("local_changes_without_queue");
+          setLastSyncError("local_changes_without_queue");
+          setSyncPhase("error");
+          updateOfflineMeta((current) => ({
+            ...current,
+            completeness: "partial",
+            syncState: {
+              ...current.syncState,
+              hasLocalChanges: true
+            }
+          }));
+          return;
+        }
+        setSyncPhase((current) => (current === "repairing" ? current : "pull"));
         const hasPendingLocalChanges = pendingCount > 0;
         applySnapshotToState({
           lifeStore: nextLifeStore,
@@ -2425,6 +2563,7 @@ export function TimeArchive() {
         setCloudLastSequence(nextLastSequence);
         setCloudRepairCount(snapshotRepairItems.length);
         setServerRepairItems(snapshotRepairItems);
+        setLastSyncError(null);
         markCloudSynced(targetUserId, nextRevision, {
           hasLocalChanges: hasPendingLocalChanges
         });
@@ -2433,7 +2572,9 @@ export function TimeArchive() {
           setOfflineRuntimeState("user_sync_ready");
         }
       } catch (error) {
-        setLastCanonicalSyncError(error instanceof Error ? error.message : String(error));
+        const message = error instanceof Error ? error.message : String(error);
+        setLastCanonicalSyncError(message);
+        setLastSyncError(message);
         setSyncPhase("error");
         updateOfflineMeta((current) => ({
           ...current,
@@ -2451,6 +2592,7 @@ export function TimeArchive() {
       offlineMeta?.lastAppliedLogId,
       offlineMeta?.ownerMode,
       offlineMeta?.revision,
+      offlineMeta?.syncState.hasLocalChanges,
       thinkingStore,
       updateOfflineMeta,
       sessionUser?.userId
@@ -2493,7 +2635,7 @@ export function TimeArchive() {
           bindingRequired: false
         }
       }));
-      await refreshFromCloud(null);
+      await refreshFromCloud(null, user.userId, { allowLocalOverwrite: true });
       return true;
     },
     [activeOwnerKey, buildLocalExportPayload, handleUnauthorized, offlineMeta?.completeness, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
@@ -2661,7 +2803,7 @@ export function TimeArchive() {
           showNotice("部分离线改动未被云端接受，已移入同步异常");
         }
         if (!hasMissingAcknowledgements) {
-          await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5));
+          await refreshFromCloud(activeSpaceIdRef.current, ownerKey.slice(5), { allowLocalOverwrite: true });
         }
       } catch (error) {
         const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
@@ -2706,13 +2848,37 @@ export function TimeArchive() {
       try {
         const mediaReady = await syncPendingOfflineMediaAssets(ownerKey);
         if (!mediaReady) {
+          setLastSyncError("media_upload_failed");
+          setNextSyncRetryAt(Date.now() + OFFLINE_RETRY_BASE_MS);
           setSyncPhase("error");
           return { ok: false as const, pendingCount: pendingMutationCount, deadLetterCount: deadLetterMutations.length };
         }
         const pending = await listOfflineMutationsByOwner(ownerKey, options?.includeDeferred ? Number.MAX_SAFE_INTEGER : Date.now());
         setPendingMutationCount(pending.length);
         if (!pending.length) {
-          await refreshCloudSyncState(ownerKey.slice(5));
+          setSyncPhase("checking");
+          const nextRevision = await refreshCloudSyncState(ownerKey.slice(5), { showCheckingPhase: true });
+          const localRevision = latestRevisionRef.current ?? offlineMeta?.revision ?? null;
+          if (nextRevision === null) {
+            return { ok: false as const, pendingCount: 0, deadLetterCount: deadLetterMutations.length };
+          }
+          if (offlineMeta?.syncState.hasLocalChanges === true) {
+            setLastSyncError("local_changes_without_queue");
+            setSyncPhase("error");
+            return { ok: false as const, pendingCount: 0, deadLetterCount: deadLetterMutations.length };
+          }
+          if (
+            typeof localRevision === "number" &&
+            Number.isFinite(localRevision) &&
+            typeof nextRevision === "number" &&
+            Number.isFinite(nextRevision) &&
+            nextRevision !== localRevision
+          ) {
+            await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+          } else {
+            markCloudSynced(ownerKey.slice(5), nextRevision, { hasLocalChanges: false });
+          }
+          setLastSyncError(null);
           setSyncPhase("ready");
           return { ok: true as const, pendingCount: 0, deadLetterCount: deadLetterMutations.length };
         }
@@ -2740,6 +2906,7 @@ export function TimeArchive() {
             })
           });
           if (handleUnauthorized(response)) {
+            setLastSyncError("unauthorized");
             setSyncPhase("error");
             return { ok: false as const, pendingCount: pending.length, deadLetterCount: deadLetterMutations.length };
           }
@@ -2784,6 +2951,8 @@ export function TimeArchive() {
           }
           if (!response.ok) {
             const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+            setLastSyncError(`status_${response.status}`);
+            setNextSyncRetryAt(retryTime);
             for (const item of pending) {
               await updateOfflineMutation(item.id, {
                 retryCount: item.retryCount + 1,
@@ -2878,6 +3047,7 @@ export function TimeArchive() {
           await refreshDeadLetterMutations(ownerKey);
           const nextPendingCount = await refreshPendingMutationCount(ownerKey, true);
           if (repairMap.size > 0) {
+            setLastSyncError("repair_required");
             updateOfflineMeta((current) => ({
               ...current,
               completeness: "partial",
@@ -2889,9 +3059,14 @@ export function TimeArchive() {
             showNotice("部分离线改动未被云端接受，已移入同步异常");
           }
           if (nextPendingCount === 0 && !hasMissingAcknowledgements) {
-            await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5));
+            await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5), {
+              allowLocalOverwrite: true
+            });
           }
           await refreshCloudSyncState(ownerKey.slice(5));
+          if (repairMap.size === 0 && !hasMissingAcknowledgements && nextPendingCount === 0) {
+            setLastSyncError(null);
+          }
           setSyncPhase(repairMap.size > 0 || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
           return {
             ok: repairMap.size === 0 && !hasMissingAcknowledgements,
@@ -2900,6 +3075,8 @@ export function TimeArchive() {
           };
         } catch (error) {
           const retryTime = Date.now() + OFFLINE_RETRY_BASE_MS;
+          setLastSyncError(error instanceof Error ? error.message : String(error));
+          setNextSyncRetryAt(retryTime);
           for (const item of pending) {
             await updateOfflineMutation(item.id, {
               retryCount: item.retryCount + 1,
@@ -2919,7 +3096,9 @@ export function TimeArchive() {
       deadLetterMutations.length,
       handleUnauthorized,
       isOnline,
+      markCloudSynced,
       offlineMeta?.revision,
+      offlineMeta?.syncState.hasLocalChanges,
       pendingMutationCount,
       refreshCloudSyncState,
       refreshDeadLetterMutations,
@@ -2935,7 +3114,9 @@ export function TimeArchive() {
 
   const finalizeCloudWrite = useCallback(
     async (preferredSpaceId?: string | null, userId?: string | null) => {
-      await refreshFromCloud(preferredSpaceId ?? activeSpaceIdRef.current, userId ?? sessionUser?.userId ?? null);
+      await refreshFromCloud(preferredSpaceId ?? activeSpaceIdRef.current, userId ?? sessionUser?.userId ?? null, {
+        allowLocalOverwrite: true
+      });
       if (userId ?? sessionUser?.userId) {
         await refreshCloudSyncState(userId ?? sessionUser?.userId ?? null);
       }
@@ -3000,7 +3181,13 @@ export function TimeArchive() {
         markLocalChange();
         return null;
       }
-      if (offlineRuntimeState !== "user_offline_ready" && offlineRuntimeState !== "user_sync_ready") {
+      const canQueueForCurrentUser =
+        offlineMeta?.ownerMode === "user" &&
+        offlineMeta.boundUserId === sessionUser.userId &&
+        offlineRuntimeState !== "binding_required" &&
+        offlineRuntimeState !== "switching_account";
+      if (!canQueueForCurrentUser) {
+        markLocalChange();
         return null;
       }
       const now = new Date().toISOString();
@@ -3047,6 +3234,8 @@ export function TimeArchive() {
       activeOwnerKey,
       isOnline,
       markLocalChange,
+      offlineMeta?.boundUserId,
+      offlineMeta?.ownerMode,
       offlineMeta?.revision,
       offlineRuntimeState,
       refreshPendingMutationCount,
@@ -3811,15 +4000,23 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser || !currentUserOwnerKey || !isOnline) return;
     if (offlineRuntimeState !== "user_sync_ready") return;
-    const onOnline = () => {
+    const run = () => {
       void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
     };
-    window.addEventListener("online", onOnline);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") run();
+    };
+    run();
+    window.addEventListener("online", run);
+    window.addEventListener("focus", run);
+    document.addEventListener("visibilitychange", onVisibilityChange);
     const timer = window.setInterval(() => {
-      void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
-    }, 15000);
+      run();
+    }, CLOUD_SYNC_CHECK_INTERVAL_MS);
     return () => {
-      window.removeEventListener("online", onOnline);
+      window.removeEventListener("online", run);
+      window.removeEventListener("focus", run);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
       window.clearInterval(timer);
     };
   }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, runQueuedMutationSync, sessionUser]);
@@ -3853,6 +4050,9 @@ export function TimeArchive() {
         setCloudLastSequence(null);
         setCloudRepairCount(0);
         setCloudServerTime(null);
+        setLastCloudCheckedAt(null);
+        setLastSyncError(null);
+        setNextSyncRetryAt(null);
         setServerRepairItems([]);
       }
       return;
@@ -3860,7 +4060,7 @@ export function TimeArchive() {
     void refreshCloudSyncState(sessionUser.userId);
     const timer = window.setInterval(() => {
       void refreshCloudSyncState(sessionUser.userId);
-    }, 30000);
+    }, CLOUD_SYNC_CHECK_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);
     };
@@ -3872,7 +4072,7 @@ export function TimeArchive() {
     if (offlineMeta?.syncState.hasLocalChanges === true) return;
     if (typeof cloudRevision !== "number") return;
     if (offlineMeta?.revision === cloudRevision) return;
-    if (syncPhase === "bootstrap" || syncPhase === "repairing" || syncPhase === "push") return;
+    if (syncPhase === "bootstrap" || syncPhase === "repairing" || syncPhase === "push" || syncPhase === "pull") return;
     if (autoCloudRefreshInFlightRef.current) return;
 
     autoCloudRefreshInFlightRef.current = true;
@@ -6859,7 +7059,7 @@ export function TimeArchive() {
     }));
     await clearOfflineSnapshotByOwner(guestOwnerKey);
     setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
-    await refreshFromCloud(null, sessionUser.userId);
+    await refreshFromCloud(null, sessionUser.userId, { allowLocalOverwrite: true });
     setBindingDialog(null);
     showNotice("已保留云端数据");
   }, [guestOwnerKey, refreshFromCloud, sessionUser, showNotice, updateOfflineMeta]);
@@ -7217,8 +7417,13 @@ export function TimeArchive() {
                   localRevision: offlineMeta?.revision ?? null,
                   cloudRevision,
                   cloudServerTime,
+                  lastCloudCheckedAt,
                   pendingMutationCount,
+                  hasLocalChanges: hasTrackedLocalChanges,
+                  hasUnqueuedLocalChanges,
+                  offlineMediaPendingCount: offlineMediaAssets.filter((asset) => asset.status === "pending").length,
                   lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
+                  nextRetryAt: nextSyncRetryAt,
                   warning: syncWarning,
                   lastRepairSummary
                 }}

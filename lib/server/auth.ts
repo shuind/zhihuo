@@ -2,13 +2,14 @@ import { createHmac, randomBytes, randomInt, scryptSync, timingSafeEqual } from 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 
-import type { NextRequest } from "next/server";
+import type { NextRequest, NextResponse } from "next/server";
 
 import { isAllowedCrossOriginRequest } from "@/lib/server/cors";
 
 const AUTH_COOKIE = "zhihuo_session";
 const DEFAULT_AUTH_SECRET = "zhihuo_dev_only_change_me";
-const SESSION_TTL_DAYS = 30;
+export const SESSION_TTL_DAYS = 365;
+export const SESSION_TTL_SECONDS = SESSION_TTL_DAYS * 24 * 60 * 60;
 let warnedDefaultSecret = false;
 let warnedPersistedSecretFallback = false;
 let warnedGeneratedSecretFallback = false;
@@ -202,11 +203,15 @@ export function getAuthCookieOptions(request: NextRequest, maxAge: number) {
 }
 
 export function createSessionToken(userId: string) {
-  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_DAYS * 24 * 60 * 60;
+  const exp = Math.floor(Date.now() / 1000) + SESSION_TTL_SECONDS;
   const payload: SessionPayload = { uid: userId, exp };
   const payloadBase64 = base64UrlEncode(JSON.stringify(payload));
   const signature = sign(payloadBase64);
   return `${payloadBase64}.${signature}`;
+}
+
+export function setSessionCookie(response: NextResponse, request: NextRequest, userId: string) {
+  response.cookies.set(getAuthCookieName(), createSessionToken(userId), getAuthCookieOptions(request, SESSION_TTL_SECONDS));
 }
 
 export function readSessionToken(token: string | undefined | null) {

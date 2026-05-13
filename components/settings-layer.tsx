@@ -50,8 +50,13 @@ export function SettingsLayer(props: {
     localRevision: number | null;
     cloudRevision: number | null;
     cloudServerTime: string | null;
+    lastCloudCheckedAt: string | null;
     pendingMutationCount: number;
+    hasLocalChanges: boolean;
+    hasUnqueuedLocalChanges: boolean;
+    offlineMediaPendingCount: number;
     lastSyncedAt: string | null;
+    nextRetryAt: number | null;
     warning: string | null;
     lastRepairSummary: {
       startedAt: string;
@@ -615,7 +620,13 @@ export function SettingsLayer(props: {
               </div>
               <div>
                 <p className="text-xs text-slate-500">待同步改动</p>
-                <p className="mt-1">{props.syncStatus.pendingMutationCount}</p>
+                <p className="mt-1">
+                  {props.syncStatus.pendingMutationCount > 0
+                    ? props.syncStatus.pendingMutationCount
+                    : props.syncStatus.hasLocalChanges
+                      ? "有本地改动"
+                      : 0}
+                </p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">同步异常</p>
@@ -626,10 +637,33 @@ export function SettingsLayer(props: {
                 <p className="mt-1">{props.syncStatus.lastSyncedAt ? new Date(props.syncStatus.lastSyncedAt).toLocaleString("zh-CN") : "暂无"}</p>
               </div>
               <div>
+                <p className="text-xs text-slate-500">上次检查云端</p>
+                <p className="mt-1">
+                  {props.syncStatus.lastCloudCheckedAt ? new Date(props.syncStatus.lastCloudCheckedAt).toLocaleString("zh-CN") : "暂无"}
+                </p>
+              </div>
+              <div>
                 <p className="text-xs text-slate-500">云端时间</p>
                 <p className="mt-1">{props.syncStatus.cloudServerTime ? new Date(props.syncStatus.cloudServerTime).toLocaleString("zh-CN") : "暂无"}</p>
               </div>
+              <div>
+                <p className="text-xs text-slate-500">未上传媒体</p>
+                <p className="mt-1">{props.syncStatus.offlineMediaPendingCount}</p>
+              </div>
+              <div>
+                <p className="text-xs text-slate-500">下次自动重试</p>
+                <p className="mt-1">
+                  {typeof props.syncStatus.nextRetryAt === "number" && Number.isFinite(props.syncStatus.nextRetryAt)
+                    ? new Date(props.syncStatus.nextRetryAt).toLocaleString("zh-CN")
+                    : "无需重试"}
+                </p>
+              </div>
             </div>
+            {props.syncStatus.hasUnqueuedLocalChanges ? (
+              <div className="rounded-xl border border-red-300/70 bg-red-50 px-4 py-3 text-sm text-red-900">
+                本地存在未入队改动，已暂停自动云端覆盖，避免丢失本地内容。
+              </div>
+            ) : null}
             {props.syncStatus.warning ? (
               <div className="rounded-xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-900">
                 {props.syncStatus.warning}

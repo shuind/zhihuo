@@ -1,6 +1,6 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 
-import { createSessionToken, getAuthCookieName, getAuthCookieOptions, verifyPassword } from "@/lib/server/auth";
+import { setSessionCookie, verifyPassword } from "@/lib/server/auth";
 import { readDb, updateDb } from "@/lib/server/db";
 import { errorJson, parseJsonBody } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
@@ -35,9 +35,8 @@ export const POST = withApiRoute(
       });
     });
 
-    const token = createSessionToken(user.id);
     const response = NextResponse.json({ ok: true, user_id: user.id });
-    response.cookies.set(getAuthCookieName(), token, getAuthCookieOptions(request, 60 * 60 * 24 * 30));
+    setSessionCookie(response, request, user.id);
     return response;
   },
   { rateLimit: { bucket: "auth-login", max: 20, windowMs: 10 * 60 * 1000 } }
