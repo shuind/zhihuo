@@ -445,10 +445,13 @@ body {
 
 .time-detail-scroll {
   scrollbar-width: none;
+  -ms-overflow-style: none;
+  overscroll-behavior: contain;
 }
 
 .time-list-mask::-webkit-scrollbar,
-.time-detail-scroll::-webkit-scrollbar {
+.time-detail-scroll::-webkit-scrollbar,
+.time-sheet::-webkit-scrollbar {
   width: 0;
   height: 0;
 }

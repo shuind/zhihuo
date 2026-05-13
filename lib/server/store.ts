@@ -33,6 +33,7 @@ import {
 const TRACK_PREFIX = "track:";
 const ORGANIZE_MOVE_THRESHOLD = 0.52;
 const ORGANIZE_MOVE_DELTA = 0.16;
+const DOUBT_NOTE_MAX_LENGTH = 160;
 type LegacyTrackDirectionHint = "hypothesis" | "memory" | "counterpoint" | "worry" | "constraint" | "aside";
 
 function isTrackDirectionHint(value: unknown): value is LegacyTrackDirectionHint {
@@ -966,7 +967,7 @@ export function replaceLifeSnapshot(
     .map((item) => ({
       id: typeof item.id === "string" ? item.id : createId(),
       doubt_id: item.doubt_id as string,
-      note_text: collapseWhitespace(item.note_text ?? "").slice(0, 42),
+      note_text: collapseWhitespace(item.note_text ?? "").slice(0, DOUBT_NOTE_MAX_LENGTH),
       created_at: typeof item.created_at === "string" ? item.created_at : nowIso()
     }))
     .filter((item) => item.note_text);
@@ -1027,7 +1028,7 @@ export function deleteDoubt(db: DbState, userId: string, doubtId: string) {
 export function upsertDoubtNote(db: DbState, userId: string, doubtId: string, noteText: string) {
   const doubt = requireDoubt(db, userId, doubtId);
   if (!doubt) return null;
-  const normalized = collapseWhitespace(noteText).slice(0, 42);
+  const normalized = collapseWhitespace(noteText).slice(0, DOUBT_NOTE_MAX_LENGTH);
   const existing = db.doubt_notes.find((item) => item.doubt_id === doubtId);
   if (!normalized) {
     db.doubt_notes = db.doubt_notes.filter((item) => item.doubt_id !== doubtId);

@@ -443,6 +443,7 @@ type OfflineRuntimeState =
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
 const OFFLINE_RETRY_BASE_MS = 1200;
 const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
+const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -1008,6 +1009,15 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
   };
 }
 
+function buildSettleLetterLinesFromView(view: ThinkingSpaceView) {
+  return view.tracks.flatMap((track, index) => {
+    const nodes = track.nodes.map((node) => node.questionText.trim()).filter(Boolean);
+    if (!nodes.length) return [];
+    const heading = track.isParking ? "未归入方向" : `方向 ${index + 1}`;
+    return [heading, ...nodes];
+  });
+}
+
 function buildLocalSpaceExportMarkdown(store: ThinkingStore, space: ThinkingSpace, view: ThinkingSpaceView) {
   const mediaAssetIds = new Set(store.mediaAssets.filter((asset) => !asset.deletedAt).map((asset) => asset.id));
   const exportTracks = view.tracks.filter((track) => track.nodes.length > 0);
@@ -1311,6 +1321,13 @@ function sortSpacesByLatestActivity(a: ThinkingSpace, b: ThinkingSpace) {
   return new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime();
 }
 
+function getSpaceLatestActivityTime(space: ThinkingSpace) {
+  const activity = new Date(space.lastActivityAt ?? space.createdAt).getTime();
+  if (Number.isFinite(activity)) return activity;
+  const created = new Date(space.createdAt).getTime();
+  return Number.isFinite(created) ? created : Date.now();
+}
+
 function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
   return (
     a.localProfileId === b.localProfileId &&
@@ -1410,6 +1427,7 @@ export function TimeArchive() {
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
   const mediaObjectUrlsRef = useRef<string[]>([]);
+  const autoWritingSpaceIdsRef = useRef<Set<string>>(new Set());
   const [stars] = useState(() => createStars(36));
 
   const activeThinkingSpaceOptions = useMemo(
@@ -3896,8 +3914,8 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated) return;
     setActiveSpaceId((prev) => {
-      if (prev && thinkingStore.spaces.some((space) => space.id === prev)) return prev;
-      return pickDefaultSpaceId(thinkingStore.spaces);
+      if (prev && thinkingStore.spaces.some((space) => space.id === prev && space.status === "active")) return prev;
+      return [...thinkingStore.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity)[0]?.id ?? null;
     });
   }, [hydrated, thinkingStore.spaces]);
 
@@ -4104,7 +4122,7 @@ export function TimeArchive() {
         }
       })();
     },
-    [createThinkingSpaceApi, showNotice]
+    [createThinkingSpaceApi, hideLifeDoubtFromTimeline, showNotice]
   );
 
   const handleCreateThinkingFromInput = useCallback(
@@ -6445,7 +6463,11 @@ export function TimeArchive() {
       const preserveOriginalTime = options?.preserveOriginalTime !== false;
       const currentSpace = thinkingStore.spaces.find((item) => item.id === spaceId);
       if (!currentSpace) return { ok: false as const, message: "空间不存在" };
-      const currentView = thinkingViewCacheRef.current[spaceId] ?? (thinkingView?.spaceId === spaceId ? thinkingView : null);
+      const currentView =
+        thinkingViewCacheRef.current[spaceId] ??
+        (thinkingView?.spaceId === spaceId ? thinkingView : null) ??
+        buildSpaceViewFromStore(thinkingStore, spaceId);
+      if (currentView) thinkingViewCacheRef.current[spaceId] = currentView;
       const sortedNodes =
         currentView?.tracks
           .flatMap((track) => track.nodes.map((node) => ({ ...node, trackId: track.id })))
@@ -6504,7 +6526,8 @@ export function TimeArchive() {
       }));
       const nextSpacesForPick = thinkingStore.spaces
         .map((space) => (space.id === spaceId ? { ...space, status: "hidden" as const } : space))
-        .filter((space) => space.status === "active");
+        .filter((space) => space.status === "active")
+        .sort(sortSpacesByLatestActivity);
       const nextActive = nextSpacesForPick[0]?.id ?? null;
       setActiveSpaceId(nextActive);
       if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
@@ -6512,8 +6535,57 @@ export function TimeArchive() {
       markLocalChange();
       return { ok: true as const };
     },
-    [lifeStore.doubts, markLocalChange, queueMutation, thinkingStore.spaces, thinkingView]
+    [lifeStore.doubts, markLocalChange, queueMutation, thinkingStore, thinkingView]
   );
+
+  useEffect(() => {
+    if (!hydrated || !pinReady || (pinEnabled && !pinUnlocked)) return;
+    const nowMs = Date.now();
+    const fixedSpaceIds = new Set(thinkingStore.fixedTopSpacesEnabled ? thinkingStore.fixedTopSpaceIds : []);
+    const candidates = thinkingStore.spaces
+      .filter((space) => {
+        if (space.status !== "active") return false;
+        if (fixedSpaceIds.has(space.id)) return false;
+        if (autoWritingSpaceIdsRef.current.has(space.id)) return false;
+        return nowMs - getSpaceLatestActivityTime(space) >= AUTO_WRITE_TO_TIME_AFTER_MS;
+      })
+      .sort((a, b) => getSpaceLatestActivityTime(a) - getSpaceLatestActivityTime(b));
+
+    if (!candidates.length) return;
+    for (const space of candidates) autoWritingSpaceIdsRef.current.add(space.id);
+
+    void (async () => {
+      let writtenCount = 0;
+      for (const space of candidates) {
+        try {
+          const view = thinkingViewCacheRef.current[space.id] ?? buildSpaceViewFromStore(thinkingStore, space.id);
+          if (view) thinkingViewCacheRef.current[space.id] = view;
+          const letterLines = view ? buildSettleLetterLinesFromView(view) : [];
+          const result = await handleThinkingWriteToTime(space.id, {
+            preserveOriginalTime: true,
+            letterLines
+          });
+          if (result.ok) writtenCount += 1;
+        } finally {
+          autoWritingSpaceIdsRef.current.delete(space.id);
+        }
+      }
+      if (writtenCount > 0) {
+        showNotice(writtenCount === 1 ? "两周未活动的思考已写入时间" : `两周未活动的 ${writtenCount} 个思考已写入时间`);
+      }
+    })();
+  }, [
+    handleThinkingWriteToTime,
+    hydrated,
+    pinEnabled,
+    pinReady,
+    pinUnlocked,
+    showNotice,
+    thinkingStore,
+    thinkingStore.fixedTopSpaceIds,
+    thinkingStore.fixedTopSpacesEnabled,
+    thinkingStore.spaces
+  ]);
 
   /* const handleThinkingDeleteSpace = useCallback(
     async (spaceId: string) => {
@@ -6940,7 +7012,7 @@ export function TimeArchive() {
       {showGlobalHeader ? (
       <header
         className={cn(
-          "absolute left-0 top-0 z-30 w-full px-4 py-4 md:px-6",
+          "pointer-events-none absolute left-0 top-0 z-30 w-full px-4 py-4 md:px-6",
           tab === "thinking"
             ? "border-black/8 bg-[#f5f3f0]/76"
             : isLifeTab
@@ -6950,7 +7022,7 @@ export function TimeArchive() {
       >
         {isLifeTab ? (
           <div className="mx-auto flex w-full max-w-[1680px] items-center justify-end">
-            <nav className="flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
+            <nav className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
               <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle />
               <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
               <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={false} subtle />
@@ -6959,7 +7031,7 @@ export function TimeArchive() {
         ) : (
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
             <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab || isSettingsTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
-            <nav className="flex items-center gap-2">
+            <nav className="pointer-events-auto flex items-center gap-2">
               <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
                 <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />

@@ -155,6 +155,7 @@ export const DEFAULT_TIMEZONE = "Asia/Shanghai";
 
 export const OPENING_MS = 600;
 export const ONE_YEAR_MS = 365 * 24 * 60 * 60 * 1000;
+export const LIFE_NOTE_MAX_LENGTH = 160;
 export const MAX_ACTIVE_SPACES = 7;
 export const MAX_BRANCH_COUNT = 7;
 export const MAX_BRANCH_VISIBLE = 3;
@@ -418,7 +419,7 @@ export function loadLifeStore(): LifeStore {
         deletedAt: null
       });
       if (item.note && collapseWhitespace(item.note)) {
-        notes.push({ id: createId(), doubtId: id, noteText: collapseWhitespace(item.note).slice(0, 42), createdAt: new Date().toISOString() });
+        notes.push({ id: createId(), doubtId: id, noteText: collapseWhitespace(item.note).slice(0, LIFE_NOTE_MAX_LENGTH), createdAt: new Date().toISOString() });
       }
     }
     return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(parsed.meta?.twelvePlaybackSeen) } };
@@ -467,7 +468,7 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
   const notes = (store.notes ?? []).map((item) => ({
     id: typeof item.id === "string" ? item.id : createId(),
     doubtId: typeof item.doubtId === "string" ? item.doubtId : "",
-    noteText: collapseWhitespace(typeof item.noteText === "string" ? item.noteText : "").slice(0, 42),
+    noteText: collapseWhitespace(typeof item.noteText === "string" ? item.noteText : "").slice(0, LIFE_NOTE_MAX_LENGTH),
     createdAt: toIso(item.createdAt)
   })).filter((item) => item.doubtId && item.noteText);
   return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen) } };
