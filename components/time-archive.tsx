@@ -5913,11 +5913,12 @@ export function TimeArchive() {
     async (spaceId: string) => {
       const currentView = getLocalSpaceView(spaceId);
       if (!currentView) return null;
-      const reusablePendingTrack = currentView.pendingTrackId
-        ? currentView.tracks.find(
-            (track) => track.id === currentView.pendingTrackId && !track.isParking && track.nodes.length === 0
-          )
-        : null;
+      const reusablePendingTrack =
+        (currentView.pendingTrackId
+          ? currentView.tracks.find(
+              (track) => track.id === currentView.pendingTrackId && !track.isParking && track.nodes.length === 0
+            )
+          : null) ?? currentView.tracks.find((track) => !track.isParking && track.nodes.length === 0) ?? null;
       const trackId = reusablePendingTrack?.id ?? createId();
       await queueMutation(`/v1/thinking/spaces/${spaceId}/tracks`, {
         client_track_id: trackId,

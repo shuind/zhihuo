@@ -361,12 +361,16 @@ export function ThinkingLayer(props: {
   const activeTrack = useMemo(() => tracks.find((track) => track.id === activeTrackId) ?? null, [activeTrackId, tracks]);
   const pendingTrackId = useMemo(() => {
     const id = activeSpaceView?.pendingTrackId ?? null;
-    if (!id) return null;
-    const pendingTrack = tracks.find((track) => track.id === id);
-    return pendingTrack && pendingTrack.nodes.length === 0 ? id : null;
+    const explicitPending = id
+      ? tracks.find((track) => track.id === id && !track.isParking && track.nodes.length === 0)
+      : null;
+    return explicitPending?.id ?? tracks.find((track) => !track.isParking && track.nodes.length === 0)?.id ?? null;
   }, [activeSpaceView?.pendingTrackId, tracks]);
   const otherTracks = useMemo(
-    () => tracks.filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking).slice(0, 5),
+    () =>
+      tracks
+        .filter((track) => track.id !== activeTrackId && track.id !== pendingTrackId && !track.isParking && track.nodes.length > 0)
+        .slice(0, 5),
     [activeTrackId, pendingTrackId, tracks]
   );
   const organizeAllNodes = useMemo<OrganizeNodeEntry[]>(() => {
@@ -1394,8 +1398,15 @@ export function ThinkingLayer(props: {
       return;
     }
     const normalizedInput = questionInput.trim();
+    const reusablePendingTrackId = pendingTrackId && tracks.some((track) => track.id === pendingTrackId) ? pendingTrackId : null;
     if (normalizedInput) {
-      addQuestion(normalizedInput, false, "__new__");
+      addQuestion(normalizedInput, false, reusablePendingTrackId ?? "__new__");
+      return;
+    }
+    if (reusablePendingTrackId) {
+      setLocalPendingTrackId(reusablePendingTrackId);
+      void props.onSetActiveTrack(activeSpace.id, reusablePendingTrackId);
+      questionInputRef.current?.focus();
       return;
     }
     void (async () => {
@@ -1407,7 +1418,7 @@ export function ThinkingLayer(props: {
       setLocalPendingTrackId(trackId);
       questionInputRef.current?.focus();
     })();
-  }, [activeSpace, addQuestion, props, questionInput]);
+  }, [activeSpace, addQuestion, pendingTrackId, props, questionInput, tracks]);
 
   const toggleNodeAnswer = useCallback((node: ThinkingTrackNodeView) => {
     if (editingNodeId === node.id) return;
