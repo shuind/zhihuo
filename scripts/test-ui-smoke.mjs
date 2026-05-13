@@ -247,28 +247,16 @@ async function assertCutPaste(page) {
   assert(remainingPaste === 0, "粘贴完成后入口未消失");
 }
 
-async function assertCopyPaste(page) {
-  console.log("[ui-smoke] assert copy paste");
+async function assertCopyText(page) {
+  console.log("[ui-smoke] assert copy text");
   const sourceCount = await page.locator('[data-track-node="true"]').count();
   await openNodeMenu(page, 0);
   await page.locator('[role="menu"]:visible').last().getByRole("menuitem", { name: "复制" }).click({ force: true });
   await page.waitForTimeout(180);
   assert((await page.locator('[data-track-node="true"]').count()) === sourceCount, "复制后原轨节点数不应变化");
-
-  await ensureSwitchableTrack(page);
-  const otherTrackButtons = page.locator('[data-other-tracks="true"] [data-other-track-button="true"]');
-  await otherTrackButtons.first().click();
-  const targetBefore = await page.locator('[data-track-node="true"]').count();
-  const pasteButton = page.locator('[data-composer="true"]').getByRole("button", { name: "粘贴" }).first();
-  await pasteButton.waitFor({ timeout: 10000 });
-  await pasteButton.click();
-  let targetAfter = targetBefore;
-  for (let i = 0; i < 16; i += 1) {
-    await page.waitForTimeout(220);
-    targetAfter = await page.locator('[data-track-node="true"]').count();
-    if (targetAfter > targetBefore) break;
-  }
-  assert(targetAfter > targetBefore, "复制粘贴后目标轨末尾应新增副本");
+  const copiedText = await page.evaluate(() => navigator.clipboard.readText());
+  assert(copiedText.includes("修改后的节点问题"), "复制应写入卡片文本内容");
+  assert((await page.locator('[data-composer="true"]').getByRole("button", { name: "粘贴" }).count()) === 0, "文本复制不应出现内部粘贴入口");
 }
 
 async function ensureSwitchableTrack(page) {
@@ -458,6 +446,7 @@ async function run() {
 
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  await context.grantPermissions(["clipboard-read", "clipboard-write"], { origin: baseUrl });
   const page = await context.newPage();
 
   try {
@@ -477,7 +466,7 @@ async function run() {
     await assertOrganizePanel(page);
     await assertTrackScrollableAndCentered(page);
     await assertMenuActions(page);
-    await assertCopyPaste(page);
+    await assertCopyText(page);
     await assertTrackSwitchRestore(page);
     await assertFreezeAndExport(page, spaceTitle);
     await assertTabsAndMobile(page, spaceTitle);

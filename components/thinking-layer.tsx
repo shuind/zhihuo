@@ -18,6 +18,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import {
+  copyText,
   formatTimeInTimeZone,
   type ThinkingScratchItem,
   type ThinkingSpaceMeta,
@@ -139,6 +140,13 @@ function buildSettleLetterLines(tracks: ThinkingTrackView[]) {
     const heading = track.isParking ? "未归入方向" : `方向 ${index + 1}`;
     return [heading, ...nodes];
   });
+}
+
+function buildNodeCopyText(node: ThinkingTrackNodeView, answerDraft?: string) {
+  return [node.questionText, node.noteText, answerDraft ?? node.answerText ?? ""]
+    .map((item) => item?.trim())
+    .filter(Boolean)
+    .join("\n\n");
 }
 
 export function ThinkingLayer(props: {
@@ -1364,12 +1372,18 @@ export function ThinkingLayer(props: {
     setFocusMenuNodeId(null);
   }, []);
 
-  const copyNodeToClipboard = useCallback((nodeId: string, trackId: string) => {
-    setClipboardMode("copy");
-    setClipboardNodeId(nodeId);
-    setClipboardSourceTrackId(trackId);
-    setFocusMenuNodeId(null);
-  }, []);
+  const copyNodeText = useCallback(
+    (node: ThinkingTrackNodeView) => {
+      const text = buildNodeCopyText(node, answerDraftByNodeId[node.id]);
+      if (!text) {
+        props.showNotice("暂无可复制的内容");
+        return;
+      }
+      void copyText(text, () => props.showNotice("已复制卡片内容"));
+      setFocusMenuNodeId(null);
+    },
+    [answerDraftByNodeId, props]
+  );
 
   const pasteClipboardNode = useCallback(async () => {
     if (!clipboardNodeId || !activeTrack || !clipboardMode) return;
@@ -1924,7 +1938,7 @@ export function ThinkingLayer(props: {
                                             onReplaceImage={() => openNodeImagePicker(node.id)}
                                             onRemoveImage={() => removeNodeImage(node.id)}
                                             onEdit={() => startEditingNode(node)}
-                                            onCopy={() => copyNodeToClipboard(node.id, activeTrack.id)}
+                                            onCopy={() => copyNodeText(node)}
                                             onDelete={() =>
                                               void (async () => {
                                                 const ok = await props.onDeleteNode(node.id);
