@@ -185,6 +185,83 @@ type ApplyMutationResult =
   | { kind: "applied" | "skipped"; appliedRevision: number }
   | { kind: "repair"; appliedRevision: number; repairItem: SyncRepairItemRecord };
 
+function mutationTimeValue(item: Pick<NormalizedMutation, "clientTime" | "payload">) {
+  const raw = item.clientTime ?? requireString(item.payload, "client_updated_at");
+  const value = raw ? new Date(raw).getTime() : NaN;
+  return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+}
+
+function logTimeValue(item: { client_updated_at: string | null; created_at: string }) {
+  const clientValue = item.client_updated_at ? new Date(item.client_updated_at).getTime() : NaN;
+  if (Number.isFinite(clientValue)) return clientValue;
+  const createdValue = new Date(item.created_at).getTime();
+  return Number.isFinite(createdValue) ? createdValue : Number.NEGATIVE_INFINITY;
+}
+
+function mutationWriteKey(op: string, payload: Record<string, unknown>) {
+  if (op === "/v1/doubts") {
+    const clientEntityId = requireString(payload, "client_entity_id");
+    return clientEntityId ? `doubt:create:${clientEntityId}` : null;
+  }
+  if (op === "/v1/thinking/spaces") {
+    const clientSpaceId = requireString(payload, "client_space_id");
+    return clientSpaceId ? `space:create:${clientSpaceId}` : null;
+  }
+  if (op === "/v1/thinking/scratch") {
+    const clientEntityId = requireString(payload, "client_entity_id");
+    return clientEntityId ? `scratch:create:${clientEntityId}` : null;
+  }
+
+  const doubtNoteMatch = op.match(/^\/v1\/doubts\/([^/]+)\/note$/);
+  if (doubtNoteMatch) return `doubt:note:${doubtNoteMatch[1]}`;
+
+  const spaceRenameMatch = op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/rename$/);
+  if (spaceRenameMatch) return `space:root:${spaceRenameMatch[1]}`;
+
+  const spaceBackgroundMatch = op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/background$/);
+  if (spaceBackgroundMatch) return `space:background:${spaceBackgroundMatch[1]}`;
+
+  const spaceStarMapMatch = op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/star-map$/);
+  if (spaceStarMapMatch) return `space:star-map:${spaceStarMapMatch[1]}`;
+
+  const activeTrackMatch = op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/active-track$/);
+  if (activeTrackMatch) return `space:active-track:${activeTrackMatch[1]}`;
+
+  const organizeMatch = op.match(/^\/v1\/thinking\/spaces\/([^/]+)\/organize-apply$/);
+  if (organizeMatch) return `space:organize:${organizeMatch[1]}`;
+
+  const nodeQuestionMatch = op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/update$/);
+  if (nodeQuestionMatch) return `node:question:${nodeQuestionMatch[1]}`;
+
+  const nodeMoveMatch = op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/move$/);
+  if (nodeMoveMatch) return `node:move:${nodeMoveMatch[1]}`;
+
+  const nodeAnswerMatch = op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/answer$/);
+  if (nodeAnswerMatch) return `node:answer:${nodeAnswerMatch[1]}`;
+
+  const nodeImageMatch = op.match(/^\/v1\/thinking\/nodes\/([^/]+)\/image$/);
+  if (nodeImageMatch) return `node:image:${nodeImageMatch[1]}`;
+
+  return null;
+}
+
+function hasNewerAppliedWrite(db: DbState, userId: string, item: NormalizedMutation) {
+  const writeKey = mutationWriteKey(item.op, item.payload);
+  if (!writeKey) return false;
+  const itemTime = mutationTimeValue(item);
+  return db.sync_operation_log.some((log) => {
+    if (log.user_id !== userId || log.client_mutation_id === item.clientMutationId) return false;
+    if (mutationWriteKey(log.op, log.payload) !== writeKey) return false;
+    const timeDelta = logTimeValue(log) - itemTime;
+    if (timeDelta !== 0) return timeDelta > 0;
+    const deviceDelta = log.device_id.localeCompare(item.deviceId);
+    if (deviceDelta !== 0) return deviceDelta > 0;
+    const orderDelta = log.client_order - item.clientOrder;
+    if (orderDelta !== 0) return orderDelta > 0;
+    return log.client_mutation_id.localeCompare(item.clientMutationId) > 0;
+  });
+}
+
 function applyMutation(db: DbState, userId: string, item: NormalizedMutation): ApplyMutationResult {
   const payload = item.payload;
 
@@ -727,7 +804,6 @@ export const POST = withApiRoute(
     const mutations = Array.isArray(body?.mutations) ? body.mutations : [];
     if (!mutations.length) return errorJson(400, "mutations is required");
 
-    let conflictRevision: number | null = null;
     let result:
       | {
           applied: AppliedMutationResult[];
@@ -740,7 +816,6 @@ export const POST = withApiRoute(
 
     try {
       await updateDb((db) => {
-        const currentRevision = getUserRevision(db, userId);
         const normalized = mutations
           .filter((entry): entry is SyncMutation => Boolean(entry && typeof entry === "object"))
           .map((entry, index) => ({
@@ -755,16 +830,17 @@ export const POST = withApiRoute(
                 : requestDeviceId ?? `legacy:${userId}`
           }))
           .filter((entry) => entry.clientMutationId && entry.op)
-          .sort((a, b) => a.clientOrder - b.clientOrder);
+          .sort(
+            (a, b) =>
+              mutationTimeValue(a) - mutationTimeValue(b) ||
+              a.deviceId.localeCompare(b.deviceId) ||
+              a.clientOrder - b.clientOrder ||
+              a.clientMutationId.localeCompare(b.clientMutationId)
+          );
 
         if (!normalized.length) throw new Error("mutations is required");
 
         const existing = normalized.map((entry) => findAppliedClientMutation(db, userId, entry.clientMutationId));
-        const allAlreadyApplied = existing.every(Boolean);
-        if (!allAlreadyApplied && currentRevision !== baseRevision) {
-          conflictRevision = currentRevision;
-          throw new Error("revision_conflict");
-        }
 
         const applied: AppliedMutationResult[] = [];
         const skipped: AppliedMutationResult[] = [];
@@ -781,7 +857,10 @@ export const POST = withApiRoute(
             continue;
           }
 
-          const outcome = applyMutation(db, userId, entry);
+          const skipAsOlderWrite = hasNewerAppliedWrite(db, userId, entry);
+          const outcome = skipAsOlderWrite
+            ? { kind: "skipped" as const, appliedRevision: getUserRevision(db, userId) }
+            : applyMutation(db, userId, entry);
           recordAppliedClientMutation(db, userId, entry.clientMutationId, entry.op, baseRevision, outcome.appliedRevision);
           appendSyncOperationLog(db, userId, {
             clientMutationId: entry.clientMutationId,
@@ -823,9 +902,6 @@ export const POST = withApiRoute(
         };
       });
     } catch (error) {
-      if (conflictRevision !== null) {
-        return errorJson(409, `revision_conflict:${conflictRevision}`);
-      }
       return errorJson(400, error instanceof Error ? error.message : "failed to apply mutations");
     }
 

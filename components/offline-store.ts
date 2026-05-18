@@ -4,10 +4,12 @@ import type { ThinkingSpaceView } from "@/components/thinking-layer";
 import type { LifeStore, ThinkingStore } from "@/components/zhihuo-model";
 
 const DB_NAME = "zhihuo_offline_v1";
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const SNAPSHOT_STORE = "snapshot";
 const QUEUE_STORE = "mutation_queue";
 const MEDIA_STORE = "media_asset";
+const SYNC_BACKUP_STORE = "sync_backup";
+const SYNC_BACKUP_LIMIT = 5;
 const LEGACY_SNAPSHOT_KEY = "main";
 const PIN_STORAGE_KEY = "zhihuo_pin_v1";
 const LOCAL_PROFILE_STORAGE_KEY = "zhihuo_local_profile_v1";
@@ -120,6 +122,20 @@ export type OfflineSnapshotRecord = {
   ownerKey: OfflineOwnerKey;
   savedAt: string;
   meta: OfflineSnapshotMeta;
+};
+
+export type OfflineSyncBackupMediaAsset = Omit<OfflineMediaAssetRecord, "blob"> & {
+  hasBlob: boolean;
+};
+
+export type OfflineSyncBackupRecord = {
+  id: string;
+  ownerKey: OfflineOwnerKey;
+  snapshot: OfflineSnapshot;
+  mutations: QueuedMutation[];
+  mediaAssets: OfflineSyncBackupMediaAsset[];
+  createdAt: string;
+  reason: string;
 };
 
 function createLocalId() {
@@ -244,6 +260,35 @@ function normalizeOfflineMediaAsset(raw: OfflineMediaAssetRecord, fallbackOwnerK
   };
 }
 
+function toBackupMediaAsset(raw: OfflineMediaAssetRecord, fallbackOwnerKey: OfflineOwnerKey): OfflineSyncBackupMediaAsset {
+  const normalized = normalizeOfflineMediaAsset(raw, fallbackOwnerKey);
+  const { blob: _blob, ...withoutBlob } = normalized;
+  return {
+    ...withoutBlob,
+    hasBlob: Boolean(normalized.blob)
+  };
+}
+
+function normalizeOfflineSyncBackup(raw: OfflineSyncBackupRecord, fallbackOwnerKey: OfflineOwnerKey): OfflineSyncBackupRecord {
+  const ownerKey = typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey) ? raw.ownerKey : fallbackOwnerKey;
+  return {
+    id: typeof raw.id === "string" && raw.id.trim() ? raw.id : createLocalId(),
+    ownerKey,
+    snapshot: normalizeOfflineSnapshot(raw.snapshot),
+    mutations: Array.isArray(raw.mutations)
+      ? raw.mutations.map((item) => normalizeQueuedMutation(item, ownerKey))
+      : [],
+    mediaAssets: Array.isArray(raw.mediaAssets)
+      ? raw.mediaAssets.map((item) => ({
+          ...toBackupMediaAsset({ ...item, blob: null }, ownerKey),
+          hasBlob: item.hasBlob === true
+        }))
+      : [],
+    createdAt: typeof raw.createdAt === "string" ? raw.createdAt : new Date().toISOString(),
+    reason: typeof raw.reason === "string" && raw.reason.trim() ? raw.reason : "manual"
+  };
+}
+
 function canUseIdb() {
   return typeof window !== "undefined" && typeof window.indexedDB !== "undefined";
 }
@@ -264,6 +309,9 @@ function openDb(): Promise<IDBDatabase | null> {
         }
         if (!db.objectStoreNames.contains(MEDIA_STORE)) {
           db.createObjectStore(MEDIA_STORE, { keyPath: "id" });
+        }
+        if (!db.objectStoreNames.contains(SYNC_BACKUP_STORE)) {
+          db.createObjectStore(SYNC_BACKUP_STORE, { keyPath: "id" });
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -662,10 +710,11 @@ export async function clearOfflineState(): Promise<void> {
   const db = await openDb();
   if (!db) return;
   await new Promise<void>((resolve) => {
-    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE, MEDIA_STORE], "readwrite");
+    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE, MEDIA_STORE, SYNC_BACKUP_STORE], "readwrite");
     tx.objectStore(SNAPSHOT_STORE).clear();
     tx.objectStore(QUEUE_STORE).clear();
     tx.objectStore(MEDIA_STORE).clear();
+    tx.objectStore(SYNC_BACKUP_STORE).clear();
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
@@ -722,7 +771,8 @@ export async function clearOfflineOwnerState(ownerKey: OfflineOwnerKey): Promise
   await Promise.all([
     clearOfflineSnapshotByOwner(ownerKey),
     clearOfflineMutationsByOwner(ownerKey),
-    clearOfflineMediaAssetsByOwner(ownerKey)
+    clearOfflineMediaAssetsByOwner(ownerKey),
+    clearOfflineSyncBackupsByOwner(ownerKey)
   ]);
 }
 
@@ -837,6 +887,143 @@ export async function clearOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey):
     req.onerror = () => resolve();
     req.onsuccess = () => {
       const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
+      for (const row of rows) {
+        if (row.ownerKey === ownerKey) store.delete(row.id);
+      }
+    };
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => resolve();
+    tx.onabort = () => resolve();
+  });
+}
+
+export async function createOfflineSyncBackup(ownerKey: OfflineOwnerKey, reason: string): Promise<OfflineSyncBackupRecord | null> {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE, MEDIA_STORE, SYNC_BACKUP_STORE], "readwrite");
+    const snapshotStore = tx.objectStore(SNAPSHOT_STORE);
+    const queueStore = tx.objectStore(QUEUE_STORE);
+    const mediaStore = tx.objectStore(MEDIA_STORE);
+    const backupStore = tx.objectStore(SYNC_BACKUP_STORE);
+    const snapshotReq = snapshotStore.get(ownerKey);
+    const queueReq = queueStore.getAll();
+    const mediaReq = mediaStore.getAll();
+    const backupsReq = backupStore.getAll();
+    let backup: OfflineSyncBackupRecord | null = null;
+
+    tx.oncomplete = () => resolve(backup);
+    tx.onerror = () => resolve(null);
+    tx.onabort = () => resolve(null);
+
+    backupsReq.onsuccess = () => {
+      const snapshotRow = snapshotReq.result as SnapshotRecord | undefined;
+      if (!snapshotRow?.value) return;
+      const allMutations = (queueReq.result as QueuedMutation[] | undefined) ?? [];
+      const allMediaAssets = (mediaReq.result as OfflineMediaAssetRecord[] | undefined) ?? [];
+      const normalized: OfflineSyncBackupRecord = {
+        id: createLocalId(),
+        ownerKey,
+        snapshot: normalizeOfflineSnapshot(snapshotRow.value),
+        mutations: allMutations
+          .map((item) => normalizeQueuedMutation(item, ownerKey))
+          .filter((item) => item.ownerKey === ownerKey && item.status !== "acked"),
+        mediaAssets: allMediaAssets
+          .map((item) => toBackupMediaAsset(item, ownerKey))
+          .filter((item) => item.ownerKey === ownerKey),
+        createdAt: new Date().toISOString(),
+        reason: reason.trim() || "manual"
+      };
+      backup = normalized;
+      backupStore.put(cloneValue(normalized));
+
+      const existingBackups = ((backupsReq.result as OfflineSyncBackupRecord[] | undefined) ?? [])
+        .map((item) => normalizeOfflineSyncBackup(item, ownerKey))
+        .filter((item) => item.ownerKey === ownerKey)
+        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      for (const stale of existingBackups.slice(Math.max(0, SYNC_BACKUP_LIMIT - 1))) {
+        backupStore.delete(stale.id);
+      }
+    };
+  });
+}
+
+export async function listOfflineSyncBackupsByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineSyncBackupRecord[]> {
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(SYNC_BACKUP_STORE, "readonly");
+    const req = tx.objectStore(SYNC_BACKUP_STORE).getAll();
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as OfflineSyncBackupRecord[] | undefined) ?? [];
+      resolve(
+        rows
+          .map((item) => normalizeOfflineSyncBackup(item, ownerKey))
+          .filter((item) => item.ownerKey === ownerKey)
+          .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
+      );
+    };
+  });
+}
+
+export async function loadLatestOfflineSyncBackupByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineSyncBackupRecord | null> {
+  const backups = await listOfflineSyncBackupsByOwner(ownerKey);
+  return backups[0] ?? null;
+}
+
+export async function restoreOfflineSyncBackup(backupId: string): Promise<OfflineSyncBackupRecord | null> {
+  const db = await openDb();
+  if (!db) return null;
+  return new Promise((resolve) => {
+    const tx = db.transaction([SNAPSHOT_STORE, QUEUE_STORE, SYNC_BACKUP_STORE], "readwrite");
+    const backupStore = tx.objectStore(SYNC_BACKUP_STORE);
+    const snapshotStore = tx.objectStore(SNAPSHOT_STORE);
+    const queueStore = tx.objectStore(QUEUE_STORE);
+    const getReq = backupStore.get(backupId);
+    let restored: OfflineSyncBackupRecord | null = null;
+
+    getReq.onsuccess = () => {
+      const raw = getReq.result as OfflineSyncBackupRecord | undefined;
+      if (!raw) return;
+      const ownerKey =
+        typeof raw.ownerKey === "string" && /^guest:|^user:/.test(raw.ownerKey)
+          ? raw.ownerKey
+          : getGuestOwnerKey(getOrCreateLocalProfileId());
+      const normalized = normalizeOfflineSyncBackup(raw, ownerKey);
+      restored = normalized;
+      snapshotStore.put({
+        key: normalized.ownerKey,
+        value: cloneValue(normalized.snapshot)
+      } satisfies SnapshotRecord);
+      const queueReq = queueStore.getAll();
+      queueReq.onsuccess = () => {
+        const rows = (queueReq.result as QueuedMutation[] | undefined) ?? [];
+        for (const row of rows) {
+          if (row.ownerKey === normalized.ownerKey) queueStore.delete(row.id);
+        }
+        for (const mutation of normalized.mutations) {
+          if (mutation.status !== "acked") queueStore.put(cloneValue(mutation));
+        }
+      };
+    };
+
+    tx.oncomplete = () => resolve(restored);
+    tx.onerror = () => resolve(null);
+    tx.onabort = () => resolve(null);
+  });
+}
+
+export async function clearOfflineSyncBackupsByOwner(ownerKey: OfflineOwnerKey): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  await new Promise<void>((resolve) => {
+    const tx = db.transaction(SYNC_BACKUP_STORE, "readwrite");
+    const store = tx.objectStore(SYNC_BACKUP_STORE);
+    const req = store.getAll();
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const rows = (req.result as OfflineSyncBackupRecord[] | undefined) ?? [];
       for (const row of rows) {
         if (row.ownerKey === ownerKey) store.delete(row.id);
       }

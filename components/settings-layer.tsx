@@ -58,6 +58,13 @@ export function SettingsLayer(props: {
     lastSyncedAt: string | null;
     nextRetryAt: number | null;
     warning: string | null;
+    latestBackup: {
+      id: string;
+      createdAt: string;
+      reason: string;
+      mutationCount: number;
+      mediaCount: number;
+    } | null;
     lastRepairSummary: {
       startedAt: string;
       finishedAt: string;
@@ -70,6 +77,9 @@ export function SettingsLayer(props: {
   };
   syncDiagnosticsReport: string;
   syncRepairing: boolean;
+  onManualPullCloud: () => Promise<{ ok: boolean; error?: string }>;
+  onManualUploadLocal: () => Promise<{ ok: boolean; error?: string }>;
+  onRestoreLatestSyncBackup: () => Promise<{ ok: boolean; error?: string }>;
   onSyncRepair: () => Promise<{ ok: boolean; error?: string }>;
   deadLetterMutations: QueuedMutation[];
   onDismissDeadLetter: (mutationId: string) => Promise<void> | void;
@@ -144,6 +154,30 @@ export function SettingsLayer(props: {
     if (props.syncRepairing) return;
     void (async () => {
       const result = await props.onSyncRepair();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
+
+  const runManualPullCloud = () => {
+    if (props.syncRepairing) return;
+    void (async () => {
+      const result = await props.onManualPullCloud();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
+
+  const runManualUploadLocal = () => {
+    if (props.syncRepairing) return;
+    void (async () => {
+      const result = await props.onManualUploadLocal();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
+
+  const runRestoreLatestBackup = () => {
+    if (props.syncRepairing) return;
+    void (async () => {
+      const result = await props.onRestoreLatestSyncBackup();
       if (!result.ok && result.error) props.showNotice(result.error);
     })();
   };
@@ -658,6 +692,12 @@ export function SettingsLayer(props: {
                     : "无需重试"}
                 </p>
               </div>
+              <div>
+                <p className="text-xs text-slate-500">最近本地备份</p>
+                <p className="mt-1">
+                  {props.syncStatus.latestBackup ? new Date(props.syncStatus.latestBackup.createdAt).toLocaleString("zh-CN") : "暂无"}
+                </p>
+              </div>
             </div>
             {props.syncStatus.hasUnqueuedLocalChanges ? (
               <div className="rounded-xl border border-red-300/70 bg-red-50 px-4 py-3 text-sm text-red-900">
@@ -678,6 +718,36 @@ export function SettingsLayer(props: {
             ) : null}
           </CardContent>
           <CardFooter className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={runManualPullCloud}
+              disabled={props.syncRepairing}
+            >
+              拉取云端
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={runManualUploadLocal}
+              disabled={props.syncRepairing}
+            >
+              上传本地
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700 disabled:opacity-40"
+              onClick={runRestoreLatestBackup}
+              disabled={props.syncRepairing || !props.syncStatus.latestBackup}
+            >
+              恢复本地备份
+            </Button>
             <Button
               type="button"
               size="sm"

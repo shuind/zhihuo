@@ -16,6 +16,7 @@ import {
   clearOfflineSnapshotByOwner,
   clearOfflineState,
   clearPinStatus,
+  createOfflineSyncBackup,
   createOfflineSnapshotMeta,
   disablePin,
   enablePin,
@@ -29,9 +30,11 @@ import {
   listOfflineSnapshotRecords,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
+  loadLatestOfflineSyncBackupByOwner,
   listOfflineMediaAssetsByOwner,
   listPendingOfflineMediaAssetsByOwner,
   removeOfflineMutation,
+  restoreOfflineSyncBackup,
   saveOfflineSnapshotByOwner,
   saveOfflineMediaAsset,
   updateOfflineMutation,
@@ -41,6 +44,7 @@ import {
   type OfflineMediaAssetRecord,
   type OfflineMediaAssetStatus,
   type OfflineSnapshotMeta,
+  type OfflineSyncBackupRecord,
   type QueuedMutation
 } from "@/components/offline-store";
 import { canAccessGuestMode, canUseCloudSync, isNativeAppRuntime } from "@/lib/capabilities";
@@ -420,7 +424,20 @@ type SyncRepairItemSummary = {
   createdAt: string;
 };
 
-type SyncPhase = "idle" | "checking" | "bootstrap" | "pull" | "push" | "conflict" | "repairing" | "ready" | "error";
+type SyncPhase =
+  | "idle"
+  | "checking"
+  | "bootstrap"
+  | "pull"
+  | "push"
+  | "conflict"
+  | "repairing"
+  | "manual_pull"
+  | "manual_push"
+  | "manual_upload_done"
+  | "manual_pull_done"
+  | "ready"
+  | "error";
 
 type SyncRepairSummary = {
   startedAt: string;
@@ -1420,6 +1437,7 @@ export function TimeArchive() {
   const [lastCanonicalSyncError, setLastCanonicalSyncError] = useState<string | null>(null);
   const [lastRepairSummary, setLastRepairSummary] = useState<SyncRepairSummary | null>(null);
   const [serverRepairItems, setServerRepairItems] = useState<SyncRepairItemSummary[]>([]);
+  const [latestSyncBackup, setLatestSyncBackup] = useState<OfflineSyncBackupRecord | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1555,6 +1573,14 @@ export function TimeArchive() {
         return "检测到冲突";
       case "repairing":
         return "同步刷新中";
+      case "manual_pull":
+        return "正在拉取云端";
+      case "manual_push":
+        return "正在上传本地改动";
+      case "manual_upload_done":
+        return "本地已上传";
+      case "manual_pull_done":
+        return "已拉取云端";
       case "ready":
         return "已收敛";
       case "error":
@@ -1666,6 +1692,15 @@ export function TimeArchive() {
             typeof nextSyncRetryAt === "number" && Number.isFinite(nextSyncRetryAt)
               ? new Date(nextSyncRetryAt).toISOString()
               : null,
+          latest_backup: latestSyncBackup
+            ? {
+                id: latestSyncBackup.id,
+                created_at: latestSyncBackup.createdAt,
+                reason: latestSyncBackup.reason,
+                mutation_count: latestSyncBackup.mutations.length,
+                media_count: latestSyncBackup.mediaAssets.length
+              }
+            : null,
           last_repair: lastRepairSummary
         },
         null,
@@ -1681,6 +1716,7 @@ export function TimeArchive() {
       lastCloudCheckedAt,
       lastRepairSummary,
       lastSyncError,
+      latestSyncBackup,
       nextSyncRetryAt,
       offlineMeta,
       offlineMediaAssets,
@@ -1718,6 +1754,20 @@ export function TimeArchive() {
       }
     }));
   }, [updateOfflineMeta]);
+
+  const refreshLatestSyncBackup = useCallback(async (ownerKey: OfflineOwnerKey | null = activeOwnerKey) => {
+    if (!ownerKey) {
+      setLatestSyncBackup(null);
+      return null;
+    }
+    const backup = await loadLatestOfflineSyncBackupByOwner(ownerKey);
+    setLatestSyncBackup(backup);
+    return backup;
+  }, [activeOwnerKey]);
+
+  useEffect(() => {
+    void refreshLatestSyncBackup(activeOwnerKey);
+  }, [activeOwnerKey, refreshLatestSyncBackup]);
 
   const refreshPendingMutationCount = useCallback(async (ownerKey: OfflineOwnerKey | null, includeDeferred = true) => {
     if (!ownerKey) {
@@ -2836,7 +2886,13 @@ export function TimeArchive() {
   const runQueuedMutationSync = useCallback(
     async (
       ownerKey: OfflineOwnerKey | null,
-      options?: { includeDeferred?: boolean; preferredSpaceId?: string | null; repairDepth?: number }
+      options?: {
+        includeDeferred?: boolean;
+        preferredSpaceId?: string | null;
+        repairDepth?: number;
+        pullAfterUpload?: boolean;
+        phase?: Extract<SyncPhase, "push" | "manual_push" | "repairing">;
+      }
     ) => {
       if (!ownerKey || !ownerKey.startsWith("user:")) {
         return { ok: true as const, pendingCount: 0, deadLetterCount: 0 };
@@ -2845,7 +2901,7 @@ export function TimeArchive() {
         return { ok: false as const, pendingCount: pendingMutationCount, deadLetterCount: deadLetterMutations.length };
       }
       offlineSyncingRef.current = true;
-      setSyncPhase(options?.repairDepth ? "repairing" : "push");
+      setSyncPhase(options?.phase ?? (options?.repairDepth ? "repairing" : "push"));
       try {
         const mediaReady = await syncPendingOfflineMediaAssets(ownerKey);
         if (!mediaReady) {
@@ -2941,7 +2997,9 @@ export function TimeArchive() {
                 return await runQueuedMutationSync(ownerKey, {
                   includeDeferred: true,
                   preferredSpaceId: options?.preferredSpaceId ?? activeSpaceIdRef.current,
-                  repairDepth: (options?.repairDepth ?? 0) + 1
+                  repairDepth: (options?.repairDepth ?? 0) + 1,
+                  pullAfterUpload: options?.pullAfterUpload,
+                  phase: options?.phase
                 });
               }
               await refreshDeadLetterMutations(ownerKey);
@@ -3059,7 +3117,8 @@ export function TimeArchive() {
             }));
             showNotice("部分离线改动未被云端接受，已移入同步异常");
           }
-          if (nextPendingCount === 0 && !hasMissingAcknowledgements) {
+          const shouldPullAfterUpload = options?.pullAfterUpload !== false;
+          if (nextPendingCount === 0 && !hasMissingAcknowledgements && shouldPullAfterUpload) {
             await refreshFromCloud(options?.preferredSpaceId ?? activeSpaceIdRef.current, ownerKey.slice(5), {
               allowLocalOverwrite: true
             });
@@ -3068,7 +3127,13 @@ export function TimeArchive() {
           if (repairMap.size === 0 && !hasMissingAcknowledgements && nextPendingCount === 0) {
             setLastSyncError(null);
           }
-          setSyncPhase(repairMap.size > 0 || hasMissingAcknowledgements || nextPendingCount > 0 ? "push" : "ready");
+          setSyncPhase(
+            repairMap.size > 0 || hasMissingAcknowledgements || nextPendingCount > 0
+              ? options?.phase ?? "push"
+              : shouldPullAfterUpload
+                ? "ready"
+                : "manual_upload_done"
+          );
           return {
             ok: repairMap.size === 0 && !hasMissingAcknowledgements,
             pendingCount: nextPendingCount,
@@ -4330,6 +4395,97 @@ export function TimeArchive() {
     },
     [createThinkingSpaceApi, hideLifeDoubtFromTimeline, showNotice]
   );
+
+  const manualPullCloud = useCallback(async () => {
+    const ownerKey = activeOwnerKey;
+    if (!ownerKey || !ownerKey.startsWith("user:") || !sessionUser) {
+      return { ok: false as const, error: "当前不在账号同步模式" };
+    }
+    if (!isOnline) {
+      return { ok: false as const, error: "当前离线，无法拉取云端" };
+    }
+    if (offlineSyncingRef.current) {
+      return { ok: false as const, error: "同步正在进行中" };
+    }
+    offlineSyncingRef.current = true;
+    setSyncPhase("manual_pull");
+    try {
+      const backup = await createOfflineSyncBackup(ownerKey, "manual_pull_cloud");
+      if (backup) setLatestSyncBackup(backup);
+      await refreshFromCloud(activeSpaceIdRef.current, sessionUser.userId, { allowLocalOverwrite: true });
+      await refreshCloudSyncState(sessionUser.userId);
+      await refreshPendingMutationCount(ownerKey, true);
+      await refreshDeadLetterMutations(ownerKey);
+      setLastSyncError(null);
+      setSyncPhase("manual_pull_done");
+      showNotice(backup ? "已拉取云端，本地备份可恢复" : "已拉取云端");
+      return { ok: true as const };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLastSyncError(message);
+      setSyncPhase("error");
+      return { ok: false as const, error: message };
+    } finally {
+      offlineSyncingRef.current = false;
+    }
+  }, [
+    activeOwnerKey,
+    isOnline,
+    refreshCloudSyncState,
+    refreshDeadLetterMutations,
+    refreshFromCloud,
+    refreshPendingMutationCount,
+    sessionUser,
+    showNotice
+  ]);
+
+  const manualUploadLocal = useCallback(async () => {
+    const ownerKey = activeOwnerKey;
+    if (!ownerKey || !ownerKey.startsWith("user:") || !sessionUser) {
+      return { ok: false as const, error: "当前不在账号同步模式" };
+    }
+    if (!isOnline) {
+      return { ok: false as const, error: "当前离线，无法上传本地改动" };
+    }
+    const result = await runQueuedMutationSync(ownerKey, {
+      includeDeferred: true,
+      preferredSpaceId: activeSpaceIdRef.current,
+      pullAfterUpload: false,
+      phase: "manual_push"
+    });
+    if (result.ok) {
+      await refreshCloudSyncState(sessionUser.userId);
+      showNotice("本地已上传，等待拉取云端结果");
+      return { ok: true as const };
+    }
+    return { ok: false as const, error: lastSyncError ?? "上传本地改动失败" };
+  }, [activeOwnerKey, isOnline, lastSyncError, refreshCloudSyncState, runQueuedMutationSync, sessionUser, showNotice]);
+
+  const restoreLatestSyncBackup = useCallback(async () => {
+    const ownerKey = activeOwnerKey;
+    const backup = latestSyncBackup ?? (await refreshLatestSyncBackup(ownerKey));
+    if (!ownerKey || !backup) return { ok: false as const, error: "暂无可恢复的本地备份" };
+    const restored = await restoreOfflineSyncBackup(backup.id);
+    if (!restored) return { ok: false as const, error: "恢复本地备份失败" };
+    const snapshot = await loadOfflineSnapshotByOwner(restored.ownerKey);
+    if (!snapshot) return { ok: false as const, error: "恢复后的快照不可用" };
+    applySnapshotToState(snapshot);
+    await refreshPendingMutationCount(restored.ownerKey, true);
+    await refreshDeadLetterMutations(restored.ownerKey);
+    await refreshLatestSyncBackup(restored.ownerKey);
+    setLastSyncError(null);
+    setSyncPhase("ready");
+    showNotice("已恢复本地备份");
+    return { ok: true as const };
+  }, [
+    activeOwnerKey,
+    applySnapshotToState,
+    latestSyncBackup,
+    refreshDeadLetterMutations,
+    refreshLatestSyncBackup,
+    refreshPendingMutationCount,
+    showNotice
+  ]);
 
   const handleCreateThinkingFromInput = useCallback(
     async (rawInput: string) => {
@@ -7431,10 +7587,27 @@ export function TimeArchive() {
                   lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
                   nextRetryAt: nextSyncRetryAt,
                   warning: syncWarning,
+                  latestBackup: latestSyncBackup
+                    ? {
+                        id: latestSyncBackup.id,
+                        createdAt: latestSyncBackup.createdAt,
+                        reason: latestSyncBackup.reason,
+                        mutationCount: latestSyncBackup.mutations.length,
+                        mediaCount: latestSyncBackup.mediaAssets.length
+                      }
+                    : null,
                   lastRepairSummary
                 }}
                 syncDiagnosticsReport={syncDiagnosticsReport}
-                syncRepairing={syncPhase === "repairing" || offlineRuntimeState === "user_syncing"}
+                syncRepairing={
+                  syncPhase === "repairing" ||
+                  syncPhase === "manual_pull" ||
+                  syncPhase === "manual_push" ||
+                  offlineRuntimeState === "user_syncing"
+                }
+                onManualPullCloud={manualPullCloud}
+                onManualUploadLocal={manualUploadLocal}
+                onRestoreLatestSyncBackup={restoreLatestSyncBackup}
                 onSyncRepair={handleSyncRepair}
                 deadLetterMutations={syncIssueMutations}
                 onDismissDeadLetter={dismissDeadLetterMutation}
