@@ -1025,13 +1025,27 @@ export function deleteDoubt(db: DbState, userId: string, doubtId: string) {
   return true;
 }
 
-export function upsertDoubtNote(db: DbState, userId: string, doubtId: string, noteText: string) {
+export function upsertDoubtNote(
+  db: DbState,
+  userId: string,
+  doubtId: string,
+  noteText: string,
+  options?: { noteId?: string | null; clientUpdatedAt?: string | null }
+) {
   const doubt = requireDoubt(db, userId, doubtId);
   if (!doubt) return null;
   const normalized = collapseWhitespace(noteText).slice(0, DOUBT_NOTE_MAX_LENGTH);
-  const existing = db.doubt_notes.find((item) => item.doubt_id === doubtId);
+  const requestedNoteId = typeof options?.noteId === "string" && options.noteId.trim() ? options.noteId.trim() : null;
+  const notes = db.doubt_notes
+    .filter((item) => item.doubt_id === doubtId)
+    .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
+  const existing = requestedNoteId
+    ? notes.find((item) => item.id === requestedNoteId) ?? null
+    : null;
   if (!normalized) {
-    db.doubt_notes = db.doubt_notes.filter((item) => item.doubt_id !== doubtId);
+    const deleteId = existing?.id ?? null;
+    if (!deleteId) return { deleted: true as const };
+    db.doubt_notes = db.doubt_notes.filter((item) => item.id !== deleteId);
     bumpUserRevision(db, userId);
     return { deleted: true as const };
   }
@@ -1041,7 +1055,12 @@ export function upsertDoubtNote(db: DbState, userId: string, doubtId: string, no
     bumpUserRevision(db, userId);
     return { deleted: false as const, note: existing };
   }
-  const note: DoubtNoteRecord = { id: createId(), doubt_id: doubtId, note_text: normalized, created_at: nowIso() };
+  const note: DoubtNoteRecord = {
+    id: requestedNoteId ?? createId(),
+    doubt_id: doubtId,
+    note_text: normalized,
+    created_at: options?.clientUpdatedAt ?? nowIso()
+  };
   db.doubt_notes.push(note);
   bumpUserRevision(db, userId);
   return { deleted: false as const, note };

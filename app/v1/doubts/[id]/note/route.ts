@@ -9,7 +9,12 @@ import { nowIso } from "@/lib/server/utils";
 export const POST = withApiRoute(
   "doubts.note",
   async (request: NextRequest, { params }: { params: { id: string } }) => {
-    const body = await parseJsonBody<{ note_text?: string; client_mutation_id?: string; client_updated_at?: string }>(request);
+    const body = await parseJsonBody<{
+      note_text?: string;
+      note_id?: string | null;
+      client_mutation_id?: string;
+      client_updated_at?: string;
+    }>(request);
     if (!body || typeof body.note_text !== "string") return errorJson(400, "note_text is required");
 
     const { clientMutationId, clientUpdatedAt } = extractClientMutationMeta(body);
@@ -21,7 +26,10 @@ export const POST = withApiRoute(
     let noteId: string | null = null;
     let noteUpdatedAt: string | null = null;
     await updateDbScoped(["doubts", "doubt_notes"], (db) => {
-      const result = upsertDoubtNote(db, userId, params.id, body.note_text ?? "");
+      const result = upsertDoubtNote(db, userId, params.id, body.note_text ?? "", {
+        noteId: body.note_id ?? null,
+        clientUpdatedAt
+      });
       if (!result) return;
       found = true;
       deleted = result.deleted;

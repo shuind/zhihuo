@@ -49,6 +49,7 @@ import {
   type LayerTab,
   type LifeDoubt,
   type LifeNote,
+  type LifeNoteSaveOptions,
   type ThinkingMediaAsset,
   type ThinkingSpace,
   type ThinkingScratchItem,
@@ -3337,16 +3338,21 @@ export function TimeArchive() {
   );
 
   const saveLifeDoubtNote = useCallback(
-    async (doubtId: string, noteText: string) => {
+    async (doubtId: string, noteText: string, options?: LifeNoteSaveOptions) => {
       const now = new Date().toISOString();
-      const payload = { note_text: noteText, client_updated_at: now };
+      const existingNoteId = typeof options?.noteId === "string" && options.noteId.trim() ? options.noteId.trim() : null;
+      const noteId = existingNoteId ?? createId();
+      const payload = { note_text: noteText, note_id: noteId, client_updated_at: now };
       await queueMutation(`/v1/doubts/${doubtId}/note`, payload);
       setLifeStore((prev) => {
-        const noteId = prev.notes.find((item) => item.doubtId === doubtId)?.id ?? createId();
         const cleaned = noteText.trim();
-        const nextNotes = cleaned
-          ? [...prev.notes.filter((item) => item.doubtId !== doubtId), { id: noteId, doubtId, noteText: cleaned, createdAt: now }]
-          : prev.notes.filter((item) => item.doubtId !== doubtId);
+        const nextNotes = existingNoteId
+          ? cleaned
+            ? prev.notes.map((item) => (item.id === existingNoteId && item.doubtId === doubtId ? { ...item, noteText: cleaned } : item))
+            : prev.notes.filter((item) => !(item.id === existingNoteId && item.doubtId === doubtId))
+          : cleaned
+            ? [...prev.notes, { id: noteId, doubtId, noteText: cleaned, createdAt: now }]
+            : prev.notes;
         return { ...prev, notes: nextNotes };
       });
       markLocalChange();

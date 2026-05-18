@@ -3,6 +3,7 @@ import { NextRequest } from "next/server"
 import { SCENE_CURATOR_SYSTEM_PROMPT } from "@/components/thinking/star-map/director/scene-prompt"
 import { validateScene } from "@/components/thinking/star-map/director/scene-validator"
 import type { Scene, SceneStar, SceneStrand } from "@/components/thinking/star-map/stage/scene-types"
+import { makeRng } from "@/components/thinking/star-map/stage/scene-compiler"
 import { DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL, normalizeAiApiSettings, normalizeBaseUrl } from "@/lib/ai-settings"
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http"
 import { logWarn, withApiRoute } from "@/lib/server/observability"
@@ -159,7 +160,7 @@ export const POST = withApiRoute(
     const repaired = repairSceneForThoughts(validated, thoughts, rootQuestion)
     if (!repaired) return errorJson(502, "star map curator scene has no usable stars")
 
-    return okJson({ scene: repaired })
+    return okJson({ scene: amplifyCuratedScene(repaired, thoughts, rootQuestion) })
   },
   { rateLimit: { bucket: "thinking-star-map-curate", max: 12, windowMs: 60 * 1000 } }
 )
@@ -236,6 +237,250 @@ function repairSceneForThoughts(scene: Scene, thoughts: ThoughtInput[], rootQues
     strands,
     ambientStarCount: scene.ambientStarCount,
   }
+}
+
+function amplifyCuratedScene(scene: Scene, thoughts: ThoughtInput[], rootQuestion: string): Scene {
+  const thoughtById = new Map(thoughts.map((thought) => [thought.id, thought]))
+  const rng = makeRng(`ai-curator-v2::${rootQuestion}::${thoughts.map((thought) => thought.id).join("|")}`)
+  const seenReal = new Set<string>()
+  const realStars: SceneStar[] = []
+  const decorativeStars: SceneStar[] = []
+
+  for (const star of scene.stars) {
+    if (star.nodeId && thoughtById.has(star.nodeId)) {
+      if (seenReal.has(star.nodeId)) continue
+      seenReal.add(star.nodeId)
+      realStars.push(star)
+    } else if (decorativeStars.length < 3) {
+      decorativeStars.push({
+        ...star,
+        role: "ambient",
+        text: undefined,
+        timestamp: undefined,
+        trackId: undefined,
+        nodeId: undefined,
+        halo: false,
+      })
+    }
+  }
+
+  for (const thought of thoughts) {
+    if (seenReal.has(thought.id)) continue
+    seenReal.add(thought.id)
+    realStars.push({
+      id: `s_${thought.id}`,
+      ring: 3,
+      angle: rng() * 360,
+      drift: (rng() - 0.5) * 1.8,
+      role: "ambient",
+      halo: false,
+      trackId: thought.trackId,
+      nodeId: thought.id,
+    })
+  }
+
+  if (!realStars.length) {
+    return {
+      core: { text: scene.core.text || rootQuestion, intensity: scene.core.intensity },
+      stars: decorativeStars,
+      strands: [],
+      ambientStarCount: scene.ambientStarCount ?? 90,
+    }
+  }
+
+  const total = realStars.length
+  const heroTarget = total <= 3 ? 1 : total <= 7 ? 2 : total <= 14 ? 3 : 4
+  const supportTarget = clampNumber(Math.round(total * 0.24), Math.min(1, Math.max(0, total - heroTarget)), Math.min(5, Math.max(0, total - heroTarget)))
+  const labelBudget = clampNumber(Math.floor(total * 0.38), heroTarget, Math.min(total, heroTarget + supportTarget))
+  const ranked = rankStarsForCuration(realStars, thoughtById)
+  const heroIds = new Set(ranked.slice(0, heroTarget).map((item) => item.star.id))
+  const supportIds = new Set(ranked.slice(heroTarget, heroTarget + supportTarget).map((item) => item.star.id))
+
+  const dominantAngle = wrapAngle(rng() * 360 + 18)
+  const counterAngle = wrapAngle(dominantAngle + 138 + rng() * 34)
+  const remoteAngle = wrapAngle(dominantAngle + 248 + rng() * 45)
+  const heroAngles = new Map<string, number>()
+  const heroByTrack = new Map<string, SceneStar>()
+  let labeledCount = 0
+
+  const nextStars = ranked.map(({ star }, index) => {
+    const thought = star.nodeId ? thoughtById.get(star.nodeId) : null
+    const isHero = heroIds.has(star.id)
+    const isSupport = supportIds.has(star.id)
+
+    if (isHero) {
+      const heroIndex = [...heroIds].indexOf(star.id)
+      const angle =
+        heroIndex === 0
+          ? dominantAngle + (rng() - 0.5) * 16
+          : heroIndex === 1
+            ? counterAngle + (rng() - 0.5) * 20
+            : remoteAngle + heroIndex * 29 + (rng() - 0.5) * 24
+      const next: SceneStar = {
+        ...star,
+        role: "hero",
+        ring: heroIndex === 0 ? 1 : 2,
+        angle: wrapAngle(angle),
+        drift: (rng() - 0.5) * 1.2,
+        halo: heroIndex < 2,
+        text: thought ? cleanCuratedText(thought) : star.text,
+        timestamp: thought?.timeLabel ?? star.timestamp,
+      }
+      labeledCount += next.text ? 1 : 0
+      heroAngles.set(next.id, next.angle)
+      if (next.trackId && !heroByTrack.has(next.trackId)) heroByTrack.set(next.trackId, next)
+      return next
+    }
+
+    const nearestHero = pickHeroForStar(star, ranked, heroIds, heroByTrack)
+    const heroAngle = nearestHero ? heroAngles.get(nearestHero.id) ?? nearestHero.angle : dominantAngle
+    if (isSupport) {
+      const side = index % 2 === 0 ? 1 : -1
+      const showText = labeledCount < labelBudget
+      const next: SceneStar = {
+        ...star,
+        role: "support",
+        ring: rng() < 0.52 ? 2 : 3,
+        angle: wrapAngle(heroAngle + side * (32 + rng() * 48) + (rng() - 0.5) * 14),
+        drift: (rng() - 0.5) * 1.8,
+        halo: false,
+        text: showText && thought ? cleanCuratedText(thought) : undefined,
+        timestamp: showText ? thought?.timeLabel ?? star.timestamp : undefined,
+      }
+      labeledCount += next.text ? 1 : 0
+      return next
+    }
+
+    const isEcho = rng() < 0.42 || (thought?.note || thought?.answer ? rng() < 0.62 : false)
+    return {
+      ...star,
+      role: isEcho ? "echo" : "ambient",
+      ring: rng() < 0.68 ? 3 : 4,
+      angle: wrapAngle(heroAngle + 95 + (rng() - 0.5) * 168),
+      drift: (rng() - 0.5) * 2,
+      halo: false,
+      text: undefined,
+      timestamp: undefined,
+    } satisfies SceneStar
+  })
+
+  const finalDecorative = decorativeStars.map((star, index) => ({
+    ...star,
+    id: uniqueStarId(`curator_dust_${index}`, new Set(nextStars.map((item) => item.id))),
+    ring: 4 as const,
+    angle: wrapAngle(remoteAngle + index * 37 + rng() * 28),
+    drift: (rng() - 0.5) * 2,
+  }))
+
+  const strands = buildCuratedStrands(nextStars, scene.strands, rng, total)
+
+  return {
+    core: {
+      text: scene.core.text || rootQuestion,
+      intensity: Math.max(1, scene.core.intensity) as 1 | 2,
+    },
+    stars: [...nextStars, ...finalDecorative],
+    strands,
+    ambientStarCount: clampNumber(75 + Math.floor(total * 1.9), 80, 165),
+  }
+}
+
+function rankStarsForCuration(stars: SceneStar[], thoughtById: Map<string, ThoughtInput>) {
+  const times = stars
+    .map((star) => (star.nodeId ? new Date(thoughtById.get(star.nodeId)?.createdAt ?? "").getTime() : Number.NaN))
+    .filter(Number.isFinite)
+  const minTime = times.length ? Math.min(...times) : Date.now()
+  const maxTime = times.length ? Math.max(...times) : minTime + 1
+  const span = Math.max(1, maxTime - minTime)
+  return stars
+    .map((star) => {
+      const thought = star.nodeId ? thoughtById.get(star.nodeId) : null
+      const time = thought?.createdAt ? new Date(thought.createdAt).getTime() : minTime
+      const recency = Number.isFinite(time) ? (time - minTime) / span : 0
+      const roleBias = star.role === "hero" ? 1.1 : star.role === "support" ? 0.55 : star.role === "echo" ? 0.18 : 0
+      const richness =
+        (thought?.note ? 0.38 : 0) +
+        (thought?.answer ? 0.5 : 0) +
+        (thought?.hasImage ? 0.42 : 0) +
+        Math.min((thought?.text.length ?? 0) / 90, 1) * 0.24
+      const concreteness = /[0-9]|为什么|怎么|不能|害怕|想要|必须|一直|突然/.test(thought?.text ?? "") ? 0.28 : 0
+      return {
+        star,
+        score: roleBias + richness + concreteness + recency * 0.32,
+      }
+    })
+    .sort((a, b) => b.score - a.score)
+}
+
+function pickHeroForStar(
+  star: SceneStar,
+  ranked: Array<{ star: SceneStar; score: number }>,
+  heroIds: Set<string>,
+  heroByTrack: Map<string, SceneStar>
+) {
+  if (star.trackId) {
+    const sameTrack = heroByTrack.get(star.trackId)
+    if (sameTrack) return sameTrack
+  }
+  return ranked.find((item) => heroIds.has(item.star.id))?.star ?? null
+}
+
+function buildCuratedStrands(stars: SceneStar[], aiStrands: SceneStrand[], rng: () => number, total: number): SceneStrand[] {
+  const byId = new Map(stars.map((star) => [star.id, star]))
+  const heroes = stars.filter((star) => star.role === "hero")
+  const supports = stars.filter((star) => star.role === "support")
+  const limit = clampNumber(Math.round(total * 0.45), Math.min(2, Math.max(0, total - 1)), 8)
+  const strands: SceneStrand[] = []
+  const seen = new Set<string>()
+
+  function add(fromId: string | undefined, toId: string | undefined, weight: number, dustCount: number) {
+    if (!fromId || !toId || fromId === toId) return
+    if (!byId.has(fromId) || !byId.has(toId)) return
+    const key = [fromId, toId].sort().join("::")
+    if (seen.has(key) || strands.length >= limit) return
+    seen.add(key)
+    strands.push({
+      id: `curated_${strands.length}_${fromId}_${toId}`,
+      fromId,
+      toId,
+      weight,
+      detour: (rng() - 0.5) * 1.7,
+      dustCount,
+    })
+  }
+
+  for (const support of supports) {
+    const sameTrackHero = support.trackId ? heroes.find((hero) => hero.trackId === support.trackId) : null
+    const hero = sameTrackHero ?? heroes[Math.floor(rng() * Math.max(1, heroes.length))]
+    add(hero?.id, support.id, 0.45 + rng() * 0.2, 3 + Math.floor(rng() * 3))
+  }
+
+  for (let index = 0; index < heroes.length - 1; index += 1) {
+    add(heroes[index]?.id, heroes[index + 1]?.id, 0.55 + rng() * 0.22, 4 + Math.floor(rng() * 3))
+  }
+
+  for (const strand of aiStrands) {
+    const from = byId.get(strand.fromId)
+    const to = byId.get(strand.toId)
+    if (!from || !to) continue
+    if (from.role === "ambient" && to.role === "ambient") continue
+    add(from.id, to.id, Math.max(0.28, Math.min(0.82, strand.weight)), strand.dustCount ?? 3)
+  }
+
+  return strands
+}
+
+function cleanCuratedText(thought: ThoughtInput) {
+  const raw = thought.text || thought.answer || thought.note || ""
+  return trimText(raw.replace(/\s+/g, " "), 54)
+}
+
+function clampNumber(value: number, min: number, max: number) {
+  return Math.max(min, Math.min(max, value))
+}
+
+function wrapAngle(value: number) {
+  return ((value % 360) + 360) % 360
 }
 
 function uniqueStarId(base: string, seen: Set<string>) {

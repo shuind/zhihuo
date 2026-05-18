@@ -9,6 +9,8 @@ import { cn } from "@/lib/utils";
 
 import {
   type LifeDoubt,
+  type LifeNote,
+  type LifeNoteSaveOptions,
   type LifeStore,
   type OpeningPhase,
   type StarDot,
@@ -31,6 +33,7 @@ type DateGroup = {
 
 const EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
 const EASE_GENTLE: [number, number, number, number] = [0.2, 0.72, 0.22, 1];
+const REFLECTION_CONTINUE_WINDOW_MS = 10 * 60 * 1000;
 
 export function LifeLayer(props: {
   store: LifeStore;
@@ -41,7 +44,7 @@ export function LifeLayer(props: {
   stars: StarDot[];
   onImportToThinking: (doubt: LifeDoubt) => void;
   onCreateDoubt: (rawText: string) => Promise<boolean>;
-  onSaveDoubtNote: (doubtId: string, noteText: string) => Promise<boolean>;
+  onSaveDoubtNote: (doubtId: string, noteText: string, options?: LifeNoteSaveOptions) => Promise<boolean>;
   onDeleteDoubt: (doubtId: string) => Promise<boolean>;
   editable?: boolean;
   showNotice: (message: string) => void;
@@ -70,11 +73,31 @@ export function LifeLayer(props: {
     [props.store.doubts]
   );
 
-  const notesMap = useMemo(() => {
-    const map = new Map<string, string>();
-    for (const note of props.store.notes) map.set(note.doubtId, note.noteText);
+  const notesByDoubtMap = useMemo(() => {
+    const map = new Map<string, LifeNote[]>();
+    for (const note of props.store.notes) {
+      const list = map.get(note.doubtId);
+      if (list) list.push(note);
+      else map.set(note.doubtId, [note]);
+    }
+    for (const [doubtId, notes] of map) map.set(doubtId, sortReflectionNotes(notes));
     return map;
   }, [props.store.notes]);
+
+  const latestNotesMap = useMemo(() => {
+    const map = new Map<string, LifeNote>();
+    for (const [doubtId, notes] of notesByDoubtMap) {
+      const latest = notes[0];
+      if (latest) map.set(doubtId, latest);
+    }
+    return map;
+  }, [notesByDoubtMap]);
+
+  const latestNoteTextMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const [doubtId, note] of latestNotesMap) map.set(doubtId, note.noteText);
+    return map;
+  }, [latestNotesMap]);
 
   const selectedDoubt = useMemo(() => allDoubts.find((item) => item.id === selectedDoubtId) ?? null, [allDoubts, selectedDoubtId]);
   const isSplitView = Boolean(selectedDoubt);
@@ -145,7 +168,8 @@ export function LifeLayer(props: {
   }, []);
 
   const saveLifeNote = useCallback(
-    async (doubtId: string, noteText: string) => props.onSaveDoubtNote(doubtId, collapseWhitespace(noteText).slice(0, LIFE_NOTE_MAX_LENGTH)),
+    async (doubtId: string, noteText: string, options?: LifeNoteSaveOptions) =>
+      props.onSaveDoubtNote(doubtId, collapseWhitespace(noteText).slice(0, LIFE_NOTE_MAX_LENGTH), options),
     [props]
   );
 
@@ -331,7 +355,7 @@ export function LifeLayer(props: {
                       items={group.items}
                       mode={!isMobile && !isSplitView ? "home-desktop" : !isMobile ? "split" : "mobile"}
                       selectedId={selectedDoubtId}
-                      notesMap={notesMap}
+                      notesMap={latestNoteTextMap}
                       rowRefs={rowRefs}
                       onSelect={handleSelect}
                     />
@@ -348,11 +372,11 @@ export function LifeLayer(props: {
               key="detail-panel"
               doubt={selectedDoubt}
               timezone={props.timezone}
-              noteText={notesMap.get(selectedDoubt.id) ?? ""}
+              notes={notesByDoubtMap.get(selectedDoubt.id) ?? []}
               onClose={closeDetail}
               onDelete={() => setDeleteId(selectedDoubt.id)}
               onImport={() => props.onImportToThinking(selectedDoubt)}
-              onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
+              onSaveNote={(value, options) => void saveLifeNote(selectedDoubt.id, value, options)}
             />
           ) : null}
         </AnimatePresence>
@@ -364,12 +388,12 @@ export function LifeLayer(props: {
             key="mobile-detail-drawer"
             doubt={selectedDoubt}
             timezone={props.timezone}
-            noteText={notesMap.get(selectedDoubt.id) ?? ""}
+            notes={notesByDoubtMap.get(selectedDoubt.id) ?? []}
             onOpenSearch={openMobileSearch}
             onClose={closeDetail}
             onDelete={() => setDeleteId(selectedDoubt.id)}
             onImport={() => props.onImportToThinking(selectedDoubt)}
-            onSaveNote={(value) => void saveLifeNote(selectedDoubt.id, value)}
+            onSaveNote={(value, options) => void saveLifeNote(selectedDoubt.id, value, options)}
           />
         ) : null}
       </AnimatePresence>
@@ -534,11 +558,11 @@ function TimeEntryCard(props: {
 function DetailPanel(props: {
   doubt: LifeDoubt;
   timezone: string;
-  noteText: string;
+  notes: LifeNote[];
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onSaveNote: (value: string) => void;
+  onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
 }) {
   return (
     <motion.aside
@@ -557,12 +581,12 @@ function DetailPanel(props: {
 function MobileDetailDrawer(props: {
   doubt: LifeDoubt;
   timezone: string;
-  noteText: string;
+  notes: LifeNote[];
   onOpenSearch: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onSaveNote: (value: string) => void;
+  onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
 }) {
   return (
     <motion.section
@@ -592,15 +616,21 @@ function MobileDetailDrawer(props: {
 function DetailBody(props: {
   doubt: LifeDoubt;
   timezone: string;
-  noteText: string;
+  notes: LifeNote[];
   onOpenSearch?: () => void;
   onClose: () => void;
   onDelete: () => void;
   onImport: () => void;
-  onSaveNote: (value: string) => void;
+  onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
   compact?: boolean;
 }) {
-  const currentNoteText = props.noteText;
+  const reflectionNotes = useMemo(() => sortReflectionNotes(props.notes), [props.notes]);
+  const latestReflectionNote = reflectionNotes[0] ?? null;
+  const canContinueLatestReflection = Boolean(
+    latestReflectionNote && Date.now() - new Date(latestReflectionNote.createdAt).getTime() <= REFLECTION_CONTINUE_WINDOW_MS
+  );
+  const currentEditableNote = canContinueLatestReflection ? latestReflectionNote : null;
+  const currentNoteText = currentEditableNote?.noteText ?? "";
   const saveNote = props.onSaveNote;
   const firstTrackNode = collapseWhitespace(props.doubt.firstNodePreview ?? "");
   const lastTrackNode = collapseWhitespace(props.doubt.lastNodePreview ?? firstTrackNode);
@@ -609,15 +639,17 @@ function DetailBody(props: {
     [props.doubt.letterLines]
   );
   const [letterPreviewOpen, setLetterPreviewOpen] = useState(false);
+  const [reflectionHistoryOpen, setReflectionHistoryOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState(currentNoteText);
 
   useEffect(() => {
     setLetterPreviewOpen(false);
+    setReflectionHistoryOpen(false);
   }, [props.doubt.id]);
 
   useEffect(() => {
     setNoteDraft(currentNoteText);
-  }, [props.doubt.id, currentNoteText]);
+  }, [props.doubt.id, currentEditableNote?.id, currentNoteText]);
 
   const writtenAt = useMemo(() => new Date(props.doubt.createdAt), [props.doubt.createdAt]);
   const dateLabel = useMemo(
@@ -683,10 +715,11 @@ function DetailBody(props: {
 
   const commitNote = useCallback(() => {
     const next = collapseWhitespace(noteDraft).slice(0, LIFE_NOTE_MAX_LENGTH);
+    if (!currentEditableNote && !next) return;
     if (next === currentNoteText) return;
     setNoteDraft(next);
-    saveNote(next);
-  }, [currentNoteText, noteDraft, saveNote]);
+    saveNote(next, { noteId: currentEditableNote?.id ?? null });
+  }, [currentEditableNote, currentNoteText, noteDraft, saveNote]);
 
   const handlePrimaryAction = () => {
     props.onClose();
@@ -699,7 +732,9 @@ function DetailBody(props: {
     props.onImport();
   };
 
-  const noteStateLabel = collapseWhitespace(noteDraft) ? "已写回看" : "等待回看";
+  const latestEchoNote = canContinueLatestReflection ? reflectionNotes[1] ?? null : latestReflectionNote;
+  const noteStateLabel = currentEditableNote ? "继续这次回看" : latestReflectionNote ? "写下新的回看" : "等待回看";
+  const reflectionCount = reflectionNotes.length;
   const letterHint = storedLetterLines.length
     ? `${storedLetterLines.length} 行沉淀`
     : hasThoughtTrace
@@ -775,6 +810,15 @@ function DetailBody(props: {
                   </div>
                   <span className="text-[11px] tabular-nums tracking-[0.04em] text-[rgba(132,140,146,0.4)]">{noteDraft.length}/{LIFE_NOTE_MAX_LENGTH}</span>
                 </div>
+                {latestEchoNote ? (
+                  <div className="mt-4 border-l border-white/[0.055] pl-4">
+                    <div className="mb-1.5 flex items-center gap-3 text-[11px] tracking-[0.08em] text-[rgba(132,140,146,0.44)]">
+                      <span>最近回看</span>
+                      <time>{formatDateTimeInTimeZone(latestEchoNote.createdAt, props.timezone)}</time>
+                    </div>
+                    <p className="text-[14px] leading-[1.78] text-[rgba(180,188,193,0.7)]">{latestEchoNote.noteText}</p>
+                  </div>
+                ) : null}
                 <Textarea
                   value={noteDraft}
                   maxLength={LIFE_NOTE_MAX_LENGTH}
@@ -787,6 +831,40 @@ function DetailBody(props: {
                   onChange={(event) => setNoteDraft(event.target.value)}
                   onBlur={commitNote}
                 />
+                {reflectionCount > 1 ? (
+                  <div className="mt-4 border-t border-white/[0.035] pt-3">
+                    <button
+                      type="button"
+                      className="flex w-full items-center justify-between text-[12px] tracking-[0.08em] text-[rgba(146,154,160,0.54)] transition-colors duration-500 hover:text-[rgba(202,210,214,0.78)]"
+                      onClick={() => setReflectionHistoryOpen((open) => !open)}
+                    >
+                      <span>{`回看过 ${reflectionCount} 次`}</span>
+                      <span>{reflectionHistoryOpen ? "收起回声" : "展开回声"}</span>
+                    </button>
+                    <AnimatePresence initial={false}>
+                      {reflectionHistoryOpen ? (
+                        <motion.div
+                          className="mt-4 space-y-4 border-l border-white/[0.045] pl-4"
+                          initial={{ opacity: 0, y: -4 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: -4 }}
+                          transition={{ duration: 0.28, ease: EASE_GENTLE }}
+                        >
+                          {reflectionNotes.map((note, index) => (
+                            <div key={note.id} className="relative">
+                              <span className="absolute -left-[1.13rem] top-2 h-1.5 w-1.5 rounded-full bg-[rgba(184,194,200,0.34)]" />
+                              <div className="flex flex-wrap items-center gap-3 text-[11px] tracking-[0.08em] text-[rgba(132,140,146,0.44)]">
+                                <time>{formatDateTimeInTimeZone(note.createdAt, props.timezone)}</time>
+                                {index === 0 ? <span>最近</span> : null}
+                              </div>
+                              <p className="mt-1.5 text-[13px] leading-[1.78] text-[rgba(176,184,190,0.68)]">{note.noteText}</p>
+                            </div>
+                          ))}
+                        </motion.div>
+                      ) : null}
+                    </AnimatePresence>
+                  </div>
+                ) : null}
               </div>
             </section>
 
@@ -907,6 +985,14 @@ function LifeOpeningOverlay(props: { phase: OpeningPhase; stars: StarDot[] }) {
       </div>
     </motion.div>
   );
+}
+
+function sortReflectionNotes(notes: LifeNote[]) {
+  return [...notes].sort((a, b) => {
+    const byDate = new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    if (Number.isFinite(byDate) && byDate !== 0) return byDate;
+    return b.id.localeCompare(a.id);
+  });
 }
 
 function formatGroupLabel(dateKey: string, timeZone: string) {

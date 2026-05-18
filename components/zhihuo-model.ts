@@ -26,6 +26,10 @@ export type LifeNote = {
   createdAt: string;
 };
 
+export type LifeNoteSaveOptions = {
+  noteId?: string | null;
+};
+
 export type LifeStore = {
   doubts: LifeDoubt[];
   notes: LifeNote[];
@@ -465,12 +469,15 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
     archivedAt: item.archivedAt ? toIso(item.archivedAt) : null,
     deletedAt: item.deletedAt ? toIso(item.deletedAt) : null
   })).filter((item) => item.rawText);
-  const notes = (store.notes ?? []).map((item) => ({
-    id: typeof item.id === "string" ? item.id : createId(),
-    doubtId: typeof item.doubtId === "string" ? item.doubtId : "",
-    noteText: collapseWhitespace(typeof item.noteText === "string" ? item.noteText : "").slice(0, LIFE_NOTE_MAX_LENGTH),
-    createdAt: toIso(item.createdAt)
-  })).filter((item) => item.doubtId && item.noteText);
+  const notes = (store.notes ?? [])
+    .map((item) => ({
+      id: typeof item.id === "string" ? item.id : createId(),
+      doubtId: typeof item.doubtId === "string" ? item.doubtId : "",
+      noteText: collapseWhitespace(typeof item.noteText === "string" ? item.noteText : "").slice(0, LIFE_NOTE_MAX_LENGTH),
+      createdAt: toIso(item.createdAt)
+    }))
+    .filter((item) => item.doubtId && item.noteText)
+    .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
   return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen) } };
 }
 

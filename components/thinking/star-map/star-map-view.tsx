@@ -204,6 +204,10 @@ export function StarMapView({
     () => applyStarPlacements(scene, starPlacements),
     [scene, starPlacements]
   )
+  const curationTrace = useMemo(
+    () => (curatedScene ? buildCurationTrace(curatedScene, fallbackScene) : null),
+    [curatedScene, fallbackScene]
+  )
   const selectedStarId = selected ? `s_${selected.nodeId}` : null
   const showDetail = selected !== null
   const canCurate = thoughtCount >= 2 && !frozen
@@ -328,6 +332,19 @@ export function StarMapView({
           </div>
         </div>
 
+        {curationTrace ? (
+          <div className="pointer-events-none absolute left-8 top-[88px] max-w-[300px] select-none rounded-[8px] border border-[#242016] bg-[#0f0e0b]/42 px-3.5 py-3 shadow-[0_18px_46px_rgba(0,0,0,0.18)] backdrop-blur-sm">
+            <div className="text-[10px] uppercase tracking-[0.16em] text-[#706b5f]">策展痕迹</div>
+            <div className="mt-2 space-y-1.5">
+              {curationTrace.lines.map((line) => (
+                <div key={line} className="text-[11.5px] leading-[1.55] tracking-[0.03em] text-[#bdb6a4]">
+                  {line}
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+
         {frozen ? (
           <div className="pointer-events-none absolute right-6 top-7 text-[11px] tracking-[0.08em] text-[#5b584f]">
             已写入时间
@@ -407,6 +424,36 @@ export function StarMapView({
       </div>
     </div>
   )
+}
+
+function buildCurationTrace(curated: Scene, fallback: Scene) {
+  const fallbackById = new Map(fallback.stars.map((star) => [star.id, star]))
+  const realStars = curated.stars.filter((star) => star.nodeId)
+  const heroes = realStars.filter((star) => star.role === "hero")
+  const labeledCount = realStars.filter((star) => Boolean(star.text)).length
+  const silentCount = Math.max(0, realStars.length - labeledCount)
+  const movedCount = realStars.filter((star) => {
+    const before = fallbackById.get(star.id)
+    if (!before) return true
+    return before.role !== star.role || before.ring !== star.ring || angleDistance(before.angle, star.angle) > 28
+  }).length
+  const heroText = heroes
+    .map((star) => star.text?.trim())
+    .filter((text): text is string => Boolean(text))
+    .slice(0, 2)
+    .map((text) => (text.length > 22 ? `${text.slice(0, 21)}…` : text))
+    .join(" / ")
+
+  const lines: string[] = []
+  if (heroText) lines.push(`主星：${heroText}`)
+  lines.push(`压暗 ${silentCount} 条想法，只点亮 ${labeledCount} 条`)
+  lines.push(`重排 ${movedCount} 颗星，留下 ${curated.strands.length} 条牵引`)
+  return { lines }
+}
+
+function angleDistance(a: number, b: number) {
+  const delta = Math.abs((((a - b) % 360) + 540) % 360 - 180)
+  return Number.isFinite(delta) ? delta : 0
 }
 
 function hashTracks(tracks: ThinkingTrackView[]): string {
