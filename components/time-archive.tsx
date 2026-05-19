@@ -13,6 +13,7 @@ import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-lay
 import {
   changePin,
   clearOfflineOwnerState,
+  clearOfflineMutationsByOwner,
   clearOfflineSnapshotByOwner,
   clearOfflineState,
   clearPinStatus,
@@ -434,8 +435,10 @@ type SyncPhase =
   | "repairing"
   | "manual_pull"
   | "manual_push"
+  | "manual_overwrite"
   | "manual_upload_done"
   | "manual_pull_done"
+  | "manual_overwrite_done"
   | "ready"
   | "error";
 
@@ -1577,10 +1580,14 @@ export function TimeArchive() {
         return "正在拉取云端";
       case "manual_push":
         return "正在上传本地改动";
+      case "manual_overwrite":
+        return "正在用本地覆盖云端";
       case "manual_upload_done":
         return "本地已上传";
       case "manual_pull_done":
         return "已拉取云端";
+      case "manual_overwrite_done":
+        return "本地已覆盖云端";
       case "ready":
         return "已收敛";
       case "error":
@@ -2174,7 +2181,31 @@ export function TimeArchive() {
 
   const buildLocalExportPayload = useCallback(
     async (user: SessionUser, ownerKey: OfflineOwnerKey | null): Promise<UserExportPayload> => {
-      const mediaAssets = ownerKey ? await listOfflineMediaAssetsByOwner(ownerKey) : offlineMediaAssets;
+      const storedMediaAssets = ownerKey ? await listOfflineMediaAssetsByOwner(ownerKey) : offlineMediaAssets;
+      const mediaAssetsById = new Map(storedMediaAssets.map((asset) => [asset.id, asset]));
+      const fallbackOwnerKey = ownerKey ?? getUserOwnerKey(user.userId);
+      for (const asset of thinkingStore.mediaAssets) {
+        if (mediaAssetsById.has(asset.id)) continue;
+        mediaAssetsById.set(asset.id, {
+          id: asset.id,
+          ownerKey: fallbackOwnerKey,
+          fileName: asset.fileName,
+          mimeType: asset.mimeType,
+          byteSize: asset.byteSize,
+          sha256: asset.sha256,
+          width: asset.width,
+          height: asset.height,
+          status: "uploaded",
+          blob: null,
+          remoteUrl: buildApiUrl(`/v1/thinking/media/${asset.id}`),
+          createdAt: asset.createdAt,
+          updatedAt: asset.uploadedAt ?? asset.createdAt,
+          uploadedAt: asset.uploadedAt ?? asset.createdAt,
+          deletedAt: asset.deletedAt,
+          lastError: null
+        });
+      }
+      const mediaAssets = [...mediaAssetsById.values()];
       const serializableMediaAssets = await Promise.all(
         mediaAssets
           .filter((asset) => !asset.deletedAt)
@@ -2188,7 +2219,7 @@ export function TimeArchive() {
                 blob = null;
               }
             }
-            if (!blob) return null;
+            if (!blob && asset.status === "pending" && !asset.remoteUrl && !asset.uploadedAt) return null;
             return {
               id: asset.id,
               user_id: user.userId,
@@ -2201,10 +2232,18 @@ export function TimeArchive() {
               created_at: asset.createdAt,
               uploaded_at: asset.uploadedAt,
               deleted_at: asset.deletedAt,
-              content_base64: await blobToBase64(blob)
+              content_base64: blob ? await blobToBase64(blob) : ""
             };
           })
       );
+      const viewNodeById = new Map<string, { noteText?: string | null; answerText?: string | null }>();
+      for (const view of Object.values(thinkingViewCacheRef.current)) {
+        for (const track of view.tracks) {
+          for (const node of track.nodes) {
+            viewNodeById.set(node.id, { noteText: node.noteText, answerText: node.answerText });
+          }
+        }
+      }
 
       return {
         version: "2026-03-03",
@@ -2248,6 +2287,8 @@ export function TimeArchive() {
             parentNodeId: item.parentNodeId,
             rawQuestionText: item.rawQuestionText,
             imageAssetId: item.imageAssetId ?? null,
+            noteText: viewNodeById.get(item.id)?.noteText ?? null,
+            answerText: viewNodeById.get(item.id)?.answerText ?? null,
             createdAt: item.createdAt,
             orderIndex: item.orderIndex,
             isSuggested: item.isSuggested,
@@ -2293,7 +2334,17 @@ export function TimeArchive() {
         audit: []
       };
     },
-    [lifeStore.doubts, lifeStore.notes, offlineMediaAssets, thinkingStore.inbox, thinkingStore.nodes, thinkingStore.scratch, thinkingStore.spaceMeta, thinkingStore.spaces]
+    [
+      lifeStore.doubts,
+      lifeStore.notes,
+      offlineMediaAssets,
+      thinkingStore.inbox,
+      thinkingStore.mediaAssets,
+      thinkingStore.nodes,
+      thinkingStore.scratch,
+      thinkingStore.spaceMeta,
+      thinkingStore.spaces
+    ]
   );
 
   const getLocalSpaceView = useCallback(
@@ -2698,6 +2749,114 @@ export function TimeArchive() {
       return true;
     },
     [activeOwnerKey, buildLocalExportPayload, handleUnauthorized, offlineMeta?.completeness, refreshFromCloud, showNotice, thinkingStore, updateOfflineMeta]
+  );
+
+  const overwriteCloudWithLocalSnapshot = useCallback(
+    async (user: SessionUser, ownerKey: OfflineOwnerKey, reason: string) => {
+      const incompleteSpaceIds = getIncompleteSpaceIdsForExport(thinkingStore, thinkingViewCacheRef.current);
+      if (incompleteSpaceIds.length > 0) {
+        return { ok: false as const, error: "本地思路内容未完整加载，已阻止覆盖云端" };
+      }
+      const snapshotMeta = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+        ownerMode: "user",
+        boundUserId: user.userId,
+        revision: offlineMeta?.revision ?? latestRevisionRef.current,
+        completeness: offlineMeta?.completeness ?? "complete",
+        lastAppliedLogId: offlineMeta?.lastAppliedLogId ?? null,
+        syncState: {
+          lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
+          hasLocalChanges: offlineMeta?.syncState.hasLocalChanges === true,
+          bindingRequired: false
+        }
+      });
+      if (thinkingView) {
+        thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
+      }
+      await saveOfflineSnapshotByOwner(ownerKey, {
+        lifeStore,
+        thinkingStore,
+        activeSpaceId,
+        thinkingViews: thinkingViewCacheRef.current,
+        savedAt: new Date().toISOString(),
+        meta: snapshotMeta
+      });
+      const backup = await createOfflineSyncBackup(ownerKey, reason);
+      if (backup) setLatestSyncBackup(backup);
+
+      const payload = await buildLocalExportPayload(user, ownerKey);
+      const checksum = await sha256Hex(stableStringify(payload));
+      const response = await apiFetch("/v1/sync/overwrite", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          payload,
+          checksum,
+          client_updated_at: new Date().toISOString(),
+          reason
+        })
+      });
+      if (handleUnauthorized(response)) {
+        return { ok: false as const, error: "登录已失效，请重新登录" };
+      }
+      const responseBody = (await response.json().catch(() => ({}))) as {
+        error?: string;
+        revision?: number;
+        lastSequence?: number;
+      };
+      if (!response.ok) {
+        return { ok: false as const, error: typeof responseBody.error === "string" ? responseBody.error : "本地覆盖云端失败" };
+      }
+
+      const nextRevision = Number.isFinite(responseBody.revision) ? Number(responseBody.revision) : latestRevisionRef.current;
+      const nextLastSequence = Number.isFinite(responseBody.lastSequence) ? Number(responseBody.lastSequence) : cloudLastSequence;
+      const overwrittenAt = new Date().toISOString();
+      const overwrittenAssetIds = new Set(
+        (payload.thinking.media_assets ?? [])
+          .map((asset) => asset.id)
+          .filter((assetId): assetId is string => typeof assetId === "string" && assetId.trim().length > 0)
+      );
+      await Promise.all(
+        [...overwrittenAssetIds].map((assetId) =>
+          updateOfflineMediaAsset(assetId, {
+            status: "uploaded",
+            remoteUrl: buildApiUrl(`/v1/thinking/media/${assetId}`),
+            uploadedAt: overwrittenAt,
+            lastError: null,
+            blob: null
+          })
+        )
+      );
+      await clearOfflineMutationsByOwner(ownerKey);
+      await refreshPendingMutationCount(ownerKey, true);
+      await refreshDeadLetterMutations(ownerKey);
+      await refreshOfflineMediaAssets(ownerKey);
+      setCloudRevision(typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : null);
+      if (typeof nextLastSequence === "number" && Number.isFinite(nextLastSequence)) {
+        setCloudLastSequence(nextLastSequence);
+      }
+      setLastCloudCheckedAt(new Date().toISOString());
+      setLastSyncError(null);
+      setLastCanonicalSyncError(null);
+      markCloudSynced(user.userId, typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : null, {
+        hasLocalChanges: false
+      });
+      setOfflineRuntimeState("user_sync_ready");
+      return { ok: true as const, backupCreated: Boolean(backup) };
+    },
+    [
+      buildLocalExportPayload,
+      cloudLastSequence,
+      handleUnauthorized,
+      activeSpaceId,
+      lifeStore,
+      markCloudSynced,
+      offlineMeta,
+      refreshDeadLetterMutations,
+      refreshOfflineMediaAssets,
+      refreshPendingMutationCount,
+      thinkingStore,
+      thinkingView
+    ]
   );
 
   const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
@@ -4497,6 +4656,53 @@ export function TimeArchive() {
     refreshCloudSyncState,
     refreshPendingMutationCount,
     runQueuedMutationSync,
+    sessionUser,
+    showNotice
+  ]);
+
+  const manualOverwriteCloud = useCallback(async () => {
+    if (!sessionUser || !currentUserOwnerKey) {
+      return { ok: false as const, error: "当前不在账号同步模式" };
+    }
+    const ownerKey = currentUserOwnerKey;
+    const metaBelongsToUser = offlineMeta?.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId;
+    if (!metaBelongsToUser && activeOwnerKey !== ownerKey) {
+      return { ok: false as const, error: "本地数据还在绑定确认状态，请先处理本地/云端绑定" };
+    }
+    if (!isOnline) {
+      return { ok: false as const, error: "当前离线，无法覆盖云端" };
+    }
+    if (offlineSyncingRef.current) {
+      return { ok: false as const, error: "同步正在进行中" };
+    }
+    offlineSyncingRef.current = true;
+    if (activeOwnerKey !== ownerKey) setActiveOwnerKey(ownerKey);
+    setSyncPhase("manual_overwrite");
+    try {
+      const result = await overwriteCloudWithLocalSnapshot(sessionUser, ownerKey, "manual_overwrite_cloud");
+      if (!result.ok) {
+        setLastSyncError(result.error);
+        setSyncPhase("error");
+        return result;
+      }
+      setSyncPhase("manual_overwrite_done");
+      showNotice(result.backupCreated ? "本地已覆盖云端，本地备份可恢复" : "本地已覆盖云端");
+      return { ok: true as const };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      setLastSyncError(message);
+      setSyncPhase("error");
+      return { ok: false as const, error: message };
+    } finally {
+      offlineSyncingRef.current = false;
+    }
+  }, [
+    activeOwnerKey,
+    currentUserOwnerKey,
+    isOnline,
+    offlineMeta?.boundUserId,
+    offlineMeta?.ownerMode,
+    overwriteCloudWithLocalSnapshot,
     sessionUser,
     showNotice
   ]);
@@ -7644,10 +7850,12 @@ export function TimeArchive() {
                   syncPhase === "repairing" ||
                   syncPhase === "manual_pull" ||
                   syncPhase === "manual_push" ||
+                  syncPhase === "manual_overwrite" ||
                   offlineRuntimeState === "user_syncing"
                 }
                 onManualPullCloud={manualPullCloud}
                 onManualUploadLocal={manualUploadLocal}
+                onManualOverwriteCloud={manualOverwriteCloud}
                 onRestoreLatestSyncBackup={restoreLatestSyncBackup}
                 onSyncRepair={handleSyncRepair}
                 deadLetterMutations={syncIssueMutations}

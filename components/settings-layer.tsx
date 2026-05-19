@@ -80,6 +80,7 @@ export function SettingsLayer(props: {
   syncRepairing: boolean;
   onManualPullCloud: () => Promise<{ ok: boolean; error?: string }>;
   onManualUploadLocal: () => Promise<{ ok: boolean; error?: string }>;
+  onManualOverwriteCloud: () => Promise<{ ok: boolean; error?: string }>;
   onRestoreLatestSyncBackup: () => Promise<{ ok: boolean; error?: string }>;
   onSyncRepair: () => Promise<{ ok: boolean; error?: string }>;
   deadLetterMutations: QueuedMutation[];
@@ -93,6 +94,7 @@ export function SettingsLayer(props: {
   const [loadingExport, setLoadingExport] = useState(false);
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_DEEPSEEK_BASE_URL);
+  const [confirmOverwriteCloud, setConfirmOverwriteCloud] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
 
@@ -171,6 +173,20 @@ export function SettingsLayer(props: {
     if (props.syncRepairing) return;
     void (async () => {
       const result = await props.onManualUploadLocal();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
+
+  const runManualOverwriteCloud = () => {
+    if (props.syncRepairing) return;
+    if (!confirmOverwriteCloud) {
+      setConfirmOverwriteCloud(true);
+      props.showNotice("再次点击“本地覆盖云端”确认执行");
+      return;
+    }
+    setConfirmOverwriteCloud(false);
+    void (async () => {
+      const result = await props.onManualOverwriteCloud();
       if (!result.ok && result.error) props.showNotice(result.error);
     })();
   };
@@ -742,6 +758,16 @@ export function SettingsLayer(props: {
               disabled={props.syncRepairing}
             >
               上传本地
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-red-300/70 bg-red-50 text-red-800 disabled:opacity-40"
+              onClick={runManualOverwriteCloud}
+              disabled={props.syncRepairing}
+            >
+              {confirmOverwriteCloud ? "确认覆盖云端" : "本地覆盖云端"}
             </Button>
             <Button
               type="button"
