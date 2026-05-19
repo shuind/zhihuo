@@ -122,7 +122,17 @@ function normalizeDb(input: Partial<DbState> | null | undefined): DbState {
         }))
       : [],
     doubt_notes: Array.isArray(input?.doubt_notes) ? input.doubt_notes : [],
-    thinking_spaces: Array.isArray(input?.thinking_spaces) ? input.thinking_spaces : [],
+    thinking_spaces: Array.isArray(input?.thinking_spaces)
+      ? input.thinking_spaces.map((row) => ({
+          ...row,
+          last_activity_at:
+            typeof (row as { last_activity_at?: unknown }).last_activity_at === "string"
+              ? String((row as { last_activity_at?: unknown }).last_activity_at)
+              : typeof row.frozen_at === "string"
+                ? row.frozen_at
+                : row.created_at
+        }))
+      : [],
     thinking_nodes: Array.isArray(input?.thinking_nodes)
       ? input.thinking_nodes.map((row) => ({
           ...row,
@@ -483,7 +493,7 @@ async function readDbFromPg(client: PoolClient): Promise<DbState> {
     ),
     client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes"),
     client.query(
-      "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
+      "SELECT id, user_id, root_question_text, status, created_at, frozen_at, last_activity_at, source_time_doubt_id FROM thinking_spaces"
     ),
     client.query(
       "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, image_asset_id, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
@@ -732,7 +742,16 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
     {
       table: "thinking_spaces",
       idColumn: "id",
-      columns: ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
+      columns: [
+        "id",
+        "user_id",
+        "root_question_text",
+        "status",
+        "created_at",
+        "frozen_at",
+        "last_activity_at",
+        "source_time_doubt_id"
+      ],
       conflictColumns: ["id"],
       rows: db.thinking_spaces.map((row) => [
         row.id,
@@ -741,6 +760,7 @@ async function persistDbToPg(client: PoolClient, db: DbState) {
         row.status,
         row.created_at,
         row.frozen_at,
+        row.last_activity_at ?? row.created_at,
         row.source_time_doubt_id
       ])
     },
@@ -1112,7 +1132,7 @@ async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Pro
     }
     if (table === "thinking_spaces") {
       const { rows } = await client.query(
-        "SELECT id, user_id, root_question_text, status, created_at, frozen_at, source_time_doubt_id FROM thinking_spaces"
+        "SELECT id, user_id, root_question_text, status, created_at, frozen_at, last_activity_at, source_time_doubt_id FROM thinking_spaces"
       );
       state.thinking_spaces = rows as DbState["thinking_spaces"];
       continue;
@@ -1344,7 +1364,16 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
       planByScope.set(item, {
         table: "thinking_spaces",
         idColumn: "id",
-        columns: ["id", "user_id", "root_question_text", "status", "created_at", "frozen_at", "source_time_doubt_id"],
+        columns: [
+          "id",
+          "user_id",
+          "root_question_text",
+          "status",
+          "created_at",
+          "frozen_at",
+          "last_activity_at",
+          "source_time_doubt_id"
+        ],
         conflictColumns: ["id"],
         rows: db.thinking_spaces.map((row) => [
           row.id,
@@ -1353,6 +1382,7 @@ async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: Scope
           row.status,
           row.created_at,
           row.frozen_at,
+          row.last_activity_at ?? row.created_at,
           row.source_time_doubt_id
         ])
       });

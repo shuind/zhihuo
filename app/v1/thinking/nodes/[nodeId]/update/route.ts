@@ -24,8 +24,8 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     const pgResult = await runPgTransaction("thinking.nodes.update.sql", async (client) => {
-      const found = await client.query<{ status: string; background_text: string | null }>(
-        `SELECT s.status, m.background_text
+      const found = await client.query<{ status: string; space_id: string; background_text: string | null }>(
+        `SELECT s.status, s.id AS space_id, m.background_text
          FROM thinking_nodes n
          INNER JOIN thinking_spaces s ON s.id = n.space_id
          LEFT JOIN thinking_space_meta m ON m.space_id = s.id
@@ -41,6 +41,7 @@ export const POST = withApiRoute(
       if (!normalized.ok) return { kind: "invalid" as const };
       const questionText = normalized.text;
       const dimension = classifyDimension(questionText);
+      const updatedAt = responseUpdatedAt;
 
       await client.query("UPDATE thinking_nodes SET raw_question_text = $1, dimension = $2 WHERE id = $3", [
         questionText,
@@ -48,6 +49,17 @@ export const POST = withApiRoute(
         params.nodeId
       ]);
       await client.query("DELETE FROM thinking_node_links WHERE source_node_id = $1 OR target_node_id = $1", [params.nodeId]);
+      await client.query(
+        "UPDATE thinking_spaces SET last_activity_at = GREATEST(COALESCE(last_activity_at, created_at), $1) WHERE id = $2",
+        [updatedAt, row.space_id]
+      );
+      await client.query(
+        `INSERT INTO user_sync_state (user_id, revision, last_sequence, updated_at)
+         VALUES ($1, 1, 0, $2)
+         ON CONFLICT (user_id)
+         DO UPDATE SET revision = user_sync_state.revision + 1, updated_at = EXCLUDED.updated_at`,
+        [userId, updatedAt]
+      );
       return { kind: "ok" as const, questionText };
     });
 

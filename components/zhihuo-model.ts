@@ -493,7 +493,9 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
       createdAt: toIso(space.createdAt),
       lastActivityAt: typeof space.lastActivityAt === "string" ? toIso(space.lastActivityAt) : toIso(space.createdAt),
       writtenToTimeAt:
-        typeof space.writtenToTimeAt === "string"
+        status === "active"
+          ? null
+          : typeof space.writtenToTimeAt === "string"
           ? toIso(space.writtenToTimeAt)
           : legacySpace.frozenAt
             ? toIso(legacySpace.frozenAt)

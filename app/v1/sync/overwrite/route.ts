@@ -52,6 +52,7 @@ type UserExportPayload = {
       rootQuestionText?: string;
       status?: "active" | "hidden";
       createdAt?: string;
+      lastActivityAt?: string | null;
       writtenToTimeAt?: string | null;
       frozenAt?: string | null;
       sourceTimeDoubtId?: string | null;

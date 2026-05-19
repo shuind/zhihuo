@@ -56,6 +56,7 @@ import {
   type LifeNote,
   type LifeNoteSaveOptions,
   type ThinkingMediaAsset,
+  type ThinkingNode,
   type ThinkingSpace,
   type ThinkingScratchItem,
   type ThinkingSpaceMeta,
@@ -241,6 +242,7 @@ type UserExportPayload = {
       rootQuestionText: string;
       status: "active" | "hidden";
       createdAt: string;
+      lastActivityAt?: string | null;
       writtenToTimeAt: string | null;
       sourceTimeDoubtId: string | null;
     }>;
@@ -337,6 +339,7 @@ type SyncSnapshotResponse = {
       rootQuestionText?: string;
       status?: "active" | "hidden";
       createdAt?: string;
+      lastActivityAt?: string | null;
       writtenToTimeAt?: string | null;
       frozenAt?: string | null;
       sourceTimeDoubtId?: string | null;
@@ -466,6 +469,7 @@ const OFFLINE_RETRY_BASE_MS = 1200;
 const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+const AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS = 60 * 1000;
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -679,6 +683,12 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
                 : "",
           status: item.status,
           createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : "",
+          lastActivityAt:
+            typeof item.lastActivityAt === "string"
+              ? item.lastActivityAt
+              : typeof item.last_activity_at === "string"
+                ? item.last_activity_at
+                : null,
           writtenToTimeAt:
             typeof item.writtenToTimeAt === "string"
               ? item.writtenToTimeAt
@@ -1138,7 +1148,9 @@ function mapApiThinkingSpace(item: ApiThinkingSpace): ThinkingSpace {
     createdAt: item.created_at,
     lastActivityAt: typeof item.last_activity_at === "string" ? item.last_activity_at : item.created_at,
     writtenToTimeAt:
-      typeof item.written_to_time_at === "string"
+      item.status === "active"
+        ? null
+        : typeof item.written_to_time_at === "string"
         ? item.written_to_time_at
         : typeof item.frozen_at === "string"
           ? item.frozen_at
@@ -1231,12 +1243,15 @@ function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking"]): Th
             rootQuestionText: typeof item.rootQuestionText === "string" ? item.rootQuestionText : "",
             status: item.status === "hidden" ? "hidden" : "active",
             createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+            lastActivityAt: typeof item.lastActivityAt === "string" ? item.lastActivityAt : undefined,
             writtenToTimeAt:
-              typeof item.writtenToTimeAt === "string"
-                ? item.writtenToTimeAt
-                : typeof item.frozenAt === "string"
-                  ? item.frozenAt
-                  : null,
+              item.status !== "hidden"
+                ? null
+                : typeof item.writtenToTimeAt === "string"
+                  ? item.writtenToTimeAt
+                  : typeof item.frozenAt === "string"
+                    ? item.frozenAt
+                    : null,
             sourceTimeDoubtId: typeof item.sourceTimeDoubtId === "string" ? item.sourceTimeDoubtId : null
           }))
       : [],
@@ -1343,11 +1358,38 @@ function sortSpacesByLatestActivity(a: ThinkingSpace, b: ThinkingSpace) {
   return new Date(b.lastActivityAt ?? b.createdAt).getTime() - new Date(a.lastActivityAt ?? a.createdAt).getTime();
 }
 
-function getSpaceLatestActivityTime(space: ThinkingSpace) {
-  const activity = new Date(space.lastActivityAt ?? space.createdAt).getTime();
-  if (Number.isFinite(activity)) return activity;
-  const created = new Date(space.createdAt).getTime();
-  return Number.isFinite(created) ? created : Date.now();
+function safeTimeValue(value: string | null | undefined) {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function getSpaceLatestActivityTime(space: ThinkingSpace, nodes?: ThinkingNode[]) {
+  let latest = safeTimeValue(space.createdAt) ?? Date.now();
+  const explicitActivity = safeTimeValue(space.lastActivityAt);
+  if (explicitActivity !== null) latest = Math.max(latest, explicitActivity);
+  const writtenAt = safeTimeValue(space.writtenToTimeAt);
+  if (writtenAt !== null) latest = Math.max(latest, writtenAt);
+  for (const node of nodes ?? []) {
+    if (node.spaceId !== space.id || node.state === "hidden") continue;
+    const nodeTime = safeTimeValue(node.createdAt);
+    if (nodeTime !== null) latest = Math.max(latest, nodeTime);
+  }
+  return latest;
+}
+
+function computeSpaceActivityIso(space: ThinkingSpace, nodes: ThinkingNode[]) {
+  return new Date(getSpaceLatestActivityTime(space, nodes)).toISOString();
+}
+
+function withComputedSpaceActivity(store: ThinkingStore): ThinkingStore {
+  return {
+    ...store,
+    spaces: store.spaces.map((space) => ({
+      ...space,
+      lastActivityAt: computeSpaceActivityIso(space, store.nodes)
+    }))
+  };
 }
 
 function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
@@ -1448,6 +1490,7 @@ export function TimeArchive() {
     verify: unknown;
   } | null>(null);
   const [latestSyncBackup, setLatestSyncBackup] = useState<OfflineSyncBackupRecord | null>(null);
+  const [autoWriteSuppressedUntil, setAutoWriteSuppressedUntil] = useState(0);
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1459,6 +1502,7 @@ export function TimeArchive() {
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
+  const autoWriteSuppressedUntilRef = useRef(0);
   const mediaObjectUrlsRef = useRef<string[]>([]);
   const autoWritingSpaceIdsRef = useRef<Set<string>>(new Set());
   const [stars] = useState(() => createStars(36));
@@ -1768,6 +1812,10 @@ export function TimeArchive() {
       latestRevisionRef.current = offlineMeta.revision;
     }
   }, [offlineMeta?.revision]);
+
+  useEffect(() => {
+    autoWriteSuppressedUntilRef.current = autoWriteSuppressedUntil;
+  }, [autoWriteSuppressedUntil]);
 
   const markLocalChange = useCallback(() => {
     updateOfflineMeta((current) => ({
@@ -2287,6 +2335,7 @@ export function TimeArchive() {
             rootQuestionText: item.rootQuestionText,
             status: item.status,
             createdAt: item.createdAt,
+            lastActivityAt: item.lastActivityAt ?? computeSpaceActivityIso(item, thinkingStore.nodes),
             writtenToTimeAt: item.writtenToTimeAt,
             sourceTimeDoubtId: item.sourceTimeDoubtId
           })),
@@ -2630,7 +2679,7 @@ export function TimeArchive() {
           meta: lifeStore.meta
         };
         const nextThinkingStore = {
-          ...mapSyncSnapshotThinking(payload.thinking),
+          ...withComputedSpaceActivity(mapSyncSnapshotThinking(payload.thinking)),
           timezone: thinkingStore.timezone,
           fixedTopSpacesEnabled: thinkingStore.fixedTopSpacesEnabled,
           fixedTopSpaceIds: thinkingStore.fixedTopSpaceIds
@@ -2686,6 +2735,7 @@ export function TimeArchive() {
         markCloudSynced(targetUserId, nextRevision, {
           hasLocalChanges: hasPendingLocalChanges
         });
+        setAutoWriteSuppressedUntil(Date.now() + AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS);
         setSyncPhase(hasPendingLocalChanges ? "push" : "ready");
         if (targetUserId) {
           setOfflineRuntimeState("user_sync_ready");
@@ -3855,15 +3905,25 @@ export function TimeArchive() {
             if (activeCount >= MAX_ACTIVE_SPACES) {
               return { ok: false, message: `活跃空间上限为 ${MAX_ACTIVE_SPACES}` };
             }
+            const restoredAt = new Date().toISOString();
             await queueMutation(`/v1/doubts/${sourceTimeDoubtId}/to-thinking`, {
-              client_updated_at: new Date().toISOString()
+              client_updated_at: restoredAt
             });
             setThinkingStore((prev) => ({
               ...prev,
               spaces: prev.spaces.map((space) =>
-                space.id === existing.id ? { ...space, status: "active" as const, syncStatus: "pending" as const } : space
+                space.id === existing.id
+                  ? {
+                      ...space,
+                      status: "active" as const,
+                      lastActivityAt: restoredAt,
+                      writtenToTimeAt: null,
+                      syncStatus: "pending" as const
+                    }
+                  : space
               )
             }));
+            setAutoWriteSuppressedUntil(Date.now() + AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS);
             markLocalChange();
           }
           const existingView = getLocalSpaceView(existing.id);
@@ -7257,15 +7317,29 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated || !pinReady || (pinEnabled && !pinUnlocked)) return;
     const nowMs = Date.now();
+    if (nowMs < autoWriteSuppressedUntilRef.current) return;
+    if (!cloudSyncReady || !isOnline) return;
+    if (offlineMeta?.syncState.hasLocalChanges === true || pendingMutationCount > 0) return;
+    if (cloudRepairCount > 0 || deadLetterMutations.length > 0 || lastSyncError) return;
+    if (
+      syncPhase !== "idle" &&
+      syncPhase !== "ready" &&
+      syncPhase !== "manual_pull_done" &&
+      syncPhase !== "manual_upload_done" &&
+      syncPhase !== "manual_overwrite_done"
+    ) {
+      return;
+    }
     const fixedSpaceIds = new Set(thinkingStore.fixedTopSpacesEnabled ? thinkingStore.fixedTopSpaceIds : []);
     const candidates = thinkingStore.spaces
       .filter((space) => {
         if (space.status !== "active") return false;
         if (fixedSpaceIds.has(space.id)) return false;
         if (autoWritingSpaceIdsRef.current.has(space.id)) return false;
-        return nowMs - getSpaceLatestActivityTime(space) >= AUTO_WRITE_TO_TIME_AFTER_MS;
+        const spaceNodes = thinkingStore.nodes.filter((node) => node.spaceId === space.id && node.state !== "hidden");
+        return nowMs - getSpaceLatestActivityTime(space, spaceNodes) >= AUTO_WRITE_TO_TIME_AFTER_MS;
       })
-      .sort((a, b) => getSpaceLatestActivityTime(a) - getSpaceLatestActivityTime(b));
+      .sort((a, b) => getSpaceLatestActivityTime(a, thinkingStore.nodes) - getSpaceLatestActivityTime(b, thinkingStore.nodes));
 
     if (!candidates.length) return;
     for (const space of candidates) autoWritingSpaceIdsRef.current.add(space.id);
@@ -7292,14 +7366,23 @@ export function TimeArchive() {
     })();
   }, [
     handleThinkingWriteToTime,
+    cloudRepairCount,
+    cloudSyncReady,
+    deadLetterMutations.length,
     hydrated,
+    isOnline,
+    lastSyncError,
+    offlineMeta?.syncState.hasLocalChanges,
+    pendingMutationCount,
     pinEnabled,
     pinReady,
     pinUnlocked,
     showNotice,
+    syncPhase,
     thinkingStore,
     thinkingStore.fixedTopSpaceIds,
     thinkingStore.fixedTopSpacesEnabled,
+    thinkingStore.nodes,
     thinkingStore.spaces
   ]);
 

@@ -31,6 +31,7 @@ export type ThinkingSpaceRecord = {
   status: ThinkingSpaceStatus;
   created_at: string;
   frozen_at: string | null;
+  last_activity_at: string | null;
   source_time_doubt_id: string | null;
 };
 
@@ -222,6 +223,7 @@ export type ThinkingSnapshot = {
     rootQuestionText: string;
     status: ThinkingSpaceStatus;
     createdAt: string;
+    lastActivityAt?: string;
     writtenToTimeAt: string | null;
     sourceTimeDoubtId: string | null;
   }>;

@@ -27,8 +27,8 @@ export const POST = withApiRoute(
       );
       if (!hasAnswerColumn.rows[0]) return { kind: "fallback" as const };
 
-      const found = await client.query<{ status: string }>(
-        `SELECT s.status
+      const found = await client.query<{ status: string; space_id: string }>(
+        `SELECT s.status, s.id AS space_id
          FROM thinking_nodes n
          INNER JOIN thinking_spaces s ON s.id = n.space_id
          WHERE n.id = $1 AND s.user_id = $2
@@ -42,6 +42,17 @@ export const POST = withApiRoute(
       const updated = await client.query<{ answer_text: string | null }>(
         "UPDATE thinking_nodes SET answer_text = $1 WHERE id = $2 RETURNING answer_text",
         [normalizedAnswer, params.nodeId]
+      );
+      await client.query(
+        "UPDATE thinking_spaces SET last_activity_at = GREATEST(COALESCE(last_activity_at, created_at), $1) WHERE id = $2",
+        [responseUpdatedAt, row.space_id]
+      );
+      await client.query(
+        `INSERT INTO user_sync_state (user_id, revision, last_sequence, updated_at)
+         VALUES ($1, 1, 0, $2)
+         ON CONFLICT (user_id)
+         DO UPDATE SET revision = user_sync_state.revision + 1, updated_at = EXCLUDED.updated_at`,
+        [userId, responseUpdatedAt]
       );
       return { kind: "ok" as const, answerText: updated.rows[0]?.answer_text ?? null };
     });
