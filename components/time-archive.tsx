@@ -1440,6 +1440,13 @@ export function TimeArchive() {
   const [lastCanonicalSyncError, setLastCanonicalSyncError] = useState<string | null>(null);
   const [lastRepairSummary, setLastRepairSummary] = useState<SyncRepairSummary | null>(null);
   const [serverRepairItems, setServerRepairItems] = useState<SyncRepairItemSummary[]>([]);
+  const [lastOverwriteSummary, setLastOverwriteSummary] = useState<{
+    revision: number | null;
+    lastSequence: number | null;
+    overwrittenAt: string;
+    overwritten: { life: number; thinking: number; scratch: number } | null;
+    verify: unknown;
+  } | null>(null);
   const [latestSyncBackup, setLatestSyncBackup] = useState<OfflineSyncBackupRecord | null>(null);
 
   const noticeTimerRef = useRef<number | null>(null);
@@ -1712,6 +1719,7 @@ export function TimeArchive() {
                 media_count: latestSyncBackup.mediaAssets.length
               }
             : null,
+          last_overwrite: lastOverwriteSummary,
           last_repair: lastRepairSummary
         },
         null,
@@ -1729,6 +1737,7 @@ export function TimeArchive() {
       hasTrackedLocalChanges,
       hasUnqueuedLocalChanges,
       lastCloudCheckedAt,
+      lastOverwriteSummary,
       lastRepairSummary,
       lastSyncError,
       latestSyncBackup,
@@ -2802,6 +2811,9 @@ export function TimeArchive() {
         error?: string;
         revision?: number;
         lastSequence?: number;
+        overwrittenAt?: string;
+        overwritten?: { life: number; thinking: number; scratch: number };
+        verify?: unknown;
       };
       if (!response.ok) {
         return { ok: false as const, error: typeof responseBody.error === "string" ? responseBody.error : "本地覆盖云端失败" };
@@ -2810,6 +2822,21 @@ export function TimeArchive() {
       const nextRevision = Number.isFinite(responseBody.revision) ? Number(responseBody.revision) : latestRevisionRef.current;
       const nextLastSequence = Number.isFinite(responseBody.lastSequence) ? Number(responseBody.lastSequence) : cloudLastSequence;
       const overwrittenAt = new Date().toISOString();
+      const syncedMeta = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+        ownerMode: "user",
+        boundUserId: user.userId,
+        revision: typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : snapshotMeta.revision,
+        completeness: "complete",
+        lastAppliedLogId:
+          typeof nextLastSequence === "number" && Number.isFinite(nextLastSequence)
+            ? String(nextLastSequence)
+            : snapshotMeta.lastAppliedLogId,
+        syncState: {
+          lastSyncedAt: overwrittenAt,
+          hasLocalChanges: false,
+          bindingRequired: false
+        }
+      });
       const overwrittenAssetIds = new Set(
         (payload.thinking.media_assets ?? [])
           .map((asset) => asset.id)
@@ -2830,11 +2857,26 @@ export function TimeArchive() {
       await refreshPendingMutationCount(ownerKey, true);
       await refreshDeadLetterMutations(ownerKey);
       await refreshOfflineMediaAssets(ownerKey);
+      await saveOfflineSnapshotByOwner(ownerKey, {
+        lifeStore,
+        thinkingStore,
+        activeSpaceId,
+        thinkingViews: thinkingViewCacheRef.current,
+        savedAt: overwrittenAt,
+        meta: syncedMeta
+      });
       setCloudRevision(typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : null);
       if (typeof nextLastSequence === "number" && Number.isFinite(nextLastSequence)) {
         setCloudLastSequence(nextLastSequence);
       }
       setLastCloudCheckedAt(new Date().toISOString());
+      setLastOverwriteSummary({
+        revision: typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : null,
+        lastSequence: typeof nextLastSequence === "number" && Number.isFinite(nextLastSequence) ? nextLastSequence : null,
+        overwrittenAt: typeof responseBody.overwrittenAt === "string" ? responseBody.overwrittenAt : overwrittenAt,
+        overwritten: responseBody.overwritten ?? null,
+        verify: responseBody.verify ?? null
+      });
       setLastSyncError(null);
       setLastCanonicalSyncError(null);
       markCloudSynced(user.userId, typeof nextRevision === "number" && Number.isFinite(nextRevision) ? nextRevision : null, {
@@ -3106,6 +3148,9 @@ export function TimeArchive() {
           setSyncPhase("ready");
           return { ok: true as const, pendingCount: 0, deadLetterCount: deadLetterMutations.length };
         }
+
+        const syncBackup = await createOfflineSyncBackup(ownerKey, options?.phase === "manual_push" ? "manual_upload_local" : "queued_mutation_sync");
+        if (syncBackup) setLatestSyncBackup(syncBackup);
 
         const baseRevision = pending[0]?.baseRevision ?? latestRevisionRef.current ?? offlineMeta?.revision ?? 0;
         try {

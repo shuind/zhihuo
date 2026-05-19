@@ -10,6 +10,7 @@ import {
   appendSyncOperationLog,
   getUserLastSequence,
   getUserRevision,
+  getUserSyncSnapshot,
   replaceLifeSnapshot,
   replaceThinkingSnapshot
 } from "@/lib/server/store";
@@ -128,6 +129,21 @@ type UserExportPayload = {
   };
 };
 
+type OverwriteVerify = {
+  life: {
+    doubts: number;
+    notes: number;
+  };
+  thinking: {
+    spaces: number;
+    nodes: number;
+    spaceMeta: number;
+    inbox: number;
+    scratch: number;
+    mediaAssets: number;
+  };
+};
+
 function validateReferences(payload: UserExportPayload) {
   const doubts = Array.isArray(payload.life?.doubts) ? payload.life.doubts : [];
   const notes = Array.isArray(payload.life?.notes) ? payload.life.notes : [];
@@ -173,6 +189,59 @@ function validateReferences(payload: UserExportPayload) {
   };
 }
 
+function countPayload(payload: UserExportPayload): OverwriteVerify {
+  const activeDoubts = (payload.life?.doubts ?? []).filter((item) => typeof item.deleted_at !== "string");
+  const activeDoubtIds = new Set(activeDoubts.map((item) => item.id).filter((id): id is string => typeof id === "string"));
+  const spaces = payload.thinking?.spaces ?? [];
+  const spaceIds = new Set(spaces.map((item) => item.id).filter((id): id is string => typeof id === "string"));
+  return {
+    life: {
+      doubts: activeDoubts.length,
+      notes: (payload.life?.notes ?? []).filter((item) => activeDoubtIds.has(item.doubt_id ?? "")).length
+    },
+    thinking: {
+      spaces: spaces.length,
+      nodes: (payload.thinking?.nodes ?? []).filter((item) => spaceIds.has(item.spaceId ?? "")).length,
+      spaceMeta: (payload.thinking?.space_meta ?? []).filter((item) => spaceIds.has(item.spaceId ?? "")).length,
+      inbox: Object.values(payload.thinking?.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
+      scratch: (payload.thinking?.scratch ?? []).filter((item) => typeof item.deletedAt !== "string").length,
+      mediaAssets: (payload.thinking?.media_assets ?? []).filter((item) => typeof item.deletedAt !== "string" && typeof item.deleted_at !== "string").length
+    }
+  };
+}
+
+function countSnapshot(snapshot: NonNullable<ReturnType<typeof getUserSyncSnapshot>>): OverwriteVerify {
+  return {
+    life: {
+      doubts: snapshot.life.doubts.length,
+      notes: snapshot.life.notes.length
+    },
+    thinking: {
+      spaces: snapshot.thinking.spaces.length,
+      nodes: snapshot.thinking.nodes.length,
+      spaceMeta: snapshot.thinking.spaceMeta.length,
+      inbox: Object.values(snapshot.thinking.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
+      scratch: snapshot.thinking.scratch?.length ?? 0,
+      mediaAssets: snapshot.thinking.mediaAssets?.length ?? 0
+    }
+  };
+}
+
+function verifyOverwriteCounts(expected: OverwriteVerify, actual: OverwriteVerify) {
+  const mismatches: string[] = [];
+  if (actual.life.doubts !== expected.life.doubts) mismatches.push(`life.doubts:${actual.life.doubts}/${expected.life.doubts}`);
+  if (actual.life.notes !== expected.life.notes) mismatches.push(`life.notes:${actual.life.notes}/${expected.life.notes}`);
+  if (actual.thinking.spaces !== expected.thinking.spaces) mismatches.push(`thinking.spaces:${actual.thinking.spaces}/${expected.thinking.spaces}`);
+  if (actual.thinking.nodes !== expected.thinking.nodes) mismatches.push(`thinking.nodes:${actual.thinking.nodes}/${expected.thinking.nodes}`);
+  if (actual.thinking.spaceMeta !== expected.thinking.spaceMeta) mismatches.push(`thinking.spaceMeta:${actual.thinking.spaceMeta}/${expected.thinking.spaceMeta}`);
+  if (actual.thinking.inbox !== expected.thinking.inbox) mismatches.push(`thinking.inbox:${actual.thinking.inbox}/${expected.thinking.inbox}`);
+  if (actual.thinking.scratch !== expected.thinking.scratch) mismatches.push(`thinking.scratch:${actual.thinking.scratch}/${expected.thinking.scratch}`);
+  if (actual.thinking.mediaAssets !== expected.thinking.mediaAssets) {
+    mismatches.push(`thinking.mediaAssets:${actual.thinking.mediaAssets}/${expected.thinking.mediaAssets}`);
+  }
+  return mismatches;
+}
+
 export const POST = withApiRoute(
   "sync.overwrite.post",
   async (request: NextRequest) => {
@@ -193,7 +262,15 @@ export const POST = withApiRoute(
       typeof body.client_updated_at === "string" && Number.isFinite(new Date(body.client_updated_at).getTime())
         ? body.client_updated_at
         : nowIso();
-    let result: { revision: number; lastSequence: number; overwritten: { life: number; thinking: number; scratch: number } } | null = null;
+    const expectedCounts = countPayload(payload);
+    let result:
+      | {
+          revision: number;
+          lastSequence: number;
+          overwritten: { life: number; thinking: number; scratch: number };
+          verify: { expected: OverwriteVerify; actual: OverwriteVerify; mismatches: string[] };
+        }
+      | null = null;
 
     await updateDb(async (db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
@@ -256,14 +333,14 @@ export const POST = withApiRoute(
       }
 
       const overwritten = {
-        life: (payload.life?.doubts?.length ?? 0) + (payload.life?.notes?.length ?? 0),
+        life: expectedCounts.life.doubts + expectedCounts.life.notes,
         thinking:
-          (payload.thinking?.spaces?.length ?? 0) +
-          (payload.thinking?.nodes?.length ?? 0) +
-          (payload.thinking?.space_meta?.length ?? 0) +
-          (payload.thinking?.media_assets?.length ?? 0) +
-          Object.values(payload.thinking?.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
-        scratch: payload.thinking?.scratch?.length ?? 0
+          expectedCounts.thinking.spaces +
+          expectedCounts.thinking.nodes +
+          expectedCounts.thinking.spaceMeta +
+          expectedCounts.thinking.mediaAssets +
+          expectedCounts.thinking.inbox,
+        scratch: expectedCounts.thinking.scratch
       };
 
       db.audit_logs.push({
@@ -276,10 +353,19 @@ export const POST = withApiRoute(
         created_at: nowIso()
       });
 
+      const snapshot = getUserSyncSnapshot(db, userId);
+      const actualCounts = snapshot ? countSnapshot(snapshot) : countPayload({});
+      const mismatches = verifyOverwriteCounts(expectedCounts, actualCounts);
+
       result = {
         revision,
         lastSequence: getUserLastSequence(db, userId),
-        overwritten
+        overwritten,
+        verify: {
+          expected: expectedCounts,
+          actual: actualCounts,
+          mismatches
+        }
       };
     });
 
@@ -287,14 +373,19 @@ export const POST = withApiRoute(
       revision: number;
       lastSequence: number;
       overwritten: { life: number; thinking: number; scratch: number };
+      verify: { expected: OverwriteVerify; actual: OverwriteVerify; mismatches: string[] };
     } | null;
     if (!finalResult) return unauthorizedJson();
+    if (finalResult.verify.mismatches.length > 0) {
+      return errorJson(500, `overwrite_verify_failed:${finalResult.verify.mismatches.join(",")}`);
+    }
     return okJson({
       ok: true,
       overwrittenAt: nowIso(),
       revision: finalResult.revision,
       lastSequence: finalResult.lastSequence,
-      overwritten: finalResult.overwritten
+      overwritten: finalResult.overwritten,
+      verify: finalResult.verify
     });
   },
   { rateLimit: { bucket: "sync-overwrite", max: 8, windowMs: 60 * 1000 } }

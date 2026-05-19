@@ -198,6 +198,21 @@ function logTimeValue(item: { client_updated_at: string | null; created_at: stri
   return Number.isFinite(createdValue) ? createdValue : Number.NEGATIVE_INFINITY;
 }
 
+function logSortsAfterMutation(
+  log: { client_updated_at: string | null; created_at: string; device_id: string; client_order: number; client_mutation_id: string },
+  item: NormalizedMutation,
+  options?: { equalTimeWins?: boolean }
+) {
+  const timeDelta = logTimeValue(log) - mutationTimeValue(item);
+  if (timeDelta !== 0) return timeDelta > 0;
+  if (options?.equalTimeWins) return true;
+  const deviceDelta = log.device_id.localeCompare(item.deviceId);
+  if (deviceDelta !== 0) return deviceDelta > 0;
+  const orderDelta = log.client_order - item.clientOrder;
+  if (orderDelta !== 0) return orderDelta > 0;
+  return log.client_mutation_id.localeCompare(item.clientMutationId) > 0;
+}
+
 function mutationWriteKey(op: string, payload: Record<string, unknown>) {
   if (op === "/v1/doubts") {
     const clientEntityId = requireString(payload, "client_entity_id");
@@ -248,17 +263,18 @@ function mutationWriteKey(op: string, payload: Record<string, unknown>) {
 function hasNewerAppliedWrite(db: DbState, userId: string, item: NormalizedMutation) {
   const writeKey = mutationWriteKey(item.op, item.payload);
   if (!writeKey) return false;
-  const itemTime = mutationTimeValue(item);
   return db.sync_operation_log.some((log) => {
     if (log.user_id !== userId || log.client_mutation_id === item.clientMutationId) return false;
     if (mutationWriteKey(log.op, log.payload) !== writeKey) return false;
-    const timeDelta = logTimeValue(log) - itemTime;
-    if (timeDelta !== 0) return timeDelta > 0;
-    const deviceDelta = log.device_id.localeCompare(item.deviceId);
-    if (deviceDelta !== 0) return deviceDelta > 0;
-    const orderDelta = log.client_order - item.clientOrder;
-    if (orderDelta !== 0) return orderDelta > 0;
-    return log.client_mutation_id.localeCompare(item.clientMutationId) > 0;
+    return logSortsAfterMutation(log, item);
+  });
+}
+
+function hasNewerManualOverwrite(db: DbState, userId: string, item: NormalizedMutation, baseRevision: number) {
+  return db.sync_operation_log.some((log) => {
+    if (log.user_id !== userId || log.op !== "/v1/sync/overwrite") return false;
+    if (Number.isFinite(log.applied_revision) && log.applied_revision > baseRevision) return true;
+    return logSortsAfterMutation(log, item, { equalTimeWins: true });
   });
 }
 
@@ -857,7 +873,7 @@ export const POST = withApiRoute(
             continue;
           }
 
-          const skipAsOlderWrite = hasNewerAppliedWrite(db, userId, entry);
+          const skipAsOlderWrite = hasNewerManualOverwrite(db, userId, entry, baseRevision) || hasNewerAppliedWrite(db, userId, entry);
           const outcome = skipAsOlderWrite
             ? { kind: "skipped" as const, appliedRevision: getUserRevision(db, userId) }
             : applyMutation(db, userId, entry);
