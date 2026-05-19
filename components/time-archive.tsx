@@ -1671,6 +1671,10 @@ export function TimeArchive() {
         {
           mode: syncModeLabel,
           runtime_state: offlineRuntimeState,
+          active_owner_key: activeOwnerKey,
+          current_user_owner_key: currentUserOwnerKey,
+          cloud_sync_enabled: cloudSyncEnabled,
+          cloud_sync_ready: cloudSyncReady,
           phase_label: syncPhaseLabel,
           local_revision: offlineMeta?.revision ?? null,
           cloud_revision: cloudRevision,
@@ -1711,6 +1715,10 @@ export function TimeArchive() {
       cloudRepairCount,
       cloudRevision,
       cloudServerTime,
+      activeOwnerKey,
+      cloudSyncEnabled,
+      cloudSyncReady,
+      currentUserOwnerKey,
       hasTrackedLocalChanges,
       hasUnqueuedLocalChanges,
       lastCloudCheckedAt,
@@ -4397,9 +4405,13 @@ export function TimeArchive() {
   );
 
   const manualPullCloud = useCallback(async () => {
-    const ownerKey = activeOwnerKey;
-    if (!ownerKey || !ownerKey.startsWith("user:") || !sessionUser) {
+    if (!sessionUser || !currentUserOwnerKey) {
       return { ok: false as const, error: "当前不在账号同步模式" };
+    }
+    const ownerKey = currentUserOwnerKey;
+    const metaBelongsToUser = offlineMeta?.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId;
+    if (!metaBelongsToUser && activeOwnerKey !== ownerKey) {
+      return { ok: false as const, error: "本地数据还在绑定确认状态，请先处理本地/云端绑定" };
     }
     if (!isOnline) {
       return { ok: false as const, error: "当前离线，无法拉取云端" };
@@ -4408,6 +4420,7 @@ export function TimeArchive() {
       return { ok: false as const, error: "同步正在进行中" };
     }
     offlineSyncingRef.current = true;
+    if (activeOwnerKey !== ownerKey) setActiveOwnerKey(ownerKey);
     setSyncPhase("manual_pull");
     try {
       const backup = await createOfflineSyncBackup(ownerKey, "manual_pull_cloud");
@@ -4430,7 +4443,10 @@ export function TimeArchive() {
     }
   }, [
     activeOwnerKey,
+    currentUserOwnerKey,
     isOnline,
+    offlineMeta?.boundUserId,
+    offlineMeta?.ownerMode,
     refreshCloudSyncState,
     refreshDeadLetterMutations,
     refreshFromCloud,
@@ -4440,12 +4456,23 @@ export function TimeArchive() {
   ]);
 
   const manualUploadLocal = useCallback(async () => {
-    const ownerKey = activeOwnerKey;
-    if (!ownerKey || !ownerKey.startsWith("user:") || !sessionUser) {
+    if (!sessionUser || !currentUserOwnerKey) {
       return { ok: false as const, error: "当前不在账号同步模式" };
+    }
+    const ownerKey = currentUserOwnerKey;
+    const metaBelongsToUser = offlineMeta?.ownerMode === "user" && offlineMeta.boundUserId === sessionUser.userId;
+    if (!metaBelongsToUser && activeOwnerKey !== ownerKey) {
+      return { ok: false as const, error: "本地数据还在绑定确认状态，请先处理本地/云端绑定" };
     }
     if (!isOnline) {
       return { ok: false as const, error: "当前离线，无法上传本地改动" };
+    }
+    if (activeOwnerKey !== ownerKey) setActiveOwnerKey(ownerKey);
+    const pendingBeforeUpload = await refreshPendingMutationCount(ownerKey, true);
+    if (pendingBeforeUpload === 0 && offlineMeta?.syncState.hasLocalChanges === true) {
+      setLastSyncError("local_changes_without_queue");
+      setSyncPhase("error");
+      return { ok: false as const, error: "本地改动未入队，无法上传；请先复制诊断或拉取云端前保留备份" };
     }
     const result = await runQueuedMutationSync(ownerKey, {
       includeDeferred: true,
@@ -4459,7 +4486,20 @@ export function TimeArchive() {
       return { ok: true as const };
     }
     return { ok: false as const, error: lastSyncError ?? "上传本地改动失败" };
-  }, [activeOwnerKey, isOnline, lastSyncError, refreshCloudSyncState, runQueuedMutationSync, sessionUser, showNotice]);
+  }, [
+    activeOwnerKey,
+    currentUserOwnerKey,
+    isOnline,
+    lastSyncError,
+    offlineMeta?.boundUserId,
+    offlineMeta?.ownerMode,
+    offlineMeta?.syncState.hasLocalChanges,
+    refreshCloudSyncState,
+    refreshPendingMutationCount,
+    runQueuedMutationSync,
+    sessionUser,
+    showNotice
+  ]);
 
   const restoreLatestSyncBackup = useCallback(async () => {
     const ownerKey = activeOwnerKey;
@@ -7566,6 +7606,7 @@ export function TimeArchive() {
                 fixedTopSpaceIds={thinkingStore.fixedTopSpaceIds}
                 sessionEmail={sessionUser?.email ?? null}
                 cloudSyncEnabled={cloudSyncEnabled}
+                cloudSyncReady={cloudSyncReady}
                 pinEnabled={pinEnabled}
                 pinLockedUntil={pinLockedUntil}
                 onEnablePin={handleEnablePin}

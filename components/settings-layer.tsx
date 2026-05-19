@@ -34,6 +34,7 @@ export function SettingsLayer(props: {
   setFixedTopSpaceIds: (ids: string[]) => void;
   sessionEmail: string | null;
   cloudSyncEnabled: boolean;
+  cloudSyncReady: boolean;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
   pinEnabled: boolean;
   pinLockedUntil: number;
@@ -597,7 +598,11 @@ export function SettingsLayer(props: {
             <CardTitle>账号 / 会话</CardTitle>
             <CardDescription>
               {props.sessionEmail
-                ? `当前设备已绑定账号${props.cloudSyncEnabled ? "，云端同步已开启。" : "。"}`
+                ? props.cloudSyncReady
+                  ? "当前设备已绑定账号，云端同步已开启。"
+                  : props.cloudSyncEnabled
+                    ? "当前设备已绑定账号，同步正在准备或等待本地数据绑定。"
+                    : "当前设备已绑定账号。"
                 : "当前是本地离线模式，登录后可把本地数据绑定到账号。"}
             </CardDescription>
           </CardHeader>
