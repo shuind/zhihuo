@@ -333,6 +333,34 @@ function cloneMediaAssetRecord<T extends OfflineMediaAssetRecord>(input: T): T {
   };
 }
 
+function toTimeMs(value: string | null | undefined): number | null {
+  if (typeof value !== "string" || !value.trim()) return null;
+  const time = new Date(value).getTime();
+  return Number.isFinite(time) ? time : null;
+}
+
+function shouldKeepExistingSnapshot(existing: OfflineSnapshot | undefined, incoming: OfflineSnapshot): boolean {
+  if (!existing) return false;
+  const existingMeta = createOfflineSnapshotMeta(getOrCreateLocalProfileId(), existing.meta);
+  const incomingMeta = incoming.meta;
+  if (
+    existingMeta.ownerMode !== "user" ||
+    incomingMeta.ownerMode !== "user" ||
+    existingMeta.boundUserId !== incomingMeta.boundUserId
+  ) {
+    return false;
+  }
+  if (typeof existingMeta.revision !== "number" || typeof incomingMeta.revision !== "number") return false;
+  if (!Number.isFinite(existingMeta.revision) || !Number.isFinite(incomingMeta.revision)) return false;
+  if (incomingMeta.revision < existingMeta.revision) return true;
+  if (incomingMeta.revision > existingMeta.revision) return false;
+
+  const existingSyncedAt = toTimeMs(existingMeta.syncState.lastSyncedAt);
+  const incomingSyncedAt = toTimeMs(incomingMeta.syncState.lastSyncedAt);
+  if (existingSyncedAt !== null && incomingSyncedAt === null) return true;
+  return existingSyncedAt !== null && incomingSyncedAt !== null && incomingSyncedAt < existingSyncedAt;
+}
+
 function canUseLocalStorage() {
   return typeof window !== "undefined" && typeof window.localStorage !== "undefined";
 }
@@ -503,14 +531,27 @@ async function loadSnapshotRow(key: string): Promise<SnapshotRecord | null> {
   });
 }
 
-async function saveSnapshotRow(key: string, snapshot: OfflineSnapshot): Promise<void> {
+async function saveSnapshotRow(key: string, snapshot: OfflineSnapshot, options?: { force?: boolean }): Promise<void> {
   const db = await openDb();
   if (!db) return;
   const normalized = normalizeOfflineSnapshot(snapshot);
   await new Promise<void>((resolve) => {
     const tx = db.transaction(SNAPSHOT_STORE, "readwrite");
     const store = tx.objectStore(SNAPSHOT_STORE);
-    store.put({ key, value: cloneValue(normalized) } satisfies SnapshotRecord);
+    if (options?.force === true) {
+      store.put({ key, value: cloneValue(normalized) } satisfies SnapshotRecord);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+      return;
+    }
+    const req = store.get(key);
+    req.onerror = () => resolve();
+    req.onsuccess = () => {
+      const current = req.result as SnapshotRecord | undefined;
+      if (shouldKeepExistingSnapshot(current?.value, normalized)) return;
+      store.put({ key, value: cloneValue(normalized) } satisfies SnapshotRecord);
+    };
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
     tx.onabort = () => resolve();
@@ -556,8 +597,12 @@ export async function loadOfflineSnapshot(): Promise<OfflineSnapshot | null> {
   return loadOfflineSnapshotByOwner(getGuestOwnerKey(localProfileId));
 }
 
-export async function saveOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey, snapshot: OfflineSnapshot): Promise<void> {
-  await saveSnapshotRow(ownerKey, snapshot);
+export async function saveOfflineSnapshotByOwner(
+  ownerKey: OfflineOwnerKey,
+  snapshot: OfflineSnapshot,
+  options?: { force?: boolean }
+): Promise<void> {
+  await saveSnapshotRow(ownerKey, snapshot, options);
 }
 
 export async function saveOfflineSnapshot(snapshot: OfflineSnapshot): Promise<void> {

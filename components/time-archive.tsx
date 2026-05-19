@@ -44,6 +44,7 @@ import {
   type OfflineOwnerKey,
   type OfflineMediaAssetRecord,
   type OfflineMediaAssetStatus,
+  type OfflineSnapshot,
   type OfflineSnapshotMeta,
   type OfflineSyncBackupRecord,
   type QueuedMutation
@@ -2709,24 +2710,33 @@ export function TimeArchive() {
         }
         setSyncPhase((current) => (current === "repairing" ? current : "pull"));
         const hasPendingLocalChanges = pendingCount > 0;
-        applySnapshotToState({
+        const pulledAt = new Date().toISOString();
+        const nextMeta = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+          ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
+          boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
+          revision: nextRevision,
+          completeness: hasPendingLocalChanges ? "partial" : "complete",
+          lastAppliedLogId: nextLastSequence !== null ? String(nextLastSequence) : offlineMeta?.lastAppliedLogId ?? null,
+          syncState: {
+            lastSyncedAt: pulledAt,
+            hasLocalChanges: hasPendingLocalChanges,
+            bindingRequired: false
+          }
+        });
+        const nextSnapshot: OfflineSnapshot = {
           lifeStore: nextLifeStore,
           thinkingStore: nextThinkingStore,
           activeSpaceId: nextActive,
           thinkingViews: nextThinkingViews,
-          meta: createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
-            ownerMode: targetUserId ? "user" : offlineMeta?.ownerMode,
-            boundUserId: targetUserId ?? offlineMeta?.boundUserId ?? null,
-            revision: nextRevision,
-            completeness: hasPendingLocalChanges ? "partial" : "complete",
-            lastAppliedLogId: nextLastSequence !== null ? String(nextLastSequence) : offlineMeta?.lastAppliedLogId ?? null,
-            syncState: {
-              lastSyncedAt: new Date().toISOString(),
-              hasLocalChanges: hasPendingLocalChanges,
-              bindingRequired: false
-            }
-          })
-        });
+          savedAt: pulledAt,
+          meta: nextMeta
+        };
+        applySnapshotToState(nextSnapshot);
+        persistLifeStore(nextLifeStore);
+        persistThinkingStore(nextThinkingStore);
+        if (targetOwnerKey) {
+          await saveOfflineSnapshotByOwner(targetOwnerKey, nextSnapshot, { force: true });
+        }
         setCloudRevision(nextRevision);
         setCloudLastSequence(nextLastSequence);
         setCloudRepairCount(snapshotRepairItems.length);
