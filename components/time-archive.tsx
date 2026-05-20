@@ -28,7 +28,6 @@ import {
   getUserOwnerKey,
   isOfflineNetworkError,
   listDeadLetterMutationsByOwner,
-  listOfflineSnapshotRecords,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
   loadLatestOfflineSyncBackupByOwner,
@@ -49,7 +48,7 @@ import {
   type OfflineSyncBackupRecord,
   type QueuedMutation
 } from "@/components/offline-store";
-import { canAccessGuestMode, canUseCloudSync, isNativeAppRuntime } from "@/lib/capabilities";
+import { canUseCloudSync, isNativeAppRuntime } from "@/lib/capabilities";
 import { API_CONNECTIVITY_EVENT, apiFetch, buildApiUrl } from "@/lib/api-client";
 import {
   type LayerTab,
@@ -71,8 +70,6 @@ import {
   createId,
   createStars,
   formatDateTime,
-  loadLifeStore,
-  loadThinkingStore,
   persistLifeStore,
   persistThinkingStore,
   pickDefaultSpaceId,
@@ -457,6 +454,7 @@ type SyncRepairSummary = {
 };
 
 type OfflineRuntimeState =
+  | "signed_out"
   | "guest_ready"
   | "user_bootstrapping"
   | "user_syncing"
@@ -1419,6 +1417,8 @@ function getIncompleteSpaceIdsForExport(store: ThinkingStore, thinkingViews: Rec
 
 function describeOfflineRuntimeState(state: OfflineRuntimeState, options: { sessionEmail: string | null; isOnline: boolean }) {
   switch (state) {
+    case "signed_out":
+      return "未登录";
     case "guest_ready":
       return options.sessionEmail ? "账号未绑定云端同步" : "本地离线模式";
     case "user_bootstrapping":
@@ -1459,7 +1459,7 @@ export function TimeArchive() {
   const [pinUnlocked, setPinUnlocked] = useState(false);
   const [, setOfflineSnapshotExists] = useState(false);
   const [offlineMeta, setOfflineMeta] = useState<OfflineSnapshotMeta | null>(null);
-  const [offlineRuntimeState, setOfflineRuntimeState] = useState<OfflineRuntimeState>("guest_ready");
+  const [offlineRuntimeState, setOfflineRuntimeState] = useState<OfflineRuntimeState>("signed_out");
   const [activeOwnerKey, setActiveOwnerKey] = useState<OfflineOwnerKey | null>(null);
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
   const [pinTick, setPinTick] = useState(0);
@@ -1555,11 +1555,10 @@ export function TimeArchive() {
   useEffect(() => {
     const nativeApp = isNativeAppRuntime();
     setIsNativeApp(nativeApp);
-    setCloudSessionEnabled(!nativeApp);
+    setCloudSessionEnabled(true);
     setRuntimeReady(true);
   }, []);
 
-  const guestModeEnabled = canAccessGuestMode();
   const cloudSyncEnabled = cloudSessionEnabled && canUseCloudSync(sessionUser);
   const guestOwnerKey = getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
   const currentUserOwnerKey = sessionUser ? getUserOwnerKey(sessionUser.userId) : null;
@@ -2457,15 +2456,6 @@ export function TimeArchive() {
       return false;
     }
   }, []);
-
-  useEffect(() => {
-    if (!runtimeReady || cloudSessionEnabled) return;
-    userBootstrapRef.current = null;
-    bindingCheckUserIdRef.current = null;
-    setBindingDialog(null);
-    setSessionUser(null);
-    setAuthReady(true);
-  }, [cloudSessionEnabled, runtimeReady]);
 
   const syncLifeFromApi = useCallback(
     async (silent = false) => {
@@ -4096,47 +4086,18 @@ export function TimeArchive() {
     void (async () => {
       const localProfileId = getOrCreateLocalProfileId();
       localProfileIdRef.current = localProfileId;
-      const guestOwner = getGuestOwnerKey(localProfileId);
-      let initialOwnerKey = guestOwner;
-      if (isNativeApp && !cloudSessionEnabled) {
-        const records = await listOfflineSnapshotRecords();
-        if (cancelled) return;
-        const preferredRecord = records.find((item) => item.meta.localProfileId === localProfileId);
-        if (preferredRecord?.ownerKey) {
-          initialOwnerKey = preferredRecord.ownerKey;
-        }
-      }
-      const snapshot = await loadOfflineSnapshotByOwner(initialOwnerKey);
       if (cancelled) return;
-      if (snapshot) {
-        applySnapshotToState({
-          ...snapshot,
-          meta: snapshot.meta ?? createOfflineSnapshotMeta(localProfileId)
-        });
-        setActiveOwnerKey(initialOwnerKey);
-        setOfflineRuntimeState("guest_ready");
-        setHydrated(true);
-        return;
-      }
       setOfflineSnapshotExists(false);
-      setActiveOwnerKey(initialOwnerKey);
-      setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
-      setOfflineRuntimeState("guest_ready");
-      const loadedLife = loadLifeStore();
-      const loadedThinking = loadThinkingStore();
-      const initialSpaceId = pickDefaultSpaceId(loadedThinking.spaces);
-      const initialView = initialSpaceId ? buildSpaceViewFromStore(loadedThinking, initialSpaceId) : null;
-      setLifeStore(loadedLife);
-      setThinkingStore(loadedThinking);
-      setActiveSpaceId(initialSpaceId);
-      if (initialSpaceId && initialView) thinkingViewCacheRef.current[initialSpaceId] = initialView;
-      setThinkingView(initialView);
+      setActiveOwnerKey(null);
+      const signedOutMeta = createOfflineSnapshotMeta(localProfileId);
+      resetArchiveState(signedOutMeta);
+      setOfflineRuntimeState("signed_out");
       setHydrated(true);
     })();
     return () => {
       cancelled = true;
     };
-  }, [applySnapshotToState, cloudSessionEnabled, isNativeApp, pinEnabled, pinReady, pinUnlocked, runtimeReady]);
+  }, [pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4185,30 +4146,12 @@ export function TimeArchive() {
     let cancelled = false;
     void (async () => {
       const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
-      const nextGuestOwnerKey = getGuestOwnerKey(localProfileId);
-      const guestMeta = createOfflineSnapshotMeta(localProfileId);
-
       if (!sessionUser) {
         userBootstrapRef.current = null;
         bindingCheckUserIdRef.current = null;
         setBindingDialog(null);
-        if (isNativeApp && !cloudSessionEnabled) {
-          if (!activeOwnerKey) {
-            setOfflineRuntimeState("switching_account");
-            setActiveOwnerKey(nextGuestOwnerKey);
-            await loadOwnerSnapshot(nextGuestOwnerKey, guestMeta);
-            if (cancelled) return;
-          }
-          setOfflineRuntimeState(activeOwnerKey?.startsWith("user:") ? "user_offline_ready" : "guest_ready");
-          return;
-        }
-        if (activeOwnerKey !== nextGuestOwnerKey) {
-          setOfflineRuntimeState("switching_account");
-          setActiveOwnerKey(nextGuestOwnerKey);
-          await loadOwnerSnapshot(nextGuestOwnerKey, guestMeta);
-          if (cancelled) return;
-        }
-        setOfflineRuntimeState("guest_ready");
+        setActiveOwnerKey(null);
+        setOfflineRuntimeState("signed_out");
         return;
       }
 
@@ -4217,29 +4160,11 @@ export function TimeArchive() {
         ownerMode: "user",
         boundUserId: sessionUser.userId
       });
-      const guestHasData = activeOwnerKey === nextGuestOwnerKey && hasMeaningfulLocalData(lifeStore, thinkingStore);
-
-      if (guestHasData) {
-        const existingUserSnapshot = await loadOfflineSnapshotByOwner(nextUserOwnerKey);
-        if (cancelled) return;
-        if (existingUserSnapshot && offlineMeta.syncState.hasLocalChanges !== true) {
-          await clearOfflineSnapshotByOwner(nextGuestOwnerKey);
-          if (cancelled) return;
-          userBootstrapRef.current = null;
-          setOfflineRuntimeState("switching_account");
-          setActiveOwnerKey(nextUserOwnerKey);
-          applySnapshotToState({
-            ...existingUserSnapshot,
-            meta: existingUserSnapshot.meta ?? userMeta
-          });
-        } else {
-        setOfflineRuntimeState(bindingDialog || offlineMeta.syncState.bindingRequired ? "binding_required" : "guest_ready");
-        return;
-        }
-      }
 
       if (activeOwnerKey !== nextUserOwnerKey) {
         userBootstrapRef.current = null;
+        bindingCheckUserIdRef.current = null;
+        setBindingDialog(null);
         setOfflineRuntimeState("switching_account");
         setActiveOwnerKey(nextUserOwnerKey);
         await loadOwnerSnapshot(nextUserOwnerKey, userMeta);
@@ -4283,70 +4208,17 @@ export function TimeArchive() {
     };
   }, [
     activeOwnerKey,
-    applySnapshotToState,
     authReady,
-    bindingDialog,
     cloudSessionEnabled,
     hydrated,
     isNativeApp,
     isOnline,
-    lifeStore,
     loadOwnerSnapshot,
     offlineMeta,
     offlineRuntimeState,
     refreshFromCloud,
     sessionUser,
     runQueuedMutationSync,
-    thinkingStore,
-    updateOfflineMeta
-  ]);
-
-  useEffect(() => {
-    if (!hydrated || !authReady || !sessionUser || !offlineMeta || !isOnline) return;
-    if (activeOwnerKey !== guestOwnerKey) return;
-    if (bindingCheckUserIdRef.current === sessionUser.userId) return;
-    if (offlineMeta.completeness !== "complete") return;
-
-    const localHasData = hasMeaningfulLocalData(lifeStore, thinkingStore);
-    if (!localHasData) return;
-
-    let cancelled = false;
-    bindingCheckUserIdRef.current = sessionUser.userId;
-    void (async () => {
-      const cloud = await fetchCloudExport();
-      if (cancelled) return;
-      if (!cloud?.payload) {
-        bindingCheckUserIdRef.current = null;
-        return;
-      }
-      updateOfflineMeta((current) => ({
-        ...current,
-        syncState: {
-          ...current.syncState,
-          bindingRequired: true
-        }
-      }));
-      setOfflineRuntimeState("binding_required");
-      setBindingDialog({ cloudPayload: cloud.payload, submitting: false });
-    })();
-
-    return () => {
-      cancelled = true;
-    };
-  }, [
-    activeOwnerKey,
-    authReady,
-    buildLocalExportPayload,
-    fetchCloudExport,
-    guestOwnerKey,
-    hydrated,
-    importLocalPayloadToCloud,
-    isOnline,
-    lifeStore,
-    offlineMeta,
-    sessionUser,
-    showNotice,
-    thinkingStore,
     updateOfflineMeta
   ]);
 
@@ -4697,15 +4569,19 @@ export function TimeArchive() {
     if (activeOwnerKey !== ownerKey) setActiveOwnerKey(ownerKey);
     setSyncPhase("manual_pull");
     try {
-      const backup = await createOfflineSyncBackup(ownerKey, "manual_pull_cloud");
-      if (backup) setLatestSyncBackup(backup);
       await refreshFromCloud(activeSpaceIdRef.current, sessionUser.userId, { allowLocalOverwrite: true });
+      await clearOfflineOwnerState(getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId()));
+      if (typeof window !== "undefined") {
+        window.localStorage.removeItem(LIFE_STORAGE_KEY);
+        window.localStorage.removeItem(THINKING_STORAGE_KEY);
+      }
+      setLatestSyncBackup(null);
       await refreshCloudSyncState(sessionUser.userId);
       await refreshPendingMutationCount(ownerKey, true);
       await refreshDeadLetterMutations(ownerKey);
       setLastSyncError(null);
       setSyncPhase("manual_pull_done");
-      showNotice(backup ? "已拉取云端，本地备份可恢复" : "已拉取云端");
+      showNotice("已拉取云端，本机旧数据已清理");
       return { ok: true as const };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
@@ -7631,24 +7507,20 @@ export function TimeArchive() {
       try {
         await apiFetch("/v1/auth/logout", { method: "POST" });
       } finally {
+        const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
         bindingCheckUserIdRef.current = null;
         userBootstrapRef.current = null;
         setSessionUser(null);
         setBindingDialog(null);
         setAuthDialogOpen(false);
-        if (isNativeApp) {
-          setCloudSessionEnabled(false);
-          setOfflineRuntimeState(activeOwnerKey?.startsWith("user:") ? "user_offline_ready" : "guest_ready");
-          showNotice("已断开云端连接");
-          return;
-        }
-        setActiveOwnerKey(guestOwnerKey);
-        await loadOwnerSnapshot(guestOwnerKey, createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
-        setOfflineRuntimeState("guest_ready");
+        setCloudSessionEnabled(true);
+        setActiveOwnerKey(null);
+        resetArchiveState(createOfflineSnapshotMeta(localProfileId));
+        setOfflineRuntimeState("signed_out");
         showNotice("已退出登录");
       }
     })();
-  }, [activeOwnerKey, guestOwnerKey, isNativeApp, loadOwnerSnapshot, showNotice]);
+  }, [resetArchiveState, showNotice]);
 
   const openAuthDialog = useCallback(() => {
     setCloudSessionEnabled(true);
@@ -7657,10 +7529,8 @@ export function TimeArchive() {
 
   const closeAuthDialog = useCallback(() => {
     setAuthDialogOpen(false);
-    if (isNativeApp && !sessionUser) {
-      setCloudSessionEnabled(false);
-    }
-  }, [isNativeApp, sessionUser]);
+    setCloudSessionEnabled(true);
+  }, []);
 
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
@@ -7679,8 +7549,8 @@ export function TimeArchive() {
     setDeadLetterMutations([]);
     updateOfflineMeta((current) => ({
       ...current,
-      ownerMode: sessionUser ? "user" : "guest",
-      boundUserId: sessionUser?.userId ?? null,
+      ownerMode: "user",
+      boundUserId: sessionUser?.userId ?? current.boundUserId ?? null,
       syncState: {
         lastSyncedAt: current.syncState.lastSyncedAt,
         hasLocalChanges: false,
@@ -7736,8 +7606,8 @@ export function TimeArchive() {
     setSessionUser(null);
     setThinkingView(null);
     setActiveSpaceId(null);
-    setActiveOwnerKey(getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId()));
-    setOfflineRuntimeState("guest_ready");
+    setActiveOwnerKey(null);
+    setOfflineRuntimeState("signed_out");
     setOfflineMeta(createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
     setDeadLetterMutations([]);
     refreshPinState();
@@ -7799,8 +7669,8 @@ export function TimeArchive() {
     );
   }
 
-  if (!sessionUser && !guestModeEnabled) {
-    return <AuthPanel onAuthed={() => void syncAuth()} onClose={() => setAuthDialogOpen(false)} />;
+  if (!sessionUser) {
+    return <AuthPanel onAuthed={() => void syncAuth()} />;
   }
 
   const thinkingChromeHidden = tab === "thinking" && (thinkingFocusMode || thinkingViewMode === "detail");
