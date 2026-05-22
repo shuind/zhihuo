@@ -13,6 +13,7 @@ const SYNC_BACKUP_LIMIT = 5;
 const LEGACY_SNAPSHOT_KEY = "main";
 const PIN_STORAGE_KEY = "zhihuo_pin_v1";
 const LOCAL_PROFILE_STORAGE_KEY = "zhihuo_local_profile_v1";
+const LAST_USER_STORAGE_KEY = "zhihuo_last_user_v1";
 
 type PinStorage = {
   pin_enabled: boolean;
@@ -138,6 +139,12 @@ export type OfflineSyncBackupRecord = {
   reason: string;
 };
 
+export type LastUserMarker = {
+  userId: string;
+  email: string;
+  updatedAt: string;
+};
+
 function createLocalId() {
   if (globalThis.crypto && typeof globalThis.crypto.randomUUID === "function") {
     return globalThis.crypto.randomUUID();
@@ -152,6 +159,45 @@ export function getOrCreateLocalProfileId() {
   const nextId = createLocalId();
   window.localStorage.setItem(LOCAL_PROFILE_STORAGE_KEY, nextId);
   return nextId;
+}
+
+export function loadLastUserMarker(): LastUserMarker | null {
+  if (!canUseLocalStorage()) return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_USER_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<LastUserMarker>;
+    if (typeof parsed.userId !== "string" || !parsed.userId.trim()) return null;
+    if (typeof parsed.email !== "string" || !parsed.email.trim()) return null;
+    return {
+      userId: parsed.userId,
+      email: parsed.email,
+      updatedAt:
+        typeof parsed.updatedAt === "string" && parsed.updatedAt.trim()
+          ? parsed.updatedAt
+          : new Date().toISOString()
+    };
+  } catch {
+    return null;
+  }
+}
+
+export function saveLastUserMarker(user: { userId: string; email: string }) {
+  if (!canUseLocalStorage()) return;
+  if (!user.userId.trim() || !user.email.trim()) return;
+  window.localStorage.setItem(
+    LAST_USER_STORAGE_KEY,
+    JSON.stringify({
+      userId: user.userId,
+      email: user.email,
+      updatedAt: new Date().toISOString()
+    } satisfies LastUserMarker)
+  );
+}
+
+export function clearLastUserMarker() {
+  if (!canUseLocalStorage()) return;
+  window.localStorage.removeItem(LAST_USER_STORAGE_KEY);
 }
 
 export function createOfflineSnapshotMeta(localProfileId: string, options?: Partial<OfflineSnapshotMeta>): OfflineSnapshotMeta {

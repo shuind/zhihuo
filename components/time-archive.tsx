@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -12,6 +12,7 @@ import type { StarMapStatePatch } from "@/components/thinking/star-map";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
   changePin,
+  clearLastUserMarker,
   clearOfflineOwnerState,
   clearOfflineMutationsByOwner,
   clearOfflineSnapshotByOwner,
@@ -27,6 +28,7 @@ import {
   getOrCreateLocalProfileId,
   getUserOwnerKey,
   isOfflineNetworkError,
+  loadLastUserMarker,
   listDeadLetterMutationsByOwner,
   listOfflineMutationsByOwner,
   loadOfflineSnapshotByOwner,
@@ -34,7 +36,7 @@ import {
   listOfflineMediaAssetsByOwner,
   listPendingOfflineMediaAssetsByOwner,
   removeOfflineMutation,
-  restoreOfflineSyncBackup,
+  saveLastUserMarker,
   saveOfflineSnapshotByOwner,
   saveOfflineMediaAsset,
   updateOfflineMutation,
@@ -426,6 +428,11 @@ type SyncRepairItemSummary = {
   createdAt: string;
 };
 
+type BackupPreviewState = {
+  backup: OfflineSyncBackupRecord;
+  previousSnapshot: OfflineSnapshot;
+};
+
 type SyncPhase =
   | "idle"
   | "checking"
@@ -469,6 +476,8 @@ const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 const AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS = 60 * 1000;
+const PULL_REFRESH_THRESHOLD_PX = 72;
+const PULL_REFRESH_MAX_DISTANCE_PX = 112;
 
 function stableStringify(value: unknown): string {
   if (Array.isArray(value)) {
@@ -1438,6 +1447,15 @@ function describeOfflineRuntimeState(state: OfflineRuntimeState, options: { sess
   }
 }
 
+function canStartGlobalPullRefresh(target: EventTarget | null) {
+  if (!(target instanceof Element)) return true;
+  const scrollable = target.closest(
+    "[data-track-scroll], [data-thinking-spaces], [data-life-detail], .overflow-y-auto, .overflow-auto"
+  );
+  if (!(scrollable instanceof HTMLElement)) return true;
+  return scrollable.scrollTop <= 0;
+}
+
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("thinking");
   const [hydrated, setHydrated] = useState(false);
@@ -1457,7 +1475,7 @@ export function TimeArchive() {
   const [pinEnabled, setPinEnabled] = useState(false);
   const [pinLockedUntil, setPinLockedUntil] = useState(0);
   const [pinUnlocked, setPinUnlocked] = useState(false);
-  const [, setOfflineSnapshotExists] = useState(false);
+  const [offlineSnapshotExists, setOfflineSnapshotExists] = useState(false);
   const [offlineMeta, setOfflineMeta] = useState<OfflineSnapshotMeta | null>(null);
   const [offlineRuntimeState, setOfflineRuntimeState] = useState<OfflineRuntimeState>("signed_out");
   const [activeOwnerKey, setActiveOwnerKey] = useState<OfflineOwnerKey | null>(null);
@@ -1491,7 +1509,14 @@ export function TimeArchive() {
     verify: unknown;
   } | null>(null);
   const [latestSyncBackup, setLatestSyncBackup] = useState<OfflineSyncBackupRecord | null>(null);
+  const [backupPreview, setBackupPreview] = useState<BackupPreviewState | null>(null);
   const [autoWriteSuppressedUntil, setAutoWriteSuppressedUntil] = useState(0);
+  const [startupRecovering, setStartupRecovering] = useState(true);
+  const [pullRefresh, setPullRefresh] = useState<{
+    phase: "idle" | "pulling" | "ready" | "refreshing" | "done" | "offline";
+    distance: number;
+    message: string;
+  }>({ phase: "idle", distance: 0, message: "" });
 
   const noticeTimerRef = useRef<number | null>(null);
   const thinkingViewCacheRef = useRef<Record<string, ThinkingSpaceView>>({});
@@ -1504,8 +1529,12 @@ export function TimeArchive() {
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
   const autoWriteSuppressedUntilRef = useRef(0);
+  const isOnlineRef = useRef(isOnline);
   const mediaObjectUrlsRef = useRef<string[]>([]);
   const autoWritingSpaceIdsRef = useRef<Set<string>>(new Set());
+  const pullRefreshStartYRef = useRef<number | null>(null);
+  const pullRefreshActiveRef = useRef(false);
+  const pullRefreshTriggeredRef = useRef(false);
   const [stars] = useState(() => createStars(36));
 
   const activeThinkingSpaceOptions = useMemo(
@@ -1536,6 +1565,7 @@ export function TimeArchive() {
   const handleUnauthorized = useCallback(
     (response: Response) => {
       if (response.status !== 401) return false;
+      clearLastUserMarker();
       setSessionUser(null);
       setAuthReady(true);
       setLastSyncError("unauthorized");
@@ -1559,6 +1589,10 @@ export function TimeArchive() {
     setRuntimeReady(true);
   }, []);
 
+  useEffect(() => {
+    isOnlineRef.current = isOnline;
+  }, [isOnline]);
+
   const cloudSyncEnabled = cloudSessionEnabled && canUseCloudSync(sessionUser);
   const guestOwnerKey = getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
   const currentUserOwnerKey = sessionUser ? getUserOwnerKey(sessionUser.userId) : null;
@@ -1568,7 +1602,9 @@ export function TimeArchive() {
     offlineMeta?.ownerMode === "user" &&
     offlineMeta.boundUserId === sessionUser?.userId &&
     activeOwnerKey === currentUserOwnerKey;
+  const isBackupPreviewing = backupPreview !== null;
   const editingLocked =
+    isBackupPreviewing ||
     offlineRuntimeState === "user_bootstrapping" ||
     offlineRuntimeState === "user_syncing" ||
     offlineRuntimeState === "binding_required" ||
@@ -1584,6 +1620,7 @@ export function TimeArchive() {
           isOnline
         });
       }
+      if (isBackupPreviewing) return "正在预览本机备份";
       if (!isOnline) {
         return pendingMutationCount > 0 || hasTrackedLocalChanges ? "离线可用，网络恢复后自动同步" : "离线可用";
       }
@@ -1592,7 +1629,7 @@ export function TimeArchive() {
       if (syncPhase === "checking") return "正在检查云端";
       if (syncPhase === "bootstrap" || syncPhase === "pull") return "正在拉取云端更新";
       if (syncPhase === "conflict") return "正在基于最新云端版本重放本地改动";
-      if (cloudRepairCount > 0 || deadLetterMutations.length > 0) return "发现同步异常，需要处理";
+      if (deadLetterMutations.length > 0) return "发现同步异常，需要处理";
       if (pendingMutationCount > 0 || hasTrackedLocalChanges) return "有本地改动等待同步";
       if (cloudSyncReady || offlineRuntimeState === "user_sync_ready") return "云同步正常";
       return describeOfflineRuntimeState(offlineRuntimeState, {
@@ -1601,10 +1638,10 @@ export function TimeArchive() {
       });
     },
     [
-      cloudRepairCount,
       cloudSyncReady,
       deadLetterMutations.length,
       hasTrackedLocalChanges,
+      isBackupPreviewing,
       isOnline,
       lastSyncError,
       offlineRuntimeState,
@@ -1647,41 +1684,8 @@ export function TimeArchive() {
         return "空闲";
     }
   }, [syncPhase]);
-  const syncIssueMutations = useMemo<QueuedMutation[]>(() => {
-    const ownerKey = activeOwnerKey ?? getGuestOwnerKey(localProfileIdRef.current || getOrCreateLocalProfileId());
-    const repairMutations = serverRepairItems.map((item) => ({
-      id: `repair:${item.id}`,
-      ownerKey,
-      deviceId: localProfileIdRef.current || getOrCreateLocalProfileId(),
-      clientOrder: new Date(item.createdAt).getTime(),
-      route: item.op,
-      method: "POST" as const,
-      op: item.op,
-      entityType: item.op.startsWith("/v1/doubts")
-        ? ("life" as const)
-        : item.op.startsWith("/v1/thinking/scratch")
-          ? ("scratch" as const)
-          : item.op.startsWith("/v1/thinking")
-            ? ("thinking" as const)
-            : ("system" as const),
-      body: item.payload,
-      clientMutationId: item.clientMutationId,
-      clientUpdatedAt: item.createdAt,
-      baseRevision: cloudRevision ?? offlineMeta?.revision ?? 0,
-      status: "dead_letter" as const,
-      ackedRevision: cloudRevision ?? offlineMeta?.revision ?? null,
-      deadLetterReason: item.reason,
-      createdAt: item.createdAt,
-      retryCount: 0,
-      nextRetryAt: Number.MAX_SAFE_INTEGER,
-      lastError: item.reason
-    }));
-    return [...repairMutations, ...deadLetterMutations];
-  }, [activeOwnerKey, cloudRevision, deadLetterMutations, offlineMeta?.revision, serverRepairItems]);
+  const syncIssueMutations = deadLetterMutations;
   const syncWarning = useMemo(() => {
-    if (cloudRepairCount > 0) {
-      return `云端仍有 ${cloudRepairCount} 条待修复的同步条目，建议执行同步刷新`;
-    }
     if (hasUnqueuedLocalChanges) {
       return "检测到本地已变更，但没有对应的待上传队列。已阻止自动云端覆盖，请复制诊断排查这次操作为何未入队。";
     }
@@ -1713,7 +1717,6 @@ export function TimeArchive() {
     }
     return null;
   }, [
-    cloudRepairCount,
     cloudRevision,
     cloudSyncReady,
     hasUnqueuedLocalChanges,
@@ -1744,7 +1747,15 @@ export function TimeArchive() {
           visible_pending_changes: pendingMutationCount > 0 ? pendingMutationCount : hasTrackedLocalChanges ? 1 : 0,
           unqueued_local_changes: hasUnqueuedLocalChanges,
           offline_media_pending: offlineMediaAssets.filter((asset) => asset.status === "pending").length,
-          dead_letters: syncIssueMutations.length,
+          dead_letters: deadLetterMutations.length,
+          unmerged_items: serverRepairItems.map((item) => ({
+            id: item.id,
+            op: item.op,
+            reason: item.reason,
+            created_at: item.createdAt,
+            client_mutation_id: item.clientMutationId,
+            payload: item.payload
+          })),
           last_synced_at: offlineMeta?.syncState.lastSyncedAt ?? null,
           has_local_changes: offlineMeta?.syncState.hasLocalChanges === true,
           sync_phase: syncPhase,
@@ -1790,7 +1801,8 @@ export function TimeArchive() {
       offlineMediaAssets,
       offlineRuntimeState,
       pendingMutationCount,
-      syncIssueMutations.length,
+      deadLetterMutations.length,
+      serverRepairItems,
       syncModeLabel,
       syncPhaseLabel,
       syncPhase,
@@ -2436,22 +2448,37 @@ export function TimeArchive() {
     try {
       const response = await apiFetch("/v1/auth/me", { method: "GET", cache: "no-store" });
       if (!response.ok) {
-        setSessionUser(null);
+        if (response.status === 401) {
+          setSessionUser(null);
+          clearLastUserMarker();
+          setOfflineRuntimeState("signed_out");
+        }
         setAuthReady(true);
         return false;
       }
       const payload = (await response.json()) as { user_id?: string; email?: string };
       if (typeof payload.user_id !== "string" || typeof payload.email !== "string") {
         setSessionUser(null);
+        clearLastUserMarker();
         setAuthReady(true);
         return false;
       }
-      setSessionUser({ userId: payload.user_id, email: payload.email });
+      const nextUser = { userId: payload.user_id, email: payload.email };
+      setSessionUser(nextUser);
+      saveLastUserMarker(nextUser);
       setLastSyncError((current) => (current === "unauthorized" ? null : current));
       setAuthReady(true);
       return true;
-    } catch {
-      setSessionUser(null);
+    } catch (error) {
+      if (!isOfflineNetworkError(error)) {
+        setSessionUser(null);
+      } else {
+        setOfflineRuntimeState((current) =>
+          current === "user_sync_ready" || current === "user_syncing" || current === "user_bootstrapping"
+            ? "user_offline_ready"
+            : current
+        );
+      }
       setAuthReady(true);
       return false;
     }
@@ -2621,6 +2648,28 @@ export function TimeArchive() {
     if (!payload) return null;
     return payload;
   }, [handleUnauthorized]);
+
+  const refreshServerRepairItems = useCallback(async () => {
+    const payload = await fetchSyncSnapshot();
+    if (!payload) return null;
+    const nextRepairItems: SyncRepairItemSummary[] = Array.isArray(payload.repairItems)
+      ? payload.repairItems
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            clientMutationId: typeof item.clientMutationId === "string" ? item.clientMutationId : item.id as string,
+            op: typeof item.op === "string" ? item.op : "",
+            payload: item.payload && typeof item.payload === "object" ? item.payload : {},
+            reason: typeof item.reason === "string" ? item.reason : "repair_required",
+            destinationClass: typeof item.destinationClass === "string" ? item.destinationClass : null,
+            originalTargetId: typeof item.originalTargetId === "string" ? item.originalTargetId : null,
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+          }))
+      : [];
+    setServerRepairItems(nextRepairItems);
+    setCloudRepairCount(nextRepairItems.length);
+    return nextRepairItems;
+  }, [fetchSyncSnapshot]);
 
   const refreshFromCloud = useCallback(
     async (preferredSpaceId?: string | null, userId?: string | null, options?: { allowLocalOverwrite?: boolean }) => {
@@ -3452,6 +3501,45 @@ export function TimeArchive() {
     [refreshCloudSyncState, refreshFromCloud, sessionUser?.userId]
   );
 
+  const refreshCurrentAccountFromCloud = useCallback(async () => {
+    const authed = await syncAuth();
+    const marker = loadLastUserMarker();
+    const userId = authed ? sessionUser?.userId ?? marker?.userId ?? null : marker?.userId ?? null;
+    const ownerKey = userId ? getUserOwnerKey(userId) : activeOwnerKey;
+    if (!isOnline) {
+      setPullRefresh({ phase: "offline", distance: 0, message: "当前离线，已显示本机缓存" });
+      showNotice("当前离线，已显示本机缓存");
+      return false;
+    }
+    if (!authed && !userId) {
+      setPullRefresh({ phase: "done", distance: 0, message: "未登录" });
+      return false;
+    }
+    if (userId) {
+      await refreshFromCloud(activeSpaceIdRef.current, userId, { allowLocalOverwrite: true });
+      await refreshCloudSyncState(userId);
+      await refreshServerRepairItems();
+    }
+    if (ownerKey) {
+      await refreshPendingMutationCount(ownerKey, true);
+      await refreshDeadLetterMutations(ownerKey);
+    }
+    setPullRefresh({ phase: "done", distance: 0, message: "已刷新" });
+    showNotice("已刷新");
+    return true;
+  }, [
+    activeOwnerKey,
+    isOnline,
+    refreshCloudSyncState,
+    refreshDeadLetterMutations,
+    refreshFromCloud,
+    refreshPendingMutationCount,
+    refreshServerRepairItems,
+    sessionUser?.userId,
+    showNotice,
+    syncAuth
+  ]);
+
   const repairCloudSyncState = useCallback(
     async (ownerKey: OfflineOwnerKey | null, preferredSpaceId?: string | null) => {
       if (!ownerKey || !ownerKey.startsWith("user:")) {
@@ -3505,6 +3593,10 @@ export function TimeArchive() {
 
   const queueMutation = useCallback(
     async (route: string, body: Record<string, unknown> | null = null) => {
+      if (backupPreview) {
+        showNotice("正在预览本机备份，不能编辑");
+        return null;
+      }
       if (!activeOwnerKey || !sessionUser || !activeOwnerKey.startsWith("user:")) {
         markLocalChange();
         return null;
@@ -3560,6 +3652,7 @@ export function TimeArchive() {
     },
     [
       activeOwnerKey,
+      backupPreview,
       isOnline,
       markLocalChange,
       offlineMeta?.boundUserId,
@@ -3568,7 +3661,8 @@ export function TimeArchive() {
       offlineRuntimeState,
       refreshPendingMutationCount,
       runQueuedMutationSync,
-      sessionUser
+      sessionUser,
+      showNotice
     ]
   );
 
@@ -4081,23 +4175,45 @@ export function TimeArchive() {
   }, [cloudSessionEnabled, pinEnabled, pinReady, pinUnlocked, runtimeReady, syncAuth]);
 
   useEffect(() => {
-    if (!runtimeReady || !pinReady || (pinEnabled && !pinUnlocked)) return;
+    if (hydrated || !runtimeReady || !pinReady || (pinEnabled && !pinUnlocked)) return;
     let cancelled = false;
     void (async () => {
       const localProfileId = getOrCreateLocalProfileId();
       localProfileIdRef.current = localProfileId;
       if (cancelled) return;
-      setOfflineSnapshotExists(false);
-      setActiveOwnerKey(null);
-      const signedOutMeta = createOfflineSnapshotMeta(localProfileId);
-      resetArchiveState(signedOutMeta);
-      setOfflineRuntimeState("signed_out");
+      const lastUser = loadLastUserMarker();
+      if (lastUser) {
+        const ownerKey = getUserOwnerKey(lastUser.userId);
+        const fallbackMeta = createOfflineSnapshotMeta(localProfileId, {
+          ownerMode: "user",
+          boundUserId: lastUser.userId,
+          completeness: "stale"
+        });
+        setActiveOwnerKey(ownerKey);
+        setSessionUser({ userId: lastUser.userId, email: lastUser.email });
+        const snapshot = await loadOwnerSnapshot(ownerKey, fallbackMeta);
+        if (cancelled) return;
+        if (snapshot) {
+          setOfflineRuntimeState(isOnlineRef.current ? "user_syncing" : "user_offline_ready");
+        } else {
+          setOfflineSnapshotExists(false);
+          resetArchiveState(fallbackMeta);
+          setOfflineRuntimeState(isOnlineRef.current ? "user_bootstrapping" : "user_offline_ready");
+        }
+      } else {
+        setOfflineSnapshotExists(false);
+        setActiveOwnerKey(null);
+        const signedOutMeta = createOfflineSnapshotMeta(localProfileId);
+        resetArchiveState(signedOutMeta);
+        setOfflineRuntimeState("signed_out");
+      }
       setHydrated(true);
+      setStartupRecovering(false);
     })();
     return () => {
       cancelled = true;
     };
-  }, [pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady]);
+  }, [hydrated, loadOwnerSnapshot, pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -4259,6 +4375,19 @@ export function TimeArchive() {
   }, [hydrated, isOnline]);
 
   useEffect(() => {
+    if (typeof document === "undefined") return;
+    if (!hydrated || !authReady || !sessionUser) return;
+    const retry = () => {
+      if (document.visibilityState !== "visible") return;
+      if (!isOnline) return;
+      if (offlineRuntimeState !== "user_offline_ready" && offlineRuntimeState !== "user_syncing") return;
+      void refreshCurrentAccountFromCloud();
+    };
+    document.addEventListener("visibilitychange", retry);
+    return () => document.removeEventListener("visibilitychange", retry);
+  }, [authReady, hydrated, isOnline, offlineRuntimeState, refreshCurrentAccountFromCloud, sessionUser]);
+
+  useEffect(() => {
     if (!hydrated) return;
     void refreshDeadLetterMutations(activeOwnerKey);
   }, [activeOwnerKey, hydrated, refreshDeadLetterMutations]);
@@ -4283,16 +4412,19 @@ export function TimeArchive() {
       return;
     }
     void refreshCloudSyncState(sessionUser.userId);
+    void refreshServerRepairItems();
     const timer = window.setInterval(() => {
       void refreshCloudSyncState(sessionUser.userId);
+      void refreshServerRepairItems();
     }, CLOUD_SYNC_CHECK_INTERVAL_MS);
     return () => {
       window.clearInterval(timer);
     };
-  }, [authReady, cloudSyncReady, isOnline, refreshCloudSyncState, sessionUser]);
+  }, [authReady, cloudSyncReady, isOnline, refreshCloudSyncState, refreshServerRepairItems, sessionUser]);
 
   useEffect(() => {
     if (!authReady || !cloudSyncReady || !sessionUser || !isOnline) return;
+    if (isBackupPreviewing) return;
     if (pendingMutationCount > 0) return;
     if (offlineMeta?.syncState.hasLocalChanges === true) return;
     if (typeof cloudRevision !== "number") return;
@@ -4308,7 +4440,18 @@ export function TimeArchive() {
         autoCloudRefreshInFlightRef.current = false;
       }
     })();
-  }, [authReady, cloudRevision, cloudSyncReady, isOnline, offlineMeta, pendingMutationCount, refreshFromCloud, sessionUser, syncPhase]);
+  }, [
+    authReady,
+    cloudRevision,
+    cloudSyncReady,
+    isBackupPreviewing,
+    isOnline,
+    offlineMeta,
+    pendingMutationCount,
+    refreshFromCloud,
+    sessionUser,
+    syncPhase
+  ]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -4551,6 +4694,9 @@ export function TimeArchive() {
   );
 
   const manualPullCloud = useCallback(async () => {
+    if (backupPreview) {
+      return { ok: false as const, error: "正在预览本机备份，请先退出预览" };
+    }
     if (!sessionUser || !currentUserOwnerKey) {
       return { ok: false as const, error: "当前不在账号同步模式" };
     }
@@ -4593,6 +4739,7 @@ export function TimeArchive() {
     }
   }, [
     activeOwnerKey,
+    backupPreview,
     currentUserOwnerKey,
     isOnline,
     offlineMeta?.boundUserId,
@@ -4606,6 +4753,9 @@ export function TimeArchive() {
   ]);
 
   const manualUploadLocal = useCallback(async () => {
+    if (backupPreview) {
+      return { ok: false as const, error: "正在预览本机备份，请先退出预览" };
+    }
     if (!sessionUser || !currentUserOwnerKey) {
       return { ok: false as const, error: "当前不在账号同步模式" };
     }
@@ -4638,6 +4788,7 @@ export function TimeArchive() {
     return { ok: false as const, error: lastSyncError ?? "上传本地改动失败" };
   }, [
     activeOwnerKey,
+    backupPreview,
     currentUserOwnerKey,
     isOnline,
     lastSyncError,
@@ -4698,31 +4849,80 @@ export function TimeArchive() {
     showNotice
   ]);
 
-  const restoreLatestSyncBackup = useCallback(async () => {
+  const previewLatestSyncBackup = useCallback(async () => {
     const ownerKey = activeOwnerKey;
-    const backup = latestSyncBackup ?? (await refreshLatestSyncBackup(ownerKey));
-    if (!ownerKey || !backup) return { ok: false as const, error: "暂无可恢复的本地备份" };
-    const restored = await restoreOfflineSyncBackup(backup.id);
-    if (!restored) return { ok: false as const, error: "恢复本地备份失败" };
-    const snapshot = await loadOfflineSnapshotByOwner(restored.ownerKey);
-    if (!snapshot) return { ok: false as const, error: "恢复后的快照不可用" };
-    applySnapshotToState(snapshot);
-    await refreshPendingMutationCount(restored.ownerKey, true);
-    await refreshDeadLetterMutations(restored.ownerKey);
-    await refreshLatestSyncBackup(restored.ownerKey);
+    const backup =
+      latestSyncBackup && latestSyncBackup.ownerKey === ownerKey
+        ? latestSyncBackup
+        : await refreshLatestSyncBackup(ownerKey);
+    if (!ownerKey || !backup) return { ok: false as const, error: "暂无可查看的本机备份" };
+    if (thinkingView) {
+      thinkingViewCacheRef.current[thinkingView.spaceId] = thinkingView;
+    }
+    const previousSnapshot: OfflineSnapshot = {
+      lifeStore,
+      thinkingStore,
+      activeSpaceId,
+      thinkingViews: thinkingViewCacheRef.current,
+      savedAt: new Date().toISOString(),
+      meta:
+        offlineMeta ??
+        createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
+          ownerMode: sessionUser ? "user" : "guest",
+          boundUserId: sessionUser?.userId ?? null
+        })
+    };
+    setBackupPreview({ backup, previousSnapshot });
+    applySnapshotToState(backup.snapshot);
     setLastSyncError(null);
     setSyncPhase("ready");
-    showNotice("已恢复本地备份");
+    showNotice("正在预览本机备份，不会自动同步");
     return { ok: true as const };
+  }, [
+    activeSpaceId,
+    activeOwnerKey,
+    applySnapshotToState,
+    lifeStore,
+    latestSyncBackup,
+    refreshLatestSyncBackup,
+    offlineMeta,
+    sessionUser,
+    showNotice,
+    thinkingStore,
+    thinkingView
+  ]);
+
+  const exitBackupPreview = useCallback(async () => {
+    if (!backupPreview) return;
+    const ownerKey = activeOwnerKey;
+    applySnapshotToState(backupPreview.previousSnapshot);
+    setBackupPreview(null);
+    if (ownerKey) {
+      await refreshPendingMutationCount(ownerKey, true);
+      await refreshDeadLetterMutations(ownerKey);
+      await refreshLatestSyncBackup(ownerKey);
+    }
+    setLastSyncError(null);
+    setSyncPhase("ready");
+    showNotice("已退出备份预览");
   }, [
     activeOwnerKey,
     applySnapshotToState,
-    latestSyncBackup,
+    backupPreview,
     refreshDeadLetterMutations,
     refreshLatestSyncBackup,
     refreshPendingMutationCount,
     showNotice
   ]);
+
+  const overwriteCloudWithBackupPreview = useCallback(async () => {
+    if (!backupPreview) return { ok: false as const, error: "当前没有正在预览的本机备份" };
+    const result = await manualOverwriteCloud();
+    if (result.ok) {
+      setBackupPreview(null);
+    }
+    return result;
+  }, [backupPreview, manualOverwriteCloud]);
 
   const handleCreateThinkingFromInput = useCallback(
     async (rawInput: string) => {
@@ -7206,7 +7406,7 @@ export function TimeArchive() {
     if (nowMs < autoWriteSuppressedUntilRef.current) return;
     if (!cloudSyncReady || !isOnline) return;
     if (offlineMeta?.syncState.hasLocalChanges === true || pendingMutationCount > 0) return;
-    if (cloudRepairCount > 0 || deadLetterMutations.length > 0 || lastSyncError) return;
+    if (isBackupPreviewing || deadLetterMutations.length > 0 || lastSyncError) return;
     if (
       syncPhase !== "idle" &&
       syncPhase !== "ready" &&
@@ -7252,11 +7452,11 @@ export function TimeArchive() {
     })();
   }, [
     handleThinkingWriteToTime,
-    cloudRepairCount,
     cloudSyncReady,
     deadLetterMutations.length,
     hydrated,
     isOnline,
+    isBackupPreviewing,
     lastSyncError,
     offlineMeta?.syncState.hasLocalChanges,
     pendingMutationCount,
@@ -7480,6 +7680,7 @@ export function TimeArchive() {
       }
     }));
     await clearOfflineSnapshotByOwner(guestOwnerKey);
+    saveLastUserMarker(sessionUser);
     setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
     await refreshFromCloud(null, sessionUser.userId, { allowLocalOverwrite: true });
     setBindingDialog(null);
@@ -7496,6 +7697,7 @@ export function TimeArchive() {
       return;
     }
     await clearOfflineSnapshotByOwner(guestOwnerKey);
+    saveLastUserMarker(sessionUser);
     setActiveOwnerKey(getUserOwnerKey(sessionUser.userId));
     setOfflineRuntimeState("user_bootstrapping");
     setBindingDialog(null);
@@ -7510,6 +7712,7 @@ export function TimeArchive() {
         const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
         bindingCheckUserIdRef.current = null;
         userBootstrapRef.current = null;
+        clearLastUserMarker();
         setSessionUser(null);
         setBindingDialog(null);
         setAuthDialogOpen(false);
@@ -7539,6 +7742,7 @@ export function TimeArchive() {
     setLifeStore((prev) => ({ ...EMPTY_LIFE_STORE, meta: prev.meta }));
     setOfflineSnapshotExists(false);
     setBindingDialog(null);
+    clearLastUserMarker();
     if (typeof window !== "undefined") {
       window.localStorage.removeItem(LIFE_STORAGE_KEY);
       window.localStorage.removeItem(THINKING_STORAGE_KEY);
@@ -7601,6 +7805,7 @@ export function TimeArchive() {
   const handleForgotPin = useCallback(async () => {
     await clearOfflineState();
     clearPinStatus();
+    clearLastUserMarker();
     setPinUnlocked(true);
     setOfflineSnapshotExists(false);
     setSessionUser(null);
@@ -7615,16 +7820,33 @@ export function TimeArchive() {
 
   const dismissDeadLetterMutation = useCallback(
     async (mutationId: string) => {
-      if (mutationId.startsWith("repair:")) {
-        showNotice("浜戠淇椤规殏涓嶆敮鎸佸湪鏈湴蹇界暐");
-        return;
-      }
       await removeOfflineMutation(mutationId);
       await refreshDeadLetterMutations(activeOwnerKey);
       await refreshPendingMutationCount(activeOwnerKey, true);
       showNotice("已移除同步异常");
     },
     [activeOwnerKey, refreshDeadLetterMutations, refreshPendingMutationCount, showNotice]
+  );
+
+  const ignoreServerRepairItem = useCallback(
+    async (itemId: string) => {
+      if (!sessionUser) {
+        showNotice("请先登录账号");
+        return;
+      }
+      const response = await apiFetch(`/v1/sync/repair-items/${encodeURIComponent(itemId)}/ignore`, { method: "POST" });
+      if (handleUnauthorized(response)) return;
+      if (!response.ok) {
+        showNotice("忽略失败，请稍后重试");
+        return;
+      }
+      setServerRepairItems((items) => items.filter((item) => item.id !== itemId));
+      setCloudRepairCount((count) => Math.max(0, count - 1));
+      await refreshCloudSyncState(sessionUser.userId);
+      await refreshServerRepairItems();
+      showNotice("已忽略历史未合入内容");
+    },
+    [handleUnauthorized, refreshCloudSyncState, refreshServerRepairItems, sessionUser, showNotice]
   );
 
   const handleSyncRepair = useCallback(async () => {
@@ -7647,6 +7869,76 @@ export function TimeArchive() {
     }
   }, [currentUserOwnerKey, isOnline, offlineRuntimeState, repairCloudSyncState, refreshCloudSyncState, sessionUser, showNotice]);
 
+  const resetPullRefreshLater = useCallback(() => {
+    window.setTimeout(() => {
+      setPullRefresh((current) =>
+        current.phase === "done" || current.phase === "offline"
+          ? { phase: "idle", distance: 0, message: "" }
+          : current
+      );
+    }, 1200);
+  }, []);
+
+  const handlePullRefreshStart = useCallback((event: ReactTouchEvent<HTMLDivElement>) => {
+    if (event.touches.length !== 1) return;
+    if (!canStartGlobalPullRefresh(event.target)) return;
+    pullRefreshStartYRef.current = event.touches[0].clientY;
+    pullRefreshActiveRef.current = true;
+    pullRefreshTriggeredRef.current = false;
+  }, []);
+
+  const handlePullRefreshMove = useCallback(
+    (event: ReactTouchEvent<HTMLDivElement>) => {
+      if (!pullRefreshActiveRef.current || pullRefreshStartYRef.current === null) return;
+      if (pullRefresh.phase === "refreshing") return;
+      const delta = event.touches[0].clientY - pullRefreshStartYRef.current;
+      if (delta <= 0) {
+        setPullRefresh({ phase: "idle", distance: 0, message: "" });
+        return;
+      }
+      if (delta > 4 && event.cancelable) {
+        event.preventDefault();
+      }
+      const distance = Math.min(PULL_REFRESH_MAX_DISTANCE_PX, Math.round(delta * 0.55));
+      const ready = distance >= PULL_REFRESH_THRESHOLD_PX;
+      pullRefreshTriggeredRef.current = ready;
+      setPullRefresh({
+        phase: ready ? "ready" : "pulling",
+        distance,
+        message: ready ? "松开刷新" : "下拉刷新"
+      });
+    },
+    [pullRefresh.phase]
+  );
+
+  const handlePullRefreshEnd = useCallback(() => {
+    if (!pullRefreshActiveRef.current) return;
+    const shouldRefresh = pullRefreshTriggeredRef.current;
+    pullRefreshActiveRef.current = false;
+    pullRefreshStartYRef.current = null;
+    pullRefreshTriggeredRef.current = false;
+    if (!shouldRefresh) {
+      setPullRefresh({ phase: "idle", distance: 0, message: "" });
+      return;
+    }
+    setPullRefresh({ phase: "refreshing", distance: PULL_REFRESH_THRESHOLD_PX, message: "正在刷新" });
+    void (async () => {
+      try {
+        await refreshCurrentAccountFromCloud();
+      } catch (error) {
+        const offline = isOfflineNetworkError(error);
+        setPullRefresh({
+          phase: offline ? "offline" : "done",
+          distance: 0,
+          message: offline ? "当前离线，已显示本机缓存" : "刷新失败"
+        });
+        showNotice(offline ? "当前离线，已显示本机缓存" : "刷新失败，请稍后再试");
+      } finally {
+        resetPullRefreshLater();
+      }
+    })();
+  }, [refreshCurrentAccountFromCloud, resetPullRefreshLater, showNotice]);
+
   void pinTick;
 
   if (!pinReady) {
@@ -7661,10 +7953,42 @@ export function TimeArchive() {
     return <PinGate lockedUntil={pinLockedUntil} onVerified={handlePinVerified} />;
   }
 
-  if (!hydrated) {
+  if (
+    !hydrated ||
+    startupRecovering ||
+    (sessionUser &&
+      !offlineSnapshotExists &&
+      (offlineRuntimeState === "user_bootstrapping" ||
+        offlineRuntimeState === "user_syncing" ||
+        offlineRuntimeState === "switching_account"))
+  ) {
     return (
       <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
-        <p className="text-sm tracking-[0.12em] text-slate-300/80">加载中...</p>
+        <p className="text-sm tracking-[0.12em] text-slate-300/80">正在恢复...</p>
+      </div>
+    );
+  }
+
+  if (!authReady && !sessionUser) {
+    return (
+      <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
+        <p className="text-sm tracking-[0.12em] text-slate-300/80">正在确认登录状态...</p>
+      </div>
+    );
+  }
+
+  if (sessionUser && !offlineSnapshotExists && offlineRuntimeState === "user_offline_ready") {
+    return (
+      <div className="grid h-screen place-items-center bg-slate-950 px-6 text-center text-slate-200">
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <p className="text-sm font-medium text-slate-100">当前离线，暂无本机缓存</p>
+            <p className="text-xs text-slate-400">网络恢复后会继续确认登录状态并拉取云端数据。</p>
+          </div>
+          <Button size="sm" variant="secondary" onClick={() => void refreshCurrentAccountFromCloud()}>
+            重新尝试
+          </Button>
+        </div>
       </div>
     );
   }
@@ -7687,7 +8011,12 @@ export function TimeArchive() {
         "relative h-screen w-screen overflow-hidden text-slate-100",
         tab === "life" ? "life-surface" : tab === "thinking" ? "thinking-surface text-slate-900" : "settings-surface"
       )}
+      onTouchStart={handlePullRefreshStart}
+      onTouchMove={handlePullRefreshMove}
+      onTouchEnd={handlePullRefreshEnd}
+      onTouchCancel={handlePullRefreshEnd}
     >
+      <PullRefreshIndicator state={pullRefresh} />
       {showGlobalHeader ? (
       <header
         className={cn(
@@ -7864,10 +8193,25 @@ export function TimeArchive() {
                 onManualPullCloud={manualPullCloud}
                 onManualUploadLocal={manualUploadLocal}
                 onManualOverwriteCloud={manualOverwriteCloud}
-                onRestoreLatestSyncBackup={restoreLatestSyncBackup}
+                onPreviewLatestSyncBackup={previewLatestSyncBackup}
+                onExitBackupPreview={exitBackupPreview}
+                onOverwriteCloudWithBackupPreview={overwriteCloudWithBackupPreview}
                 onSyncRepair={handleSyncRepair}
                 deadLetterMutations={syncIssueMutations}
                 onDismissDeadLetter={dismissDeadLetterMutation}
+                unmergedItems={serverRepairItems}
+                onIgnoreUnmergedItem={ignoreServerRepairItem}
+                backupPreview={
+                  backupPreview
+                    ? {
+                        id: backupPreview.backup.id,
+                        createdAt: backupPreview.backup.createdAt,
+                        reason: backupPreview.backup.reason,
+                        mutationCount: backupPreview.backup.mutations.length,
+                        mediaCount: backupPreview.backup.mediaAssets.length
+                      }
+                    : null
+                }
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
                     const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);
@@ -8012,6 +8356,49 @@ function MobileBottomTabIcon(props: { icon: "life" | "thinking" | "settings" }) 
       />
       <circle cx="9" cy="9" r="6.2" stroke="currentColor" strokeWidth="1.1" opacity="0.32" />
     </svg>
+  );
+}
+
+function PullRefreshIndicator(props: {
+  state: {
+    phase: "idle" | "pulling" | "ready" | "refreshing" | "done" | "offline";
+    distance: number;
+    message: string;
+  };
+}) {
+  const visible = props.state.phase !== "idle";
+  const progress =
+    props.state.phase === "refreshing" || props.state.phase === "done" || props.state.phase === "offline"
+      ? 1
+      : Math.min(1, props.state.distance / PULL_REFRESH_THRESHOLD_PX);
+  return (
+    <div
+      className={cn(
+        "pointer-events-none absolute left-1/2 top-[calc(var(--safe-top)+10px)] z-50 -translate-x-1/2 transition-all duration-200",
+        visible ? "translate-y-0 opacity-100" : "-translate-y-3 opacity-0"
+      )}
+      style={{
+        transform: `translate(-50%, ${visible ? Math.min(26, props.state.distance * 0.18) : -12}px)`
+      }}
+    >
+      <div className="flex items-center gap-2 rounded-full border border-slate-300/40 bg-white/92 px-3 py-1.5 text-xs text-slate-800 shadow-lg backdrop-blur">
+        <span
+          className={cn(
+            "grid h-4 w-4 place-items-center rounded-full border border-slate-400/50",
+            props.state.phase === "refreshing" && "animate-spin border-slate-300 border-t-slate-800"
+          )}
+          aria-hidden="true"
+        >
+          {props.state.phase === "refreshing" ? null : (
+            <span
+              className="h-2 w-2 rounded-full bg-slate-800 transition-transform"
+              style={{ transform: `scale(${Math.max(0.3, progress)})` }}
+            />
+          )}
+        </span>
+        <span>{props.state.message}</span>
+      </div>
+    </div>
   );
 }
 

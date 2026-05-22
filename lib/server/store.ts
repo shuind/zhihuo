@@ -229,6 +229,13 @@ export function listUserSyncRepairItems(db: DbState, userId: string) {
     .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime());
 }
 
+export function resolveUserSyncRepairItem(db: DbState, userId: string, itemId: string) {
+  const item = db.sync_repair_items.find((row) => row.id === itemId && row.user_id === userId) ?? null;
+  if (!item) return null;
+  if (!item.resolved_at) item.resolved_at = nowIso();
+  return item;
+}
+
 export function findAppliedClientMutation(db: DbState, userId: string, clientMutationId: string) {
   return (
     db.applied_client_mutations.find(

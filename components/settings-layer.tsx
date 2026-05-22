@@ -24,6 +24,25 @@ const TIMEZONE_OPTIONS = [
   { value: "Europe/London", label: "伦敦时间 (UTC+00:00/+01:00)" }
 ];
 
+type SyncRepairItemSummary = {
+  id: string;
+  clientMutationId: string;
+  op: string;
+  payload: Record<string, unknown>;
+  reason: string;
+  destinationClass: string | null;
+  originalTargetId: string | null;
+  createdAt: string;
+};
+
+type BackupPreviewSummary = {
+  id: string;
+  createdAt: string;
+  reason: string;
+  mutationCount: number;
+  mediaCount: number;
+};
+
 export function SettingsLayer(props: {
   timezone: string;
   setTimezone: (timezone: string) => void;
@@ -81,10 +100,15 @@ export function SettingsLayer(props: {
   onManualPullCloud: () => Promise<{ ok: boolean; error?: string }>;
   onManualUploadLocal: () => Promise<{ ok: boolean; error?: string }>;
   onManualOverwriteCloud: () => Promise<{ ok: boolean; error?: string }>;
-  onRestoreLatestSyncBackup: () => Promise<{ ok: boolean; error?: string }>;
+  onPreviewLatestSyncBackup: () => Promise<{ ok: boolean; error?: string }>;
+  onExitBackupPreview: () => Promise<void> | void;
+  onOverwriteCloudWithBackupPreview: () => Promise<{ ok: boolean; error?: string }>;
   onSyncRepair: () => Promise<{ ok: boolean; error?: string }>;
   deadLetterMutations: QueuedMutation[];
   onDismissDeadLetter: (mutationId: string) => Promise<void> | void;
+  unmergedItems: SyncRepairItemSummary[];
+  onIgnoreUnmergedItem: (itemId: string) => Promise<void> | void;
+  backupPreview: BackupPreviewSummary | null;
   showNotice: (message: string) => void;
 }) {
   const [confirmClear, setConfirmClear] = useState(false);
@@ -95,6 +119,7 @@ export function SettingsLayer(props: {
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_DEEPSEEK_BASE_URL);
   const [confirmOverwriteCloud, setConfirmOverwriteCloud] = useState(false);
+  const [confirmBackupOverwrite, setConfirmBackupOverwrite] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
 
@@ -113,12 +138,44 @@ export function SettingsLayer(props: {
 
   const pinLockedSeconds = Math.max(0, Math.ceil((props.pinLockedUntil - Date.now()) / 1000));
 
+  const getUnmergedItemText = (item: SyncRepairItemSummary) => {
+    const rawText = item.payload.raw_text;
+    if (typeof rawText === "string" && rawText.trim()) return rawText;
+    const rawTextCamel = item.payload.rawText;
+    if (typeof rawTextCamel === "string" && rawTextCamel.trim()) return rawTextCamel;
+    return "未提供可读内容";
+  };
+
+  const getUnmergedReasonText = (reason: string) => {
+    if (reason === "question_add_invalid") return "内容未合入：内容过短或不符合规则";
+    return `内容未合入：${reason || "云端未接受"}`;
+  };
+
+  const buildUnmergedCopyText = (item: SyncRepairItemSummary) =>
+    JSON.stringify(
+      {
+        raw_text: getUnmergedItemText(item),
+        reason: item.reason,
+        reason_text: getUnmergedReasonText(item.reason),
+        op: item.op,
+        createdAt: item.createdAt,
+        clientMutationId: item.clientMutationId,
+        payload: item.payload
+      },
+      null,
+      2
+    );
+
   useEffect(() => {
     const settings = loadAiApiSettings();
     setAiApiKey(settings.apiKey);
     setAiBaseUrl(settings.baseUrl);
     setAiModel(settings.model);
   }, []);
+
+  useEffect(() => {
+    if (!props.backupPreview) setConfirmBackupOverwrite(false);
+  }, [props.backupPreview]);
 
   const saveAiSettings = () => {
     saveAiApiSettings({
@@ -154,7 +211,7 @@ export function SettingsLayer(props: {
   const normalizePin = (value: string) => value.replace(/\D+/g, "").slice(0, 12);
 
   const runSyncRepair = () => {
-    if (props.syncRepairing) return;
+    if (props.syncRepairing || props.backupPreview) return;
     void (async () => {
       const result = await props.onSyncRepair();
       if (!result.ok && result.error) props.showNotice(result.error);
@@ -162,7 +219,7 @@ export function SettingsLayer(props: {
   };
 
   const runManualPullCloud = () => {
-    if (props.syncRepairing) return;
+    if (props.syncRepairing || props.backupPreview) return;
     void (async () => {
       const result = await props.onManualPullCloud();
       if (!result.ok && result.error) props.showNotice(result.error);
@@ -170,7 +227,7 @@ export function SettingsLayer(props: {
   };
 
   const runManualUploadLocal = () => {
-    if (props.syncRepairing) return;
+    if (props.syncRepairing || props.backupPreview) return;
     void (async () => {
       const result = await props.onManualUploadLocal();
       if (!result.ok && result.error) props.showNotice(result.error);
@@ -178,7 +235,7 @@ export function SettingsLayer(props: {
   };
 
   const runManualOverwriteCloud = () => {
-    if (props.syncRepairing) return;
+    if (props.syncRepairing || props.backupPreview) return;
     if (!confirmOverwriteCloud) {
       setConfirmOverwriteCloud(true);
       props.showNotice("再次点击“本地覆盖云端”确认执行");
@@ -191,10 +248,24 @@ export function SettingsLayer(props: {
     })();
   };
 
-  const runRestoreLatestBackup = () => {
+  const runPreviewLatestBackup = () => {
     if (props.syncRepairing) return;
     void (async () => {
-      const result = await props.onRestoreLatestSyncBackup();
+      const result = await props.onPreviewLatestSyncBackup();
+      if (!result.ok && result.error) props.showNotice(result.error);
+    })();
+  };
+
+  const runOverwriteCloudWithBackupPreview = () => {
+    if (props.syncRepairing || !props.backupPreview) return;
+    if (!confirmBackupOverwrite) {
+      setConfirmBackupOverwrite(true);
+      props.showNotice("再次点击“用此备份覆盖云端”确认执行");
+      return;
+    }
+    setConfirmBackupOverwrite(false);
+    void (async () => {
+      const result = await props.onOverwriteCloudWithBackupPreview();
       if (!result.ok && result.error) props.showNotice(result.error);
     })();
   };
@@ -688,6 +759,10 @@ export function SettingsLayer(props: {
                 <p className="mt-1">{props.deadLetterMutations.length}</p>
               </div>
               <div>
+                <p className="text-xs text-slate-500">历史未合入</p>
+                <p className="mt-1">{props.unmergedItems.length}</p>
+              </div>
+              <div>
                 <p className="text-xs text-slate-500">最后成功同步</p>
                 <p className="mt-1">{props.syncStatus.lastSyncedAt ? new Date(props.syncStatus.lastSyncedAt).toLocaleString("zh-CN") : "暂无"}</p>
               </div>
@@ -737,6 +812,11 @@ export function SettingsLayer(props: {
                 同步异常 {props.syncStatus.lastRepairSummary.deadLetterCount} 条。
               </div>
             ) : null}
+            {props.backupPreview ? (
+              <div className="rounded-xl border border-sky-300/70 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                正在预览 {new Date(props.backupPreview.createdAt).toLocaleString("zh-CN")} 的本机备份。预览不会自动同步，也不会替换当前账号数据。
+              </div>
+            ) : null}
           </CardContent>
           <CardFooter className="flex flex-wrap items-center gap-2">
             <Button
@@ -745,7 +825,7 @@ export function SettingsLayer(props: {
               variant="ghost"
               className="rounded-full border border-slate-400/40 bg-white text-slate-700"
               onClick={runManualPullCloud}
-              disabled={props.syncRepairing}
+              disabled={props.syncRepairing || Boolean(props.backupPreview)}
             >
               拉取云端
             </Button>
@@ -755,7 +835,7 @@ export function SettingsLayer(props: {
               variant="ghost"
               className="rounded-full border border-slate-400/40 bg-white text-slate-700"
               onClick={runManualUploadLocal}
-              disabled={props.syncRepairing}
+              disabled={props.syncRepairing || Boolean(props.backupPreview)}
             >
               上传本地
             </Button>
@@ -765,7 +845,7 @@ export function SettingsLayer(props: {
               variant="ghost"
               className="rounded-full border border-red-300/70 bg-red-50 text-red-800 disabled:opacity-40"
               onClick={runManualOverwriteCloud}
-              disabled={props.syncRepairing}
+              disabled={props.syncRepairing || Boolean(props.backupPreview)}
             >
               {confirmOverwriteCloud ? "确认覆盖云端" : "本地覆盖云端"}
             </Button>
@@ -774,18 +854,42 @@ export function SettingsLayer(props: {
               size="sm"
               variant="ghost"
               className="rounded-full border border-slate-400/40 bg-white text-slate-700 disabled:opacity-40"
-              onClick={runRestoreLatestBackup}
-              disabled={props.syncRepairing || !props.syncStatus.latestBackup}
+              onClick={runPreviewLatestBackup}
+              disabled={props.syncRepairing || Boolean(props.backupPreview) || !props.syncStatus.latestBackup}
             >
-              恢复本地备份
+              查看本机备份
             </Button>
+            {props.backupPreview ? (
+              <>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+                  onClick={() => void props.onExitBackupPreview()}
+                  disabled={props.syncRepairing}
+                >
+                  退出预览
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-red-300/70 bg-red-50 text-red-800 disabled:opacity-40"
+                  onClick={runOverwriteCloudWithBackupPreview}
+                  disabled={props.syncRepairing}
+                >
+                  {confirmBackupOverwrite ? "确认覆盖云端" : "用此备份覆盖云端"}
+                </Button>
+              </>
+            ) : null}
             <Button
               type="button"
               size="sm"
               variant="ghost"
               className="rounded-full border border-slate-400/40 bg-white text-slate-700"
               onClick={runSyncRepair}
-              disabled={props.syncRepairing}
+              disabled={props.syncRepairing || Boolean(props.backupPreview)}
             >
               {props.syncRepairing ? "同步刷新中..." : "同步刷新"}
             </Button>
@@ -799,6 +903,51 @@ export function SettingsLayer(props: {
               复制诊断
             </Button>
           </CardFooter>
+        </Card>
+
+        <Card className="border-sky-400/30 bg-sky-50/90 text-sky-950">
+          <CardHeader>
+            <CardTitle>历史未合入内容</CardTitle>
+            <CardDescription>这些历史操作未被云端接受，已隔离，不影响当前同步。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {props.unmergedItems.length ? (
+              props.unmergedItems.map((item) => (
+                <div key={item.id} className="rounded-xl border border-sky-300/60 bg-white px-4 py-3">
+                  <div className="flex flex-wrap items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <p className="text-sm font-medium text-sky-950 [overflow-wrap:anywhere]">{getUnmergedItemText(item)}</p>
+                      <p className="mt-1 text-xs text-sky-800/80">{new Date(item.createdAt).toLocaleString("zh-CN")}</p>
+                      <p className="mt-2 text-xs leading-6 text-sky-900/90 [overflow-wrap:anywhere]">{getUnmergedReasonText(item.reason)}</p>
+                      <p className="mt-1 text-xs text-sky-800/70 [overflow-wrap:anywhere]">{item.op}</p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="rounded-full border border-sky-300/70 bg-white text-sky-900"
+                        onClick={() => void copyText(buildUnmergedCopyText(item), () => props.showNotice("已复制历史未合入内容"))}
+                      >
+                        复制
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        className="rounded-full border border-sky-300/70 bg-white text-sky-900"
+                        onClick={() => void props.onIgnoreUnmergedItem(item.id)}
+                      >
+                        忽略
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              ))
+            ) : (
+              <p className="text-sm text-sky-900/75">当前没有历史未合入内容。</p>
+            )}
+          </CardContent>
         </Card>
 
         <Card className="border-amber-400/30 bg-amber-50/90 text-amber-950">
