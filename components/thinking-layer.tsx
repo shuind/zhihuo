@@ -1725,7 +1725,7 @@ export function ThinkingLayer(props: {
                             className="w-full rounded-[18px] border border-transparent px-3 py-3 text-left transition-colors hover:border-black/[0.05] hover:bg-white/72"
                             onClick={() => openSpaceDetail(space.id)}
                           >
-                            <p className="line-clamp-1 text-sm text-slate-800">{space.rootQuestionText}</p>
+                            <p className="text-sm leading-[1.65] text-slate-800 [overflow-wrap:anywhere]">{space.rootQuestionText}</p>
                             <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500">
                               <span>{spaceStatusLabel(space.status)}</span>
                               <span>{formatRelativeNodeTime(space.lastActivityAt ?? space.createdAt)}</span>
@@ -2074,8 +2074,8 @@ export function ThinkingLayer(props: {
                                 pausedTrackIds[track.id] ? "opacity-35" : "opacity-[0.78] hover:opacity-[0.94]"
                               )}
                             >
-                              <p className="line-clamp-1 text-[14px] font-medium text-slate-700">{trackCardTitle(track)}</p>
-                              <p className="mt-2.5 line-clamp-2 text-[12px] leading-[1.7] text-slate-500/92">{trackCardPreview(track)}</p>
+                              <p className="text-[14px] font-medium leading-[1.6] text-slate-700 [overflow-wrap:anywhere]">{trackCardTitle(track)}</p>
+                              <p className="mt-2.5 text-[12px] leading-[1.7] text-slate-500/92 [overflow-wrap:anywhere]">{trackCardPreview(track)}</p>
                               <div className="mt-2.5 flex items-center gap-3 text-[11px] text-slate-400/90">
                                 <span>{track.nodeCount} 条想法</span>
                                 <span>{formatRelativeNodeTime(track.nodes[track.nodes.length - 1]?.createdAt)}</span>
@@ -2524,7 +2524,7 @@ export function ThinkingLayer(props: {
                         }
                       />
                       <div className="min-w-0 flex-1">
-                        <p className="line-clamp-2 text-[13px] leading-[1.55] text-slate-700">
+                        <p className="text-[13px] leading-[1.55] text-slate-700 [overflow-wrap:anywhere]">
                           {node.questionText || `节点 ${node.nodeId.slice(0, 8)}`}
                         </p>
                         <p className="mt-1 text-[11px] text-slate-500">
