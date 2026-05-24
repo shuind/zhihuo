@@ -1980,7 +1980,7 @@ export function ThinkingLayer(props: {
                                         }}
                                       />
                                     ) : (
-                                      <p className="text-left text-[15px] leading-[1.82] text-slate-900 [overflow-wrap:anywhere]">{node.questionText}</p>
+                                      <p className="whitespace-pre-wrap text-left text-[15px] leading-[1.82] text-slate-900 [overflow-wrap:anywhere]">{node.questionText}</p>
                                     )}
                                     {node.noteText ? (
                                       <p className="mt-3 text-left text-xs leading-[1.75] text-slate-500/90 [overflow-wrap:anywhere]">附注：{node.noteText}</p>

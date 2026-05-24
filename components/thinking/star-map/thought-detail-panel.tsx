@@ -269,7 +269,7 @@ const NodeCard = forwardRef<HTMLDivElement, NodeCardProps>(function NodeCard(
         {time}
       </div>
       <div
-        className="mt-1 line-clamp-2 text-[13px] [overflow-wrap:anywhere] transition-colors group-hover:text-[rgba(237,230,212,0.82)]"
+        className="mt-1 whitespace-pre-wrap text-[13px] [overflow-wrap:anywhere] transition-colors group-hover:text-[rgba(237,230,212,0.82)]"
         style={{ color: "rgba(237,230,212,0.55)", lineHeight: 1.65 }}
       >
         {node.questionText}
