@@ -952,6 +952,15 @@ function normalizeTrackList(tracks: ThinkingSpaceView["tracks"]): ThinkingSpaceV
   }));
 }
 
+function normalizeThinkingMultilineText(value: string) {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .join("\n")
+    .trim();
+}
+
 function getSpaceViewNodeIds(view: ThinkingSpaceView) {
   return new Set(view.tracks.flatMap((track) => track.nodes.map((node) => node.id)));
 }
@@ -5612,7 +5621,7 @@ export function TimeArchive() {
       payload: { rawInput: string; trackId: string | null; fromSuggestion?: boolean }
     ) => {
       const now = new Date().toISOString();
-      const nextQuestion = payload.rawInput.trim();
+      const nextQuestion = normalizeThinkingMultilineText(payload.rawInput);
       if (!nextQuestion) {
         return { ok: false as const, message: "输入过短" };
       }
@@ -6054,7 +6063,7 @@ export function TimeArchive() {
         }
       }
       await queueMutation(`/v1/thinking/nodes/${nodeId}/update`, payload);
-      const nextQuestion = rawQuestionText.trim();
+      const nextQuestion = normalizeThinkingMultilineText(rawQuestionText);
       if (!nextQuestion) return false;
       if (activeSpaceId) {
         const current = thinkingViewCacheRef.current[activeSpaceId] ?? (thinkingView?.spaceId === activeSpaceId ? thinkingView : null);
@@ -6081,7 +6090,7 @@ export function TimeArchive() {
   const handleThinkingUpdateNode = useCallback(
     async (nodeId: string, rawQuestionText: string) => {
       const now = new Date().toISOString();
-      const nextQuestion = rawQuestionText.trim();
+      const nextQuestion = normalizeThinkingMultilineText(rawQuestionText);
       if (!nextQuestion) return false;
       await queueMutation(`/v1/thinking/nodes/${nodeId}/update`, {
         raw_question_text: rawQuestionText,
@@ -8509,6 +8518,8 @@ function BindingDialog(props: { submitting: boolean; onUploadLocal: () => void; 
   );
 }
 
+const REGISTER_CODE_BYPASS_ENABLED = process.env.NODE_ENV !== "production";
+
 function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
   const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
   const [email, setEmail] = useState("");
@@ -8555,8 +8566,15 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
         return;
       }
     } else {
-      if (!email.trim() || !password || !confirmPassword || !code.trim()) {
-        setError(mode === "register" ? "请输入邮箱、密码、重复密码和验证码" : "请输入邮箱、新密码、重复密码和验证码");
+      const needsCode = mode === "forgot" || !REGISTER_CODE_BYPASS_ENABLED;
+      if (!email.trim() || !password || !confirmPassword || (needsCode && !code.trim())) {
+        setError(
+          mode === "register" && REGISTER_CODE_BYPASS_ENABLED
+            ? "请输入邮箱、密码和重复密码"
+            : mode === "register"
+              ? "请输入邮箱、密码、重复密码和验证码"
+              : "请输入邮箱、新密码、重复密码和验证码"
+        );
         return;
       }
       if (password !== confirmPassword) {
@@ -8575,7 +8593,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
           mode === "login"
             ? { email, password }
             : mode === "register"
-              ? { email, password, code }
+              ? { email, password, code: REGISTER_CODE_BYPASS_ENABLED ? "" : code }
               : { email, code, newPassword: password };
         const response = await apiFetch(endpoint, {
           method: "POST",
@@ -8652,7 +8670,13 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
           ) : null}
         </div>
         <p className="mt-2 text-xs tracking-[0.12em] text-slate-400/75">
-          {mode === "login" ? "请先登录你的时间档案馆" : mode === "register" ? "用邮箱验证码完成注册" : "用邮箱验证码重置密码"}
+          {mode === "login"
+            ? "请先登录你的时间档案馆"
+            : mode === "register"
+              ? REGISTER_CODE_BYPASS_ENABLED
+                ? "本地开发环境可直接注册"
+                : "用邮箱验证码完成注册"
+              : "用邮箱验证码重置密码"}
         </p>
         <div className="mt-4 flex gap-2">
           <button
@@ -8712,7 +8736,7 @@ function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
               onKeyDown={(event) => event.key === "Enter" && submit()}
             />
           ) : null}
-          {mode !== "login" ? (
+          {mode !== "login" && !(mode === "register" && REGISTER_CODE_BYPASS_ENABLED) ? (
             <div className="flex gap-2">
               <input
                 type="text"

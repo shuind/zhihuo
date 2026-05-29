@@ -14,6 +14,10 @@ function normalizeEmail(value: string) {
   return value.trim().toLowerCase();
 }
 
+function shouldBypassRegisterCode() {
+  return process.env.NODE_ENV !== "production";
+}
+
 export const POST = withApiRoute(
   "auth.register",
   async (request: NextRequest) => {
@@ -21,9 +25,10 @@ export const POST = withApiRoute(
     const email = typeof body?.email === "string" ? normalizeEmail(body.email) : "";
     const password = typeof body?.password === "string" ? body.password : "";
     const code = typeof body?.code === "string" ? body.code.trim() : "";
+    const bypassRegisterCode = shouldBypassRegisterCode();
     if (!email || !email.includes("@")) return errorJson(400, "邮箱格式不正确");
     if (password.length < 8) return errorJson(400, "密码至少 8 位");
-    if (!/^\d{6}$/.test(code)) return errorJson(400, "请输入6位验证码");
+    if (!bypassRegisterCode && !/^\d{6}$/.test(code)) return errorJson(400, "请输入6位验证码");
 
     let createdUserId: string | null = null;
     let verifyError = "";
@@ -33,21 +38,24 @@ export const POST = withApiRoute(
         verifyError = "邮箱已存在";
         return;
       }
-      const now = Date.now();
-      const verification = [...db.email_verification_codes]
-        .filter((item) => item.email === email && item.purpose === "register" && !item.consumed_at)
-        .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
-      if (!verification) {
-        verifyError = "请先获取验证码";
-        return;
-      }
-      if (new Date(verification.expires_at).getTime() <= now) {
-        verifyError = "验证码已过期";
-        return;
-      }
-      if (!verifyEmailVerificationCode(email, "register", code, verification.code_hash)) {
-        verifyError = "验证码错误";
-        return;
+      if (!bypassRegisterCode) {
+        const now = Date.now();
+        const verification = [...db.email_verification_codes]
+          .filter((item) => item.email === email && item.purpose === "register" && !item.consumed_at)
+          .sort((a, b) => new Date(b.created_at).getTime() - new Date(a.created_at).getTime())[0];
+        if (!verification) {
+          verifyError = "请先获取验证码";
+          return;
+        }
+        if (new Date(verification.expires_at).getTime() <= now) {
+          verifyError = "验证码已过期";
+          return;
+        }
+        if (!verifyEmailVerificationCode(email, "register", code, verification.code_hash)) {
+          verifyError = "验证码错误";
+          return;
+        }
+        verification.consumed_at = nowIso();
       }
       createdUserId = createId();
       db.users.push({
@@ -66,7 +74,6 @@ export const POST = withApiRoute(
         detail: "user registered",
         created_at: nowIso()
       });
-      verification.consumed_at = nowIso();
     });
 
     if (!createdUserId) return errorJson(verifyError === "邮箱已存在" ? 409 : 400, verifyError || "注册失败");

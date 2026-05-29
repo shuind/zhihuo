@@ -47,6 +47,15 @@ export function collapseWhitespace(value: string) {
   return value.replace(/\s+/g, " ").trim();
 }
 
+export function normalizeMultilineText(value: string) {
+  return value
+    .replace(/\r\n?/g, "\n")
+    .split("\n")
+    .map((line) => line.replace(/[^\S\n]+/g, " ").trim())
+    .join("\n")
+    .trim();
+}
+
 export function parseBoolean(value: string | null | undefined, fallback: boolean) {
   if (value == null) return fallback;
   if (value === "1" || value.toLowerCase() === "true") return true;
@@ -62,7 +71,7 @@ function ensureQuestionMark(input: string) {
 }
 
 function cleanForQuestion(input: string) {
-  return collapseWhitespace(input).replace(/[。.!！？?]+$/u, "").trim();
+  return normalizeMultilineText(input).replace(/[。.!！？?]+$/u, "").trim();
 }
 
 function looksLikeQuestion(input: string) {
@@ -100,7 +109,7 @@ export function buildSuggestedQuestions(rawInput: string, backgroundText: string
 }
 
 export function normalizeQuestionInput(raw: string, backgroundText: string | null): NormalizeQuestionResult {
-  const text = collapseWhitespace(raw);
+  const text = normalizeMultilineText(raw);
   if (!text || text.length < 2) return { ok: false, suggested_questions: [] };
 
   if (looksLikeQuestion(text)) {
