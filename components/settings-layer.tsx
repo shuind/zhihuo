@@ -3,6 +3,11 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { QueuedMutation } from "@/components/offline-store";
+import type {
+  BackupPreviewSummary,
+  SyncRepairItemSummary,
+  SyncRepairSummary
+} from "@/components/time-archive/sync-diagnostics-types";
 import type { SyncSummary } from "@/components/time-archive/sync-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
@@ -24,25 +29,6 @@ const TIMEZONE_OPTIONS = [
   { value: "America/New_York", label: "美东时间 (UTC-05:00/-04:00)" },
   { value: "Europe/London", label: "伦敦时间 (UTC+00:00/+01:00)" }
 ];
-
-type SyncRepairItemSummary = {
-  id: string;
-  clientMutationId: string;
-  op: string;
-  payload: Record<string, unknown>;
-  reason: string;
-  destinationClass: string | null;
-  originalTargetId: string | null;
-  createdAt: string;
-};
-
-type BackupPreviewSummary = {
-  id: string;
-  createdAt: string;
-  reason: string;
-  mutationCount: number;
-  mediaCount: number;
-};
 
 export function SettingsLayer(props: {
   timezone: string;
@@ -84,22 +70,8 @@ export function SettingsLayer(props: {
     lastSyncedAt: string | null;
     nextRetryAt: number | null;
     warning: string | null;
-    latestBackup: {
-      id: string;
-      createdAt: string;
-      reason: string;
-      mutationCount: number;
-      mediaCount: number;
-    } | null;
-    lastRepairSummary: {
-      startedAt: string;
-      finishedAt: string;
-      replayedCount: number;
-      pendingCount: number;
-      deadLetterCount: number;
-      cloudRevision: number | null;
-      failedReason: string | null;
-    } | null;
+    latestBackup: BackupPreviewSummary | null;
+    lastRepairSummary: SyncRepairSummary | null;
   };
   syncDiagnosticsReport: string;
   syncRepairing: boolean;
