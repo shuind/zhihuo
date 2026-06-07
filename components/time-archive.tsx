@@ -10,6 +10,7 @@ import { cn } from "@/lib/utils";
 import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
 import { AuthDialog, BindingDialog, PinGate } from "@/components/time-archive/auth";
+import { useAuthGate, type SessionUser } from "@/components/time-archive/use-auth-gate";
 import {
   AUTO_SEAL_SNOOZE_MS,
   isAutoSealSnoozed,
@@ -84,20 +85,15 @@ import {
 import type { StarMapStatePatch } from "@/components/thinking/star-map";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
-  changePin,
   clearLastUserMarker,
   clearOfflineOwnerState,
   clearOfflineMutationsByOwner,
   clearOfflineSnapshotByOwner,
   clearOfflineState,
-  clearPinStatus,
   createOfflineSyncBackup,
   createOfflineSnapshotMeta,
-  disablePin,
-  enablePin,
   enqueueOfflineMutation,
   getGuestOwnerKey,
-  getPinStatus,
   getOrCreateLocalProfileId,
   getUserOwnerKey,
   isOfflineNetworkError,
@@ -147,11 +143,6 @@ import {
   sanitizeTimeZone
 } from "@/components/zhihuo-model";
 
-type SessionUser = {
-  userId: string;
-  email: string;
-};
-
 type ThinkingJumpTarget = {
   spaceId: string;
   mode: "root";
@@ -182,23 +173,14 @@ export function TimeArchive() {
   const [openingPhase, setOpeningPhase] = useState<"black" | "stars" | "text" | "ready">("black");
   const [lifeReady, setLifeReady] = useState(false);
   const [notice, setNotice] = useState("");
-  const [authReady, setAuthReady] = useState(false);
-  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null);
-  const [cloudSessionEnabled, setCloudSessionEnabled] = useState(true);
-  const [pinReady, setPinReady] = useState(false);
-  const [pinEnabled, setPinEnabled] = useState(false);
-  const [pinLockedUntil, setPinLockedUntil] = useState(0);
-  const [pinUnlocked, setPinUnlocked] = useState(false);
   const [offlineSnapshotExists, setOfflineSnapshotExists] = useState(false);
   const [offlineMeta, setOfflineMeta] = useState<OfflineSnapshotMeta | null>(null);
   const [offlineRuntimeState, setOfflineRuntimeState] = useState<OfflineRuntimeState>("signed_out");
   const [activeOwnerKey, setActiveOwnerKey] = useState<OfflineOwnerKey | null>(null);
   const [isOnline, setIsOnline] = useState(() => (typeof navigator === "undefined" ? true : navigator.onLine !== false));
-  const [pinTick, setPinTick] = useState(0);
   const [thinkingFocusMode, setThinkingFocusMode] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
   const [thinkingJumpTarget, setThinkingJumpTarget] = useState<ThinkingJumpTarget | null>(null);
-  const [authDialogOpen, setAuthDialogOpen] = useState(false);
   const [bindingDialog, setBindingDialog] = useState<BindingDialogState | null>(null);
   const [deadLetterMutations, setDeadLetterMutations] = useState<QueuedMutation[]>([]);
   const [offlineMediaAssets, setOfflineMediaAssets] = useState<OfflineMediaAssetRecord[]>([]);
@@ -272,6 +254,35 @@ export function TimeArchive() {
     }, duration);
   }, []);
 
+  const markUnauthorizedSyncError = useCallback(() => {
+    setLastSyncError("unauthorized");
+  }, []);
+
+  const {
+    authReady,
+    setAuthReady,
+    sessionUser,
+    setSessionUser,
+    cloudSessionEnabled,
+    setCloudSessionEnabled,
+    pinReady,
+    pinEnabled,
+    pinLockedUntil,
+    pinUnlocked,
+    authDialogOpen,
+    handleUnauthorized,
+    handlePinVerified,
+    handleEnablePin,
+    handleDisablePin,
+    handleChangePin,
+    resetPinAfterForgot,
+    openAuthDialog,
+    closeAuthDialog
+  } = useAuthGate({
+    showNotice,
+    onUnauthorized: markUnauthorizedSyncError
+  });
+
   const updateAutoSealPreferences = useCallback((updater: (current: AutoSealPreferences) => AutoSealPreferences) => {
     setAutoSealPreferences((current) => {
       const next = updater(current);
@@ -320,32 +331,12 @@ export function TimeArchive() {
     setIsOnline((current) => (current === online ? current : online));
   }, []);
 
-  const handleUnauthorized = useCallback(
-    (response: Response) => {
-      if (response.status !== 401) return false;
-      clearLastUserMarker();
-      setSessionUser(null);
-      setAuthReady(true);
-      setLastSyncError("unauthorized");
-      if (sessionUser) showNotice("登录已失效，请重新登录");
-      return true;
-    },
-    [sessionUser, showNotice]
-  );
-
-  const refreshPinState = useCallback(() => {
-    const status = getPinStatus();
-    setPinEnabled(status.enabled);
-    setPinLockedUntil(status.lockedUntil);
-    return status;
-  }, []);
-
   useEffect(() => {
     const nativeApp = isNativeAppRuntime();
     setIsNativeApp(nativeApp);
     setCloudSessionEnabled(true);
     setRuntimeReady(true);
-  }, []);
+  }, [setCloudSessionEnabled]);
 
   useEffect(() => {
     setAutoSealPreferences(loadAutoSealPreferences());
@@ -1228,7 +1219,7 @@ export function TimeArchive() {
       setAuthReady(true);
       return false;
     }
-  }, []);
+  }, [setAuthReady, setSessionUser]);
 
   const _syncLifeFromApi = useCallback(
     async (silent = false) => {
@@ -2912,12 +2903,6 @@ export function TimeArchive() {
   );
 
   useEffect(() => {
-    const status = refreshPinState();
-    setPinUnlocked(!status.enabled);
-    setPinReady(true);
-  }, [refreshPinState]);
-
-  useEffect(() => {
     if (!runtimeReady || !pinReady || (pinEnabled && !pinUnlocked) || !cloudSessionEnabled) return;
     void syncAuth();
   }, [cloudSessionEnabled, pinEnabled, pinReady, pinUnlocked, runtimeReady, syncAuth]);
@@ -2963,19 +2948,13 @@ export function TimeArchive() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, loadOwnerSnapshot, pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady]);
+  }, [hydrated, loadOwnerSnapshot, pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady, setSessionUser]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     const raw = window.localStorage.getItem("zhihuo_thinking_focus_mode");
     setThinkingFocusMode(raw === "1");
   }, []);
-
-  useEffect(() => {
-    if (sessionUser && authDialogOpen) {
-      setAuthDialogOpen(false);
-    }
-  }, [authDialogOpen, sessionUser]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -3261,13 +3240,6 @@ export function TimeArchive() {
       fixedTopSpaceIds: prev.fixedTopSpaceIds.filter((id, index, array) => activeIdSet.has(id) && array.indexOf(id) === index).slice(0, 3)
     }));
   }, [hydrated, thinkingStore.fixedTopSpaceIds, thinkingStore.spaces]);
-
-  useEffect(() => {
-    if (!pinEnabled) return;
-    if (pinLockedUntil <= Date.now()) return;
-    const timer = window.setInterval(() => setPinTick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [pinEnabled, pinLockedUntil]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -6496,8 +6468,7 @@ export function TimeArchive() {
         clearLastUserMarker();
         setSessionUser(null);
         setBindingDialog(null);
-        setAuthDialogOpen(false);
-        setCloudSessionEnabled(true);
+        closeAuthDialog();
         const ownerKey = getGuestOwnerKey(localProfileId);
         const guestMeta = createOfflineSnapshotMeta(localProfileId);
         setActiveOwnerKey(ownerKey);
@@ -6506,17 +6477,7 @@ export function TimeArchive() {
         showNotice("已退出登录");
       }
     })();
-  }, [loadOwnerSnapshot, showNotice]);
-
-  const openAuthDialog = useCallback(() => {
-    setCloudSessionEnabled(true);
-    setAuthDialogOpen(true);
-  }, []);
-
-  const closeAuthDialog = useCallback(() => {
-    setAuthDialogOpen(false);
-    setCloudSessionEnabled(true);
-  }, []);
+  }, [closeAuthDialog, loadOwnerSnapshot, setSessionUser, showNotice]);
 
   const clearAllData = useCallback(() => {
     setThinkingStore(EMPTY_THINKING_STORE);
@@ -6551,45 +6512,10 @@ export function TimeArchive() {
     showNotice("本地缓存已清理");
   }, [activeOwnerKey, cloudSyncEnabled, isOnline, sessionUser, showNotice, updateOfflineMeta]);
 
-  const handlePinVerified = useCallback(() => {
-    setPinUnlocked(true);
-    const status = refreshPinState();
-    if (!status.enabled) setPinEnabled(false);
-  }, [refreshPinState]);
-
-  const handleEnablePin = useCallback(
-    async (pin: string) => {
-      const result = await enablePin(pin);
-      refreshPinState();
-      return result;
-    },
-    [refreshPinState]
-  );
-
-  const handleDisablePin = useCallback(
-    async (pin: string) => {
-      const result = await disablePin(pin);
-      refreshPinState();
-      if (result.ok) setPinUnlocked(true);
-      return result;
-    },
-    [refreshPinState]
-  );
-
-  const handleChangePin = useCallback(
-    async (currentPin: string, nextPin: string) => {
-      const result = await changePin(currentPin, nextPin);
-      refreshPinState();
-      return result;
-    },
-    [refreshPinState]
-  );
-
   const handleForgotPin = useCallback(async () => {
     await clearOfflineState();
-    clearPinStatus();
     clearLastUserMarker();
-    setPinUnlocked(true);
+    resetPinAfterForgot();
     setOfflineSnapshotExists(false);
     setSessionUser(null);
     setThinkingView(null);
@@ -6599,8 +6525,7 @@ export function TimeArchive() {
     setOfflineRuntimeState("guest_ready");
     setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
     setDeadLetterMutations([]);
-    refreshPinState();
-  }, [refreshPinState]);
+  }, [resetPinAfterForgot, setSessionUser]);
 
   const dismissDeadLetterMutation = useCallback(
     async (mutationId: string) => {
@@ -6722,8 +6647,6 @@ export function TimeArchive() {
       }
     })();
   }, [refreshCurrentAccountFromCloud, resetPullRefreshLater, showNotice]);
-
-  void pinTick;
 
   if (!pinReady) {
     return (
