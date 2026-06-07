@@ -1,6 +1,6 @@
 /**
  * 节气与月相的轻量计算。
- * - 节气使用近似公式（误差约 1 天），对"标签感"已足够
+ * - 节气使用 2000-2100 年常见近似公式动态计算（误差约 1 天）
  * - 月相使用简化共轭法（Conway），误差 ±1 天
  */
 
@@ -9,22 +9,37 @@ export type SolarTerm = {
   date: Date;
 };
 
-const TERM_NAMES = [
-  "小寒", "大寒",
-  "立春", "雨水", "惊蛰", "春分", "清明", "谷雨",
-  "立夏", "小满", "芒种", "夏至", "小暑", "大暑",
-  "立秋", "处暑", "白露", "秋分", "寒露", "霜降",
-  "立冬", "小雪", "大雪", "冬至"
-];
+type SolarTermDefinition = {
+  name: string;
+  month: number;
+  coefficient: number;
+};
 
-// 二十四节气近似天数表（以 1 月 1 日为起点），误差约 1 天
-// 数据来自常见节气公式（Y*D+C - L）的简化版本，针对 2000-2100 年
-const TERM_OFFSETS_2026 = [
-  5, 20,                 // 小寒 大寒
-  34, 49, 64, 79, 94, 109,
-  125, 140, 156, 172, 188, 204,
-  220, 236, 252, 267, 282, 297,
-  312, 326, 341, 355
+const TERM_DEFINITIONS: SolarTermDefinition[] = [
+  { name: "小寒", month: 0, coefficient: 5.4055 },
+  { name: "大寒", month: 0, coefficient: 20.12 },
+  { name: "立春", month: 1, coefficient: 3.87 },
+  { name: "雨水", month: 1, coefficient: 18.73 },
+  { name: "惊蛰", month: 2, coefficient: 5.63 },
+  { name: "春分", month: 2, coefficient: 20.646 },
+  { name: "清明", month: 3, coefficient: 4.81 },
+  { name: "谷雨", month: 3, coefficient: 20.1 },
+  { name: "立夏", month: 4, coefficient: 5.52 },
+  { name: "小满", month: 4, coefficient: 21.04 },
+  { name: "芒种", month: 5, coefficient: 5.678 },
+  { name: "夏至", month: 5, coefficient: 21.37 },
+  { name: "小暑", month: 6, coefficient: 7.108 },
+  { name: "大暑", month: 6, coefficient: 22.83 },
+  { name: "立秋", month: 7, coefficient: 7.5 },
+  { name: "处暑", month: 7, coefficient: 23.13 },
+  { name: "白露", month: 8, coefficient: 7.646 },
+  { name: "秋分", month: 8, coefficient: 23.042 },
+  { name: "寒露", month: 9, coefficient: 8.318 },
+  { name: "霜降", month: 9, coefficient: 23.438 },
+  { name: "立冬", month: 10, coefficient: 7.438 },
+  { name: "小雪", month: 10, coefficient: 22.36 },
+  { name: "大雪", month: 11, coefficient: 7.18 },
+  { name: "冬至", month: 11, coefficient: 21.94 }
 ];
 
 /**
@@ -33,20 +48,19 @@ const TERM_OFFSETS_2026 = [
  */
 export function getCurrentSolarTerm(date: Date): SolarTerm {
   const year = date.getFullYear();
-  const dayOfYear = Math.floor(
-    (date.getTime() - new Date(year, 0, 1).getTime()) / 86_400_000
-  );
+  const target = startOfLocalDay(date).getTime();
+  const candidates = [
+    getSolarTermDate(year - 1, TERM_DEFINITIONS.length - 1),
+    ...TERM_DEFINITIONS.map((_, index) => getSolarTermDate(year, index))
+  ];
 
-  // 找到最近且不晚于当前日期的节气
-  let index = 0;
-  for (let i = 0; i < TERM_OFFSETS_2026.length; i++) {
-    if (TERM_OFFSETS_2026[i] <= dayOfYear) index = i;
+  let current = candidates[0];
+  for (const term of candidates) {
+    if (term.date.getTime() <= target) current = term;
     else break;
   }
-  const termDate = new Date(year, 0, 1);
-  termDate.setDate(termDate.getDate() + TERM_OFFSETS_2026[index]);
 
-  return { name: TERM_NAMES[index], date: termDate };
+  return current;
 }
 
 /**
@@ -116,4 +130,16 @@ function phaseShape(age: number): MoonPhase["shape"] {
   if (age < 24) return "last-quarter";
   if (age < 28) return "waning-crescent";
   return "new";
+}
+
+function getSolarTermDate(year: number, index: number): SolarTerm {
+  const definition = TERM_DEFINITIONS[index];
+  const y = year % 100;
+  const leapAdjust = Math.floor((y - 1) / 4);
+  const day = Math.floor(y * 0.2422 + definition.coefficient) - leapAdjust;
+  return { name: definition.name, date: new Date(year, definition.month, day) };
+}
+
+function startOfLocalDay(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), date.getDate());
 }
