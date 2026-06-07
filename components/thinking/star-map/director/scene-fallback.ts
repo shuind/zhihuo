@@ -56,29 +56,36 @@ export function buildFallbackScene(input: FallbackInput): Scene {
 
   // 2. score and rank
   const now = Date.now()
-  const ages = flat.map((f) => now - f.timeMs)
-  const minAge = Math.min(...ages)
-  const maxAge = Math.max(...ages)
-  const ageSpan = Math.max(1, maxAge - minAge)
+  const validTimes = flat.map((f) => f.timeMs).filter(Number.isFinite)
+  const minTime = validTimes.length ? Math.min(...validTimes) : now
+  const maxTime = validTimes.length ? Math.max(...validTimes) : minTime + 1
+  const timeSpan = Math.max(1, maxTime - minTime)
 
   const ranked = flat
     .map((f) => {
       const text = f.node.questionText ?? ""
-      const recency = 1 - (now - f.timeMs - minAge) / ageSpan // 0..1, newer higher
-      const len = Math.min(text.length / 28, 1) * 0.25
-      const onActive = f.track.id === activeTrackId ? 0.35 : 0
-      const hasAnswer = f.node.answerText ? 0.45 : 0
-      const hasNote = f.node.noteText ? 0.18 : 0
-      const suggested = f.node.isSuggested ? -0.30 : 0
-      const score = recency * 0.5 + len + onActive + hasAnswer + hasNote + suggested
+      const time = Number.isFinite(f.timeMs) ? f.timeMs : minTime
+      const recency = (time - minTime) / timeSpan
+      const lengthSignal = Math.min(text.length / 72, 1) * 0.22
+      const onActive = f.track.id === activeTrackId ? 0.42 : 0
+      const hasAnswer = f.node.answerText ? 0.44 : 0
+      const hasNote = f.node.noteText ? 0.24 : 0
+      const hasImage = f.node.imageAssetId ? 0.32 : 0
+      const concrete = isConcreteText(text) ? 0.22 : 0
+      const suggested = f.node.isSuggested ? -0.34 : 0
+      const score = recency * 0.34 + lengthSignal + onActive + hasAnswer + hasNote + hasImage + concrete + suggested
       return { ...f, score }
     })
     .sort((a, b) => b.score - a.score)
 
-  // 3. pick role bands. Aim for "hero ≤ 5, support ≤ 5, rest silent".
+  // 3. pick role bands. Keep a few readable anchors and let the rest stay quiet.
   const total = ranked.length
-  const heroCount = clamp(Math.round(total * 0.18), Math.min(2, total), Math.min(5, total))
-  const supportCount = clamp(Math.round(total * 0.22), 0, Math.min(5, Math.max(0, total - heroCount)))
+  const heroCount = total <= 2 ? total : total <= 7 ? 2 : clamp(Math.round(total * 0.16), 2, Math.min(4, total))
+  const supportCount = clamp(
+    Math.round(total * 0.22),
+    total > heroCount ? 1 : 0,
+    Math.min(5, Math.max(0, total - heroCount))
+  )
 
   const heroes = ranked.slice(0, heroCount)
   const supports = ranked.slice(heroCount, heroCount + supportCount)
@@ -89,21 +96,19 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   const stars: SceneStar[] = []
   const idMap = new Map<string, string>() // nodeId -> starId
 
-  // Heroes: golden-angle spread so they feel "thrown" not "arranged"
-  const goldenStep = 137.508
-  // pin one hero near a "natural" angle from the seed so the same space always looks consistent
-  const startAngle = (rng() * 360 + 360) % 360
+  const dominantAngle = wrapAngle(rng() * 360)
+  const counterAngle = wrapAngle(dominantAngle + 132 + rng() * 42)
+  const remoteAngle = wrapAngle(dominantAngle + 238 + rng() * 58)
   // remember each hero's angle so we can bias same-track stars toward it
   const heroAngleByTrack = new Map<string, number>()
   const heroAngleAll: number[] = []
 
   heroes.forEach((h, i) => {
-    // alternate ring 1 and 2 with some randomness so it doesn't band
     const ringRoll = rng()
     const ring: 1 | 2 = i === 0 ? 1 : ringRoll < 0.55 ? 2 : 1
-    // golden angle + small wobble
-    const angle = wrapAngle(startAngle + i * goldenStep + (rng() - 0.5) * 22)
-    const drift = (rng() - 0.5) * 1.7
+    const baseAngle = i === 0 ? dominantAngle : i === 1 ? counterAngle : remoteAngle + i * 29
+    const angle = wrapAngle(baseAngle + (rng() - 0.5) * (i === 0 ? 18 : 28))
+    const drift = (rng() - 0.5) * 1.35
     const id = mkId(h.node.id)
     idMap.set(h.node.id, id)
     heroAngleAll.push(angle)
@@ -114,7 +119,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
       angle,
       drift,
       role: "hero",
-      halo: rng() > 0.4,
+      halo: i < 2,
       text: cleanText(h.node.questionText, h.node.answerText),
       timestamp: hhmm(h.node.createdAt),
       trackId: h.track.id,
@@ -138,7 +143,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
       angle,
       drift,
       role: "support",
-      halo: rng() > 0.85,
+      halo: false,
       text: cleanText(s.node.questionText, s.node.answerText),
       timestamp: hhmm(s.node.createdAt),
       trackId: s.track.id,
@@ -149,12 +154,12 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   // Ambients: silent dots. Most of them. Spread mostly on ring 2/3, a few on
   // ring 4 for depth. Soft bias toward their track's hero so same-track ideas
   // still cluster, but with enough random spread to avoid "fan" patterns.
-  ambients.forEach((a, i) => {
+  ambients.forEach((a) => {
     const heroAngle = heroAngleByTrack.get(a.track.id)
     const baseAngle =
       heroAngle != null
-        ? heroAngle + (rng() - 0.5) * 130 // wide cone
-        : rng() * 360
+        ? heroAngle + (rng() - 0.5) * 150
+        : pickAngleAwayFrom(heroAngleAll, rng)
     const angle = wrapAngle(baseAngle)
     const ringRoll = rng()
     const ring: 2 | 3 | 4 = ringRoll < 0.30 ? 2 : ringRoll < 0.85 ? 3 : 4
@@ -199,14 +204,14 @@ export function buildFallbackScene(input: FallbackInput): Scene {
       const bothImportant =
         (fromStar?.role === "hero" || fromStar?.role === "support") &&
         (toStar?.role === "hero" || toStar?.role === "support")
-      const keep = bothImportant ? strandRng() < 0.85 : strandRng() < 0.55
+      const keep = bothImportant ? strandRng() < 0.75 : strandRng() < 0.34
       if (!keep) continue
       strands.push({
         id: `t-${fromId}-${toId}`,
         fromId,
         toId,
-        weight: bothImportant ? 0.6 + strandRng() * 0.3 : 0.25 + strandRng() * 0.25,
-        detour: (strandRng() - 0.5) * 1.6,
+        weight: bothImportant ? 0.55 + strandRng() * 0.26 : 0.22 + strandRng() * 0.22,
+        detour: (strandRng() - 0.5) * 1.35,
         dustCount: bothImportant ? 4 + Math.floor(strandRng() * 3) : 2 + Math.floor(strandRng() * 3),
       })
     }
@@ -222,8 +227,8 @@ export function buildFallbackScene(input: FallbackInput): Scene {
           id: `e-${fromId}-${toId}`,
           fromId,
           toId,
-          weight: 0.35,
-          detour: (strandRng() - 0.5) * 1.4,
+          weight: 0.38,
+          detour: (strandRng() - 0.5) * 1.3,
           dustCount: 2 + Math.floor(strandRng() * 3),
         })
       }
@@ -238,7 +243,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   return {
     core: { text: rootText || "", intensity: 1 },
     stars,
-    strands,
+    strands: trimStrands(strands, stars, total),
     // ambient star count scales softly with content density
     ambientStarCount: clamp(60 + Math.floor(total * 1.5), 60, 140),
   }
@@ -251,6 +256,9 @@ function clamp(n: number, lo: number, hi: number) {
 }
 function wrapAngle(a: number) {
   return ((a % 360) + 360) % 360
+}
+function isConcreteText(text: string) {
+  return /[0-9]|为什么|怎么|不能|害怕|想要|必须|一直|突然|如果|但是|因为|担心|决定/.test(text)
 }
 function pickAngleAwayFrom(taken: number[], rng: () => number): number {
   // try a few angles, pick the one furthest from any taken angle
@@ -292,4 +300,35 @@ function truncate(s: string, n: number) {
 }
 function mkId(nodeId: string) {
   return `s_${nodeId}`
+}
+
+function trimStrands(strands: SceneStrand[], stars: SceneStar[], total: number): SceneStrand[] {
+  const roleScore: Record<StarRole, number> = {
+    hero: 4,
+    support: 3,
+    echo: 1,
+    ambient: 0,
+  }
+  const byId = new Map(stars.map((star) => [star.id, star]))
+  const limit = clamp(Math.round(total * 0.36), Math.min(2, Math.max(0, total - 1)), 8)
+  const seen = new Set<string>()
+  return strands
+    .map((strand, index) => {
+      const from = byId.get(strand.fromId)
+      const to = byId.get(strand.toId)
+      return {
+        strand,
+        index,
+        score: (strand.weight ?? 0.3) + (from ? roleScore[from.role] * 0.18 : 0) + (to ? roleScore[to.role] * 0.18 : 0),
+      }
+    })
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .filter(({ strand }) => {
+      const key = [strand.fromId, strand.toId].sort().join("::")
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    .slice(0, limit)
+    .map(({ strand }) => strand)
 }

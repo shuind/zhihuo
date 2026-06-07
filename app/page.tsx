@@ -1,5 +1,5 @@
-import { TimeArchive } from "@/components/time-archive";
+import { TimeArchiveEntry } from "@/components/time-archive-entry";
 
 export default function Page() {
-  return <TimeArchive />;
+  return <TimeArchiveEntry />;
 }

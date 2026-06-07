@@ -141,12 +141,6 @@ export function buildUserExportMarkdown(
   const writtenToTimeSpaces = allUserSpaces.filter((space) => space.status === "hidden" || Boolean(space.frozen_at));
 
   const activeSpaceIds = new Set(activeSpaces.map((space) => space.id));
-  const allMetaMap = new Map(
-    db.thinking_space_meta
-      .filter((meta) => allUserSpaces.some((space) => space.id === meta.space_id))
-      .map((meta) => [meta.space_id, meta])
-  );
-
   const nodesForActiveSpaces = db.thinking_nodes
     .filter((node) => activeSpaceIds.has(node.space_id) && node.state === "normal")
     .sort((a, b) => a.order_index - b.order_index);

@@ -133,6 +133,8 @@ export function SettleLetterDialog({
       {open ? (
         <motion.div
           key="settle-dialog"
+          data-settle-letter-dialog="true"
+          data-settle-letter-phase={phase}
           className="absolute inset-0 z-50 grid place-items-center bg-black/45 backdrop-blur-[2px]"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
@@ -233,6 +235,7 @@ export function SettleLetterDialog({
                     </button>
                     <button
                       type="button"
+                      data-settle-letter-confirm="true"
                       onClick={handleConfirm}
                       disabled={busy}
                       className="rounded-full bg-slate-900 px-5 py-2 text-[13px] text-white hover:bg-slate-800 disabled:opacity-60"
@@ -255,6 +258,7 @@ export function SettleLetterDialog({
                     </button>
                     <button
                       type="button"
+                      data-settle-letter-done="true"
                       onClick={onClose}
                       className="rounded-full bg-slate-900 px-5 py-2 text-[13px] text-white hover:bg-slate-800"
                     >

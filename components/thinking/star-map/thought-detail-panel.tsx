@@ -3,7 +3,6 @@
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ThinkingTrackNodeView, ThinkingTrackView } from "@/components/thinking-layer"
 import { Textarea } from "@/components/ui/textarea"
-import { cn } from "@/lib/utils"
 
 interface SelectedRef {
   trackId: string
@@ -85,10 +84,10 @@ export function ThoughtDetailPanel({
 
   return (
     <aside
-      className="relative flex h-full w-full max-w-[440px] shrink-0 flex-col border-l border-white/[0.06]"
+      className="relative flex h-full w-full max-w-none shrink-0 flex-col md:max-w-[440px] md:border-l md:border-white/[0.06]"
       style={{ backgroundColor: "#0a0a0c" }}
     >
-      <div className="flex shrink-0 items-center justify-between px-6 pb-2 pt-5">
+      <div className="flex shrink-0 items-center justify-between px-5 pb-2 pt-4 md:px-6 md:pt-5">
         <button
           type="button"
           onClick={onClose}
@@ -118,7 +117,7 @@ export function ThoughtDetailPanel({
         ref={scrollerRef}
         className="flex min-h-0 flex-1 flex-col overflow-y-auto px-5 pb-8 pt-2 [scrollbar-width:thin]"
       >
-        <div className="h-[40vh] shrink-0" aria-hidden="true" />
+        <div className="h-10 shrink-0 md:h-[40vh]" aria-hidden="true" />
         <div className="flex flex-col gap-3">
           {track.nodes.map((node) => {
             const hero = node.id === heroNode.id
@@ -136,7 +135,7 @@ export function ThoughtDetailPanel({
             )
           })}
         </div>
-        <div className="h-[40vh] shrink-0" aria-hidden="true" />
+        <div className="h-16 shrink-0 md:h-[40vh]" aria-hidden="true" />
       </div>
 
       {composerEnabled ? (

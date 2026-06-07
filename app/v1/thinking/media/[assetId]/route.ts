@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { readDb } from "@/lib/server/db";
-import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
+import { errorJson, getUserId, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { readThinkingMediaAssetFile } from "@/lib/server/media";
 

@@ -8,6 +8,7 @@ export interface CompiledStar extends SceneStar {
   /** size in px */
   r: number
   opacity: number
+  labelPriority: number
 }
 
 export interface CompiledStrand {
@@ -40,17 +41,24 @@ export interface CompiledScene {
 // ---------- visual presets per role ----------
 
 const ROLE_SIZE: Record<StarRole, number> = {
-  hero: 4.2,
-  support: 2.6,
-  echo: 1.9,
-  ambient: 1.3,
+  hero: 4.8,
+  support: 3.0,
+  echo: 2.0,
+  ambient: 1.25,
 }
 
 const ROLE_OPACITY: Record<StarRole, number> = {
   hero: 1.0,
-  support: 0.8,
-  echo: 0.5,
-  ambient: 0.32,
+  support: 0.82,
+  echo: 0.45,
+  ambient: 0.24,
+}
+
+const ROLE_LABEL_PRIORITY: Record<StarRole, number> = {
+  hero: 4,
+  support: 3,
+  echo: 1,
+  ambient: 0,
 }
 
 // ---------- compiler ----------
@@ -64,36 +72,48 @@ export function compileScene(
   const cx = width / 2
   const cy = height / 2
   const minDim = Math.min(width, height)
+  const narrow = width < 640
+  const short = height < 520
+  const edgePadding = clamp(minDim * 0.07, narrow ? 38 : 46, short ? 64 : 86)
+  const outerLimit = Math.max(96, minDim / 2 - edgePadding)
+  const aspect = width / Math.max(1, height)
+  const aspectTightening = aspect < 0.82 ? 0.88 : aspect > 2.2 ? 0.94 : 1
 
-  // ring radii are proportional to the smaller dimension so the layout
-  // breathes at any aspect ratio without ever clipping at the edge
+  // Ring radii stay inside a conservative safe zone; labels get the edge.
   const rings: number[] = [
     0,
-    minDim * 0.16, // ring 1 close to core
-    minDim * 0.28, // ring 2 mid
-    minDim * 0.40, // ring 3 far
-    minDim * 0.50, // ring 4 edge
+    outerLimit * 0.32 * aspectTightening, // ring 1 close to core
+    outerLimit * 0.54 * aspectTightening, // ring 2 mid
+    outerLimit * 0.76 * aspectTightening, // ring 3 far
+    outerLimit * 0.96 * aspectTightening, // ring 4 edge
   ]
-  const coreR = minDim * 0.10
+  const coreR = clamp(minDim * 0.10, narrow ? 34 : 44, 88)
 
   const rng = makeRng(seed)
 
   // -------- stars --------
   const compiledStars: CompiledStar[] = scene.stars.map((star) => {
     const baseR = rings[Math.min(4, Math.max(0, star.ring))] ?? rings[2]
-    const driftPx = (star.drift ?? 0) * (minDim * 0.025)
+    const driftPx = (star.drift ?? 0) * (outerLimit * 0.045)
     // hand-placed jitter: small radial + angular wobble seeded so a given
     // space always renders the same way
-    const jitterR = star.pinned ? 0 : (rng() - 0.5) * minDim * 0.018
-    const jitterA = star.pinned ? 0 : (rng() - 0.5) * 0.06
-    const r = Math.max(0, baseR + driftPx + jitterR)
+    const jitterR = star.pinned ? 0 : (rng() - 0.5) * outerLimit * 0.035
+    const jitterA = star.pinned ? 0 : (rng() - 0.5) * 0.052
+    const r = clamp(baseR + driftPx + jitterR, coreR * 0.88, outerLimit)
     const a = (star.angle * Math.PI) / 180 + jitterA
+    const dotR = ROLE_SIZE[star.role] * (narrow ? 1.08 : 1)
+    const labelPriority =
+      ROLE_LABEL_PRIORITY[star.role] +
+      (star.text ? 2 : 0) +
+      (star.halo ? 0.7 : 0) +
+      (star.timestamp ? 0.2 : 0)
     return {
       ...star,
       x: cx + Math.cos(a) * r,
       y: cy + Math.sin(a) * r,
-      r: ROLE_SIZE[star.role],
+      r: dotR,
       opacity: ROLE_OPACITY[star.role],
+      labelPriority,
     }
   })
 
@@ -115,7 +135,7 @@ export function compileScene(
     const detour = strand.detour ?? 0
     // also add a tiny seeded wobble so detour=0 lines aren't dead straight
     const wobble = (rng() - 0.5) * 0.15
-    const offset = len * (0.18 * detour + wobble)
+    const offset = len * (0.14 * detour + wobble)
     const mx = (a.x + b.x) / 2 + px * offset
     const my = (a.y + b.y) / 2 + py * offset
 
@@ -145,23 +165,23 @@ export function compileScene(
 
   // -------- ambient noise stars (background depth) --------
   const ambient: CompiledAmbient[] = []
-  const ambientCount = scene.ambientStarCount ?? 90
+  const ambientCount = clamp(scene.ambientStarCount ?? 90, 40, narrow ? 96 : 145)
   let attempts = 0
   while (ambient.length < ambientCount && attempts < ambientCount * 4) {
     attempts++
     const angle = rng() * Math.PI * 2
-    const r = rings[1] * 0.7 + rng() * (rings[4] * 1.25 - rings[1] * 0.7)
+    const r = rings[1] * 0.7 + rng() * (outerLimit - rings[1] * 0.7)
     const x = cx + Math.cos(angle) * r
     const y = cy + Math.sin(angle) * r
-    if (x < 4 || x > width - 4 || y < 4 || y > height - 4) continue
+    if (x < 6 || x > width - 6 || y < 6 || y > height - 6) continue
     // avoid the very inner zone (core glow takes care of it)
     const fromCenter = Math.hypot(x - cx, y - cy)
     if (fromCenter < coreR * 1.4) continue
     ambient.push({
       x,
       y,
-      r: 0.5 + rng() * 0.7,
-      opacity: 0.10 + rng() * 0.30,
+      r: 0.45 + rng() * 0.65,
+      opacity: 0.07 + rng() * 0.24,
     })
   }
 
@@ -190,4 +210,8 @@ export function makeRng(seed: string) {
     t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296
   }
+}
+
+function clamp(value: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, value))
 }

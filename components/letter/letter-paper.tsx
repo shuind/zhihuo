@@ -1,6 +1,7 @@
 "use client";
 
 import { forwardRef } from "react";
+import Image from "next/image";
 import { cn } from "@/lib/utils";
 import { LetterSprite } from "./letter-sprite";
 import { MoonGlyph } from "./moon-glyph";
@@ -221,7 +222,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
               border: `1px solid ${p.rule}`
             }}
           >
-            <img
+            <Image
               src="/zhihuo_logo_icon.svg"
               alt=""
               width={13}

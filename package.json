@@ -8,41 +8,53 @@
     "build:mobile": "node scripts/build-mobile.mjs",
     "build:android:debug": "node scripts/build-android-debug.mjs",
     "start": "next start",
-    "lint": "next lint",
+    "lint": "eslint app components lib scripts middleware.ts next.config.mjs tailwind.config.ts capacitor.config.ts",
+    "test:store-regression": "node scripts/test-store-regression.mjs",
     "test:api-routes": "node scripts/test-api-routes.mjs",
     "test:ui-smoke": "node scripts/test-ui-smoke.mjs"
   },
   "dependencies": {
-    "@capacitor/android": "^8.3.0",
-    "@capacitor/core": "^8.3.0",
+    "@capacitor/android": "^8.4.0",
+    "@capacitor/core": "^8.4.0",
     "@fontsource/noto-serif-sc": "^5.2.9",
     "@radix-ui/react-slot": "^1.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "framer-motion": "^11.11.17",
     "html-to-image": "^1.11.13",
-    "next": "^14.2.0",
-    "next-pwa": "^5.6.0",
-    "nodemailer": "^8.0.3",
-    "pg": "^8.16.3",
+    "next": "^15.5.18",
+    "nodemailer": "^8.0.10",
+    "pg": "^8.21.0",
     "react": "^18.3.1",
     "react-dom": "^18.3.1",
     "tailwind-merge": "^2.5.5"
   },
   "devDependencies": {
-    "@capacitor/cli": "^8.3.0",
+    "@capacitor/cli": "^8.4.0",
+    "@eslint/eslintrc": "3.3.5",
     "@types/node": "^20.16.5",
-    "@types/nodemailer": "^7.0.11",
-    "@types/pg": "^8.15.5",
+    "@types/nodemailer": "^8.0.0",
+    "@types/pg": "^8.20.0",
     "@types/react": "^18.3.9",
     "@types/react-dom": "^18.3.0",
     "autoprefixer": "^10.4.20",
-    "eslint": "^8.57.1",
-    "eslint-config-next": "^14.2.0",
-    "playwright": "^1.52.0",
-    "postcss": "^8.4.47",
+    "eslint": "^9.39.2",
+    "eslint-config-next": "^15.5.18",
+    "playwright": "^1.60.0",
+    "postcss": "^8.5.15",
     "tailwindcss": "^3.4.13",
     "typescript": "^5.6.2"
   },
-  "packageManager": "pnpm@10.27.0+sha512.72d699da16b1179c14ba9e64dc71c9a40988cbdc65c264cb0e489db7de917f20dcf4d64d8723625f2969ba52d4b7e2a1170682d9ac2a5dcaeaab732b7e16f04a"
+  "packageManager": "pnpm@10.27.0+sha512.72d699da16b1179c14ba9e64dc71c9a40988cbdc65c264cb0e489db7de917f20dcf4d64d8723625f2969ba52d4b7e2a1170682d9ac2a5dcaeaab732b7e16f04a",
+  "pnpm": {
+    "overrides": {
+      "@xmldom/xmldom@<0.8.13": "0.8.13",
+      "brace-expansion@<1.1.13": "1.1.13",
+      "brace-expansion@>=5.0.0 <5.0.6": "5.0.6",
+      "flatted@<3.4.2": "3.4.2",
+      "picomatch@<2.3.2": "2.3.2",
+      "picomatch@>=4.0.0 <4.0.4": "4.0.4",
+      "postcss@<8.5.10": "8.5.15"
+    }
+  }
 }

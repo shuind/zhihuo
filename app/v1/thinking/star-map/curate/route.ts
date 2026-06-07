@@ -290,11 +290,21 @@ function amplifyCuratedScene(scene: Scene, thoughts: ThoughtInput[], rootQuestio
 
   const total = realStars.length
   const heroTarget = total <= 3 ? 1 : total <= 7 ? 2 : total <= 14 ? 3 : 4
-  const supportTarget = clampNumber(Math.round(total * 0.24), Math.min(1, Math.max(0, total - heroTarget)), Math.min(5, Math.max(0, total - heroTarget)))
-  const labelBudget = clampNumber(Math.floor(total * 0.38), heroTarget, Math.min(total, heroTarget + supportTarget))
+  const supportTarget = clampNumber(
+    Math.round(total * 0.22),
+    total > heroTarget ? 1 : 0,
+    Math.min(5, Math.max(0, total - heroTarget))
+  )
+  const labelBudget = clampNumber(
+    Math.floor(total * 0.34),
+    heroTarget,
+    Math.min(total, heroTarget + supportTarget, 8)
+  )
   const ranked = rankStarsForCuration(realStars, thoughtById)
-  const heroIds = new Set(ranked.slice(0, heroTarget).map((item) => item.star.id))
-  const supportIds = new Set(ranked.slice(heroTarget, heroTarget + supportTarget).map((item) => item.star.id))
+  const heroIdList = ranked.slice(0, heroTarget).map((item) => item.star.id)
+  const supportIdList = ranked.slice(heroTarget, heroTarget + supportTarget).map((item) => item.star.id)
+  const heroIds = new Set(heroIdList)
+  const supportIds = new Set(supportIdList)
 
   const dominantAngle = wrapAngle(rng() * 360 + 18)
   const counterAngle = wrapAngle(dominantAngle + 138 + rng() * 34)
@@ -309,7 +319,7 @@ function amplifyCuratedScene(scene: Scene, thoughts: ThoughtInput[], rootQuestio
     const isSupport = supportIds.has(star.id)
 
     if (isHero) {
-      const heroIndex = [...heroIds].indexOf(star.id)
+      const heroIndex = heroIdList.indexOf(star.id)
       const angle =
         heroIndex === 0
           ? dominantAngle + (rng() - 0.5) * 16
@@ -381,7 +391,7 @@ function amplifyCuratedScene(scene: Scene, thoughts: ThoughtInput[], rootQuestio
     },
     stars: [...nextStars, ...finalDecorative],
     strands,
-    ambientStarCount: clampNumber(75 + Math.floor(total * 1.9), 80, 165),
+    ambientStarCount: clampNumber(70 + Math.floor(total * 1.65), 78, 150),
   }
 }
 
@@ -403,7 +413,7 @@ function rankStarsForCuration(stars: SceneStar[], thoughtById: Map<string, Thoug
         (thought?.answer ? 0.5 : 0) +
         (thought?.hasImage ? 0.42 : 0) +
         Math.min((thought?.text.length ?? 0) / 90, 1) * 0.24
-      const concreteness = /[0-9]|为什么|怎么|不能|害怕|想要|必须|一直|突然/.test(thought?.text ?? "") ? 0.28 : 0
+      const concreteness = /[0-9]|为什么|怎么|不能|害怕|想要|必须|一直|突然|如果|但是|因为|担心|决定/.test(thought?.text ?? "") ? 0.28 : 0
       return {
         star,
         score: roleBias + richness + concreteness + recency * 0.32,
@@ -429,7 +439,7 @@ function buildCuratedStrands(stars: SceneStar[], aiStrands: SceneStrand[], rng: 
   const byId = new Map(stars.map((star) => [star.id, star]))
   const heroes = stars.filter((star) => star.role === "hero")
   const supports = stars.filter((star) => star.role === "support")
-  const limit = clampNumber(Math.round(total * 0.45), Math.min(2, Math.max(0, total - 1)), 8)
+  const limit = clampNumber(Math.round(total * 0.36), Math.min(2, Math.max(0, total - 1)), 8)
   const strands: SceneStrand[] = []
   const seen = new Set<string>()
 
@@ -443,20 +453,20 @@ function buildCuratedStrands(stars: SceneStar[], aiStrands: SceneStrand[], rng: 
       id: `curated_${strands.length}_${fromId}_${toId}`,
       fromId,
       toId,
-      weight,
-      detour: (rng() - 0.5) * 1.7,
-      dustCount,
+      weight: clampNumber(weight, 0.22, 0.82),
+      detour: (rng() - 0.5) * 1.35,
+      dustCount: clampNumber(dustCount, 1, 6),
     })
   }
 
   for (const support of supports) {
     const sameTrackHero = support.trackId ? heroes.find((hero) => hero.trackId === support.trackId) : null
     const hero = sameTrackHero ?? heroes[Math.floor(rng() * Math.max(1, heroes.length))]
-    add(hero?.id, support.id, 0.45 + rng() * 0.2, 3 + Math.floor(rng() * 3))
+    add(hero?.id, support.id, 0.44 + rng() * 0.18, 2 + Math.floor(rng() * 3))
   }
 
   for (let index = 0; index < heroes.length - 1; index += 1) {
-    add(heroes[index]?.id, heroes[index + 1]?.id, 0.55 + rng() * 0.22, 4 + Math.floor(rng() * 3))
+    add(heroes[index]?.id, heroes[index + 1]?.id, 0.54 + rng() * 0.2, 3 + Math.floor(rng() * 3))
   }
 
   for (const strand of aiStrands) {
@@ -464,7 +474,7 @@ function buildCuratedStrands(stars: SceneStar[], aiStrands: SceneStrand[], rng: 
     const to = byId.get(strand.toId)
     if (!from || !to) continue
     if (from.role === "ambient" && to.role === "ambient") continue
-    add(from.id, to.id, Math.max(0.28, Math.min(0.82, strand.weight)), strand.dustCount ?? 3)
+    add(from.id, to.id, strand.weight, strand.dustCount ?? 3)
   }
 
   return strands

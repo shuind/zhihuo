@@ -22,6 +22,7 @@ type RequestMeta = {
   startedAt: number;
 };
 
+type NextRouteContext = { params: Promise<Record<string, string | string[] | undefined>> };
 type WrappedContext = { params?: Record<string, string | string[]> };
 type RouteHandler<Context extends WrappedContext> = (request: NextRequest, context: Context, meta: RequestMeta) => Promise<Response>;
 
@@ -183,12 +184,20 @@ function checkRateLimit(key: string, policy: RateLimitPolicy) {
   return { ok: true, remaining: Math.max(0, policy.max - previous.count), resetAt: previous.resetAt };
 }
 
+async function toWrappedContext<Context extends WrappedContext>(context: NextRouteContext | undefined): Promise<Context> {
+  const rawParams = context?.params ? await context.params : {};
+  const params = Object.fromEntries(
+    Object.entries(rawParams ?? {}).filter((entry): entry is [string, string | string[]] => entry[1] !== undefined)
+  );
+  return { params } as Context;
+}
+
 export function withApiRoute<Context extends WrappedContext>(
   name: string,
   handler: RouteHandler<Context>,
   options?: { rateLimit?: RateLimitPolicy }
 ) {
-  return async (request: NextRequest, context: Context = {} as Context) => {
+  return async (request: NextRequest, context: NextRouteContext) => {
     const startedAt = Date.now();
     const requestId = getRequestId(request);
     const meta: RequestMeta = {
@@ -221,7 +230,7 @@ export function withApiRoute<Context extends WrappedContext>(
     }
 
     try {
-      const response = await handler(request, context, meta);
+      const response = await handler(request, await toWrappedContext<Context>(context), meta);
       response.headers.set("x-request-id", meta.requestId);
       applyCorsHeaders(response, request);
       const durationMs = Date.now() - startedAt;

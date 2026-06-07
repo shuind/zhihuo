@@ -3,11 +3,10 @@ import path from "node:path";
 
 import type { Metadata } from "next";
 import Image from "next/image";
+import Link from "next/link";
 
 import { ApkDownloadPanel } from "@/components/apk-download-panel";
 import { getApkDownloadCount } from "@/lib/server/counters";
-
-export const dynamic = "force-dynamic";
 
 export const metadata: Metadata = {
   title: "下载 APK | 知惑 Zhihuo",
@@ -83,12 +82,12 @@ export default async function ApkPage() {
             />
             <span className="text-sm tracking-[0.24em]">知惑 · Zhihuo</span>
           </div>
-          <a
+          <Link
             href="/"
             className="text-xs tracking-[0.22em] transition hover:text-[#2f2a24]"
           >
             返回首页
-          </a>
+          </Link>
         </header>
 
         <section className="mt-20 flex flex-1 flex-col items-center text-center sm:mt-28">

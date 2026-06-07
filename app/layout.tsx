@@ -1,5 +1,7 @@
 import type { Metadata, Viewport } from "next";
 
+import { ServiceWorkerRegistrar } from "@/components/service-worker-registrar";
+
 import "@fontsource/noto-serif-sc/chinese-simplified-300.css";
 import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
 import "@fontsource/noto-serif-sc/latin-300.css";
@@ -37,7 +39,10 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body className="antialiased">{children}</body>
+      <body className="antialiased">
+        {children}
+        <ServiceWorkerRegistrar />
+      </body>
     </html>
   );
 }

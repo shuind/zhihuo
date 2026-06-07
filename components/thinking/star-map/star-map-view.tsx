@@ -1,6 +1,6 @@
 "use client"
 
-import { useEffect, useMemo, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react"
 import type { ThinkingTrackView } from "@/components/thinking-layer"
 import { cn } from "@/lib/utils"
 import { curateScene } from "./director/scene-curator"
@@ -92,6 +92,7 @@ export function StarMapView({
   const [curateStatus, setCurateStatus] = useState<CurateStatus>("idle")
   const [curateError, setCurateError] = useState<string | null>(null)
   const [starPlacements, setStarPlacements] = useState<Record<string, StarPlacement>>({})
+  const [dragPreviewPlacements, setDragPreviewPlacements] = useState<Record<string, StarPlacement> | null>(null)
   const [loadedPlacementScope, setLoadedPlacementScope] = useState<string | null>(null)
   const migratedLocalSceneRef = useRef<string | null>(null)
   const migratedLocalPlacementsRef = useRef<string | null>(null)
@@ -147,6 +148,7 @@ export function StarMapView({
         : {}
     const nextPlacements = Object.keys(syncedPlacements).length ? syncedPlacements : persisted
     setStarPlacements(nextPlacements)
+    setDragPreviewPlacements(null)
     setLoadedPlacementScope(placementScope)
     if (
       Object.keys(persisted).length &&
@@ -200,9 +202,10 @@ export function StarMapView({
   )
 
   const scene = curatedScene ?? fallbackScene
+  const renderedPlacements = dragPreviewPlacements ?? starPlacements
   const positionedScene = useMemo(
-    () => applyStarPlacements(scene, starPlacements),
-    [scene, starPlacements]
+    () => applyStarPlacements(scene, renderedPlacements),
+    [scene, renderedPlacements]
   )
   const curationTrace = useMemo(
     () => (curatedScene ? buildCurationTrace(curatedScene, fallbackScene) : null),
@@ -251,6 +254,7 @@ export function StarMapView({
     if (spaceId) deletePersistedCuratedScene(spaceId)
     if (spaceId) deletePersistedStarPlacements(spaceId)
     setStarPlacements({})
+    setDragPreviewPlacements(null)
     setLoadedPlacementScope(placementScope)
     setCuratedScene(null)
     setCurateStatus("idle")
@@ -268,6 +272,7 @@ export function StarMapView({
   function resetStarPlacements() {
     if (spaceId) deletePersistedStarPlacements(spaceId)
     setStarPlacements({})
+    setDragPreviewPlacements(null)
     setLoadedPlacementScope(placementScope)
     saveSyncedStarMapPatch({
       placementsSignature: null,
@@ -282,11 +287,10 @@ export function StarMapView({
   ) {
     if (frozen) return
     const placement = pointToPlacement(position)
-    setLoadedPlacementScope(placementScope)
-    setStarPlacements((current) => ({
-      ...current,
+    setDragPreviewPlacements({
+      ...starPlacements,
       [star.id]: placement,
-    }))
+    })
   }
 
   function handleCommitStarMove(
@@ -300,6 +304,7 @@ export function StarMapView({
       [star.id]: placement,
     }
     setLoadedPlacementScope(placementScope)
+    setDragPreviewPlacements(null)
     setStarPlacements(nextPlacements)
     if (spaceId) savePersistedStarPlacements(spaceId, sceneSignature, nextPlacements)
     saveSyncedStarMapPatch({
@@ -325,15 +330,15 @@ export function StarMapView({
           }}
         />
 
-        <div className="pointer-events-none absolute left-8 top-7 select-none">
-          <div className="text-[19px] font-medium tracking-[0.04em] text-[#EDE6D4]">思考星图</div>
-          <div className="mt-1 text-[12px] tracking-[0.06em] text-[#7d7a72]">
+        <div className="pointer-events-none absolute left-5 top-5 select-none sm:left-8 sm:top-7">
+          <div className="text-[17px] font-medium tracking-[0.04em] text-[#EDE6D4] sm:text-[19px]">思考星图</div>
+          <div className="mt-1 text-[11px] tracking-[0.06em] text-[#7d7a72] sm:text-[12px]">
             {curatedScene ? "AI 已为你重新策展" : "可视化你的思考轨迹与关联"}
           </div>
         </div>
 
         {curationTrace ? (
-          <div className="pointer-events-none absolute left-8 top-[88px] max-w-[300px] select-none rounded-[8px] border border-[#242016] bg-[#0f0e0b]/42 px-3.5 py-3 shadow-[0_18px_46px_rgba(0,0,0,0.18)] backdrop-blur-sm">
+          <div className="pointer-events-none absolute left-5 top-[76px] hidden max-w-[300px] select-none rounded-[8px] border border-[#242016] bg-[#0f0e0b]/42 px-3.5 py-3 shadow-[0_18px_46px_rgba(0,0,0,0.18)] backdrop-blur-sm sm:block md:left-8 md:top-[88px]">
             <div className="text-[10px] uppercase tracking-[0.16em] text-[#706b5f]">策展痕迹</div>
             <div className="mt-2 space-y-1.5">
               {curationTrace.lines.map((line) => (
@@ -346,18 +351,18 @@ export function StarMapView({
         ) : null}
 
         {frozen ? (
-          <div className="pointer-events-none absolute right-6 top-7 text-[11px] tracking-[0.08em] text-[#5b584f]">
+          <div className="pointer-events-none absolute right-5 top-5 text-[11px] tracking-[0.08em] text-[#5b584f] sm:right-6 sm:top-7">
             已写入时间
           </div>
         ) : null}
 
         {showControls ? (
-          <div className="pointer-events-auto absolute bottom-6 right-6 flex items-center gap-3">
+          <div className="pointer-events-auto absolute bottom-5 right-4 flex max-w-[calc(100vw-32px)] items-center gap-2 sm:bottom-6 sm:right-6 sm:gap-3">
             {curatedScene ? (
               <button
                 type="button"
                 disabled={isCurating}
-                className="text-[11px] tracking-[0.08em] text-[#5b584f] transition hover:text-[#9a978d] disabled:opacity-40"
+                className="rounded-full px-2 py-1 text-[11px] tracking-[0.08em] text-[#67635a] transition hover:bg-white/[0.035] hover:text-[#aaa499] disabled:opacity-40"
                 onClick={resetToFallback}
               >
                 返回原貌
@@ -367,7 +372,7 @@ export function StarMapView({
               <button
                 type="button"
                 disabled={isCurating}
-                className="text-[11px] tracking-[0.08em] text-[#5b584f] transition hover:text-[#9a978d] disabled:opacity-40"
+                className="rounded-full px-2 py-1 text-[11px] tracking-[0.08em] text-[#67635a] transition hover:bg-white/[0.035] hover:text-[#aaa499] disabled:opacity-40"
                 onClick={resetStarPlacements}
               >
                 重置星位
@@ -378,29 +383,37 @@ export function StarMapView({
                 type="button"
                 disabled={isCurating}
                 className={cn(
-                  "group flex items-center gap-2 rounded-full border border-[#1f1d18] bg-[#0f0e0b]/60 px-3.5 py-1.5 text-[12px] tracking-[0.06em] text-[#bdb6a4] backdrop-blur-sm transition",
+                  "group flex min-w-0 items-center gap-2 rounded-full border border-[#1f1d18] bg-[#0f0e0b]/72 px-3.5 py-1.5 text-[12px] tracking-[0.06em] text-[#bdb6a4] backdrop-blur-sm transition",
                   "hover:border-[#3a352a] hover:bg-[#171511]/70 hover:text-[#EDE6D4]",
                   "disabled:cursor-not-allowed disabled:opacity-50"
                 )}
                 onClick={handleCurate}
               >
                 <SparkleIcon spinning={isCurating} />
-                <span>{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "让 AI 策展"}</span>
+                <span className="whitespace-nowrap">{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "让 AI 策展"}</span>
               </button>
             ) : null}
           </div>
         ) : null}
 
         {curateStatus === "error" && curateError ? (
-          <div className="pointer-events-none absolute bottom-20 left-1/2 -translate-x-1/2 rounded-full border border-[#3a2a2a] bg-[#0f0e0b]/80 px-4 py-1.5 text-[11px] tracking-[0.06em] text-[#c9a89a] backdrop-blur-sm">
-            策展失败 · 已恢复原貌
+          <div className="pointer-events-none absolute bottom-20 left-1/2 max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-full border border-[#3a2a2a] bg-[#0f0e0b]/86 px-4 py-1.5 text-center text-[11px] tracking-[0.06em] text-[#c9a89a] backdrop-blur-sm">
+            策展失败 · 已保留当前星图
           </div>
         ) : null}
       </div>
 
       <div
-        className="relative flex h-full shrink-0 overflow-hidden transition-[width] duration-300 ease-out"
-        style={{ width: showDetail ? "min(100vw, 440px)" : 0 }}
+        className={cn(
+          "absolute inset-x-0 bottom-0 z-20 flex h-[var(--star-map-detail-height)] w-full max-h-[72%] overflow-hidden border-t border-white/[0.06] transition-[height,opacity] duration-300 ease-out md:relative md:inset-auto md:h-full md:w-[var(--star-map-detail-width)] md:max-h-none md:shrink-0 md:border-l md:border-t-0 md:transition-[width]",
+          showDetail ? "opacity-100" : "pointer-events-none opacity-0 md:opacity-100"
+        )}
+        style={
+          {
+            "--star-map-detail-height": showDetail ? "min(72vh, 560px)" : "0px",
+            "--star-map-detail-width": showDetail ? "min(100vw, 440px)" : "0px",
+          } as CSSProperties
+        }
       >
         <ThoughtDetailPanel
           selected={selected}
@@ -570,19 +583,25 @@ function pointToPlacement(position: { x: number; y: number; width: number; heigh
   const cx = position.width / 2
   const cy = position.height / 2
   const minDim = Math.min(position.width, position.height)
+  const narrow = position.width < 640
+  const short = position.height < 520
+  const edgePadding = clamp(minDim * 0.07, narrow ? 38 : 46, short ? 64 : 86)
+  const outerLimit = Math.max(96, minDim / 2 - edgePadding)
+  const aspect = position.width / Math.max(1, position.height)
+  const aspectTightening = aspect < 0.82 ? 0.88 : aspect > 2.2 ? 0.94 : 1
   const dx = position.x - cx
   const dy = position.y - cy
   const distance = Math.hypot(dx, dy)
   const rings: Record<StarPlacement["ring"], number> = {
-    1: minDim * 0.16,
-    2: minDim * 0.28,
-    3: minDim * 0.40,
-    4: minDim * 0.50,
+    1: outerLimit * 0.32 * aspectTightening,
+    2: outerLimit * 0.54 * aspectTightening,
+    3: outerLimit * 0.76 * aspectTightening,
+    4: outerLimit * 0.96 * aspectTightening,
   }
   const ring = ([1, 2, 3, 4] as const).reduce((best, candidate) =>
     Math.abs(distance - rings[candidate]) < Math.abs(distance - rings[best]) ? candidate : best
   )
-  const driftScale = minDim * 0.025
+  const driftScale = outerLimit * 0.045
   const drift = clamp((distance - rings[ring]) / driftScale, -2, 2)
   return {
     ring,

@@ -28,14 +28,23 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Audit dependencies
+        run: pnpm audit --audit-level moderate
+
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
       - name: Lint
         run: pnpm lint
 
-      - name: Build
-        run: pnpm build
-
       - name: Type check
         run: pnpm exec tsc --noEmit
+
+      - name: Store regression
+        run: pnpm run test:store-regression
+
+      - name: Build
+        run: pnpm build
 
       - name: Start app
         run: |
@@ -59,6 +68,11 @@ jobs:
           CI: "true"
           TEST_BASE_URL: http://127.0.0.1:3000
         run: pnpm run test:api-routes
+
+      - name: UI smoke
+        env:
+          TEST_BASE_URL: http://127.0.0.1:3000
+        run: pnpm run test:ui-smoke
 
       - name: Stop app
         if: always()

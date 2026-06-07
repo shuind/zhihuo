@@ -1,4 +1,4 @@
-"use client";
+﻿"use client";
 
 import {
   useCallback,
@@ -8,7 +8,6 @@ import {
   useState,
   type ChangeEvent,
   type Dispatch,
-  type MouseEvent as ReactMouseEvent,
   type SetStateAction
 } from "react";
 import { createPortal } from "react-dom";
@@ -26,9 +25,12 @@ import {
   type ThinkingStore,
 } from "@/components/zhihuo-model";
 import { SettleLetterDialog, type SettleLetterSnapshot } from "@/components/letter/settle-letter-dialog";
+import { MenuItem, NodeMenu } from "@/components/thinking/layer/node-menu";
+import { OrganizePanel, type OrganizeNodeEntry, type OrganizeScope } from "@/components/thinking/layer/organize-panel";
+import { ScratchDrawer } from "@/components/thinking/layer/scratch-drawer";
+import { DeleteSpaceDialog, ExportSpaceDialog, RenameSpaceDialog } from "@/components/thinking/layer/space-dialogs";
 import { StarMapView, type StarMapStatePatch } from "@/components/thinking/star-map";
 
-const ORGANIZE_IDLE_MS = 5000;
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
 function formatRelativeNodeTime(createdAt?: string) {
   if (!createdAt) return "";
@@ -109,17 +111,6 @@ type OrganizeCandidate = {
   fromTrackId: string;
   suggestedTrackId: string;
   score: number;
-};
-
-type OrganizeScope = "current" | "all";
-
-type OrganizeNodeEntry = {
-  nodeId: string;
-  questionText: string;
-  fromTrackId: string;
-  fromTrackTitle: string;
-  createdAt?: string;
-  fallbackOrder: number;
 };
 
 type TrackPosition = {
@@ -414,6 +405,10 @@ export function ThinkingLayer(props: {
     [activeTrackId, organizeAllNodes]
   );
   const organizeTargetTracks = useMemo(() => tracks.filter((track) => !track.isParking), [tracks]);
+  const organizeTargetTrackOptions = useMemo(
+    () => organizeTargetTracks.map((track) => ({ id: track.id, title: trackCardTitle(track) })),
+    [organizeTargetTracks]
+  );
   const organizeScopeNodes = useMemo(() => {
     if (organizeScope === "current") {
       if (!activeTrackId) return [] as OrganizeNodeEntry[];
@@ -718,13 +713,12 @@ export function ThinkingLayer(props: {
     const containerRect = container.getBoundingClientRect();
     const targetRect = target.getBoundingClientRect();
     const targetTop = targetRect.top - containerRect.top + container.scrollTop;
-    const visibleMidTop = container.scrollTop + container.clientHeight / 2;
-    const targetMidTop = targetTop + targetRect.height / 2;
-    if (targetMidTop <= visibleMidTop) return true;
     const centeredTop = targetTop - (container.clientHeight - targetRect.height) / 2;
     const maxTop = Math.max(0, container.scrollHeight - container.clientHeight);
     const nextTop = Math.max(0, Math.min(centeredTop, maxTop));
 
+    if (Math.abs(nextTop - container.scrollTop) <= 1) return true;
+    suppressTrackPersistUntilRef.current = Date.now() + 320;
     container.scrollTo({ top: nextTop, behavior });
     return true;
   }, []);
@@ -1365,13 +1359,6 @@ export function ThinkingLayer(props: {
     setEditingQuestionDraft(node.questionText);
   }, []);
 
-  const cutNode = useCallback((nodeId: string, trackId: string) => {
-    setClipboardMode("cut");
-    setClipboardNodeId(nodeId);
-    setClipboardSourceTrackId(trackId);
-    setFocusMenuNodeId(null);
-  }, []);
-
   const copyNodeText = useCallback(
     (node: ThinkingTrackNodeView) => {
       const text = buildNodeCopyText(node, answerDraftByNodeId[node.id]);
@@ -1494,6 +1481,7 @@ export function ThinkingLayer(props: {
             className="pointer-events-none absolute inset-0 z-0 overflow-hidden"
             style={{ animation: "zhBgFadeIn 620ms ease-out 1" }}
           >
+            {/* eslint-disable-next-line @next/next/no-img-element -- runtime-selected background URLs may be blob/data URLs from local media. */}
             <img
               src={selectedBackgroundSrc}
               alt=""
@@ -1953,6 +1941,7 @@ export function ThinkingLayer(props: {
                                   <div className="mt-4 min-w-0">
                                     {isEditing ? (
                                       <Textarea
+                                        data-node-edit-input="true"
                                         autoFocus
                                         value={editingQuestionDraft}
                                         maxLength={220}
@@ -2265,7 +2254,7 @@ export function ThinkingLayer(props: {
       ) : null}
 
       {createSpaceOpen ? (
-        <div className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
+        <div data-create-space-dialog="true" className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
           <div className="absolute right-4 top-16 w-[360px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] md:right-8">
             <div className="flex items-center justify-between">
               <div>
@@ -2278,6 +2267,7 @@ export function ThinkingLayer(props: {
             </div>
             <div className="mt-3 grid gap-2">
               <Textarea
+                data-create-space-input="true"
                 value={newSpaceInput}
                 maxLength={160}
                 autoResize
@@ -2296,6 +2286,7 @@ export function ThinkingLayer(props: {
               />
               <Button
                 type="button"
+                data-create-space-submit="true"
                 disabled={!writeEnabled || isCreatingSpace}
                 className="h-10 rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
                 onClick={createSpace}
@@ -2347,239 +2338,41 @@ export function ThinkingLayer(props: {
         </div>
       ) : null}
 
-      {scratchDrawerOpen ? (
-        <div className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
-          <button
-            type="button"
-            aria-label="关闭随记列表"
-            className="absolute inset-0"
-            onClick={() => setScratchDrawerOpen(false)}
-          />
-          <div className="absolute inset-x-0 bottom-0 rounded-t-[28px] border border-black/[0.08] bg-[#faf7f2] px-6 pb-6 pt-5 shadow-[0_-18px_40px_rgba(43,38,33,0.12)]">
-            <div className="mx-auto w-full max-w-[920px]">
-              <div className="mx-auto h-1.5 w-14 rounded-full bg-black/[0.08]" />
-              <div className="mt-4 flex items-center justify-between gap-3">
-                <p className="text-[15px] text-slate-800">随记</p>
-                <span className="text-[11px] text-slate-400">{sortedScratchItems.length} 条</span>
-              </div>
-              <div className="mt-4 max-h-[62vh] overflow-y-auto pr-1">
-                <div className="space-y-3 pb-1">
-                  {sortedScratchItems.map((item) => {
-                    const linkedSpace = item.derivedSpaceId ? spaces.find((space) => space.id === item.derivedSpaceId) ?? null : null;
-                    return (
-                      <div
-                        key={item.id}
-                        className="rounded-[20px] border border-black/[0.05] bg-white/34 px-4 py-3"
-                      >
-                        <div className="flex items-start justify-between gap-4">
-                          <div className="min-w-0 flex-1">
-                            <p className="text-[14px] leading-[1.7] text-slate-800 [overflow-wrap:anywhere]">{item.rawText}</p>
-                            <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
-                              <span>{formatRelativeNodeTime(item.updatedAt)}</span>
-                              {linkedSpace ? <span>已进入思路</span> : null}
-                            </div>
-                          </div>
-                          <div className="flex shrink-0 items-center gap-2">
-                            {linkedSpace ? (
-                              <button
-                                type="button"
-                                className="rounded-full border border-black/[0.06] bg-white/72 px-3 py-1 text-[11px] text-slate-600 transition-colors hover:bg-white hover:text-slate-800"
-                                onClick={() => {
-                                  setScratchDrawerOpen(false);
-                                  openSpaceDetail(linkedSpace.id);
-                                }}
-                              >
-                                进入
-                              </button>
-                            ) : (
-                              <button
-                                type="button"
-                                className="rounded-full border border-black/[0.06] bg-white/72 px-3 py-1 text-[11px] text-slate-600 transition-colors hover:bg-white hover:text-slate-800"
-                                onClick={() => void turnScratchIntoSpace(item.id)}
-                              >
-                                转为空间
-                              </button>
-                            )}
-                            <button
-                              type="button"
-                              className="rounded-full px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-slate-700"
-                              onClick={() =>
-                                void (async () => {
-                                  const ok = await props.onFeedScratchToTime(item.id);
-                                  if (!ok) {
-                                    props.showNotice("放入时间失败，请稍后再试");
-                                    return;
-                                  }
-                                  props.showNotice("已放入时间层");
-                                })()
-                              }
-                            >
-                              放入时间
-                            </button>
-                            <button
-                              type="button"
-                              className="rounded-full px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-slate-700"
-                              onClick={() =>
-                                void (async () => {
-                                  const ok = await props.onDeleteScratch(item.id);
-                                  if (!ok) props.showNotice("随记删除失败，请稍后再试");
-                                })()
-                              }
-                            >
-                              删除
-                            </button>
-                          </div>
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ScratchDrawer
+        open={scratchDrawerOpen}
+        items={sortedScratchItems}
+        spaces={spaces}
+        onClose={() => setScratchDrawerOpen(false)}
+        onOpenSpace={openSpaceDetail}
+        onTurnScratchIntoSpace={(scratchId) => void turnScratchIntoSpace(scratchId)}
+        onFeedScratchToTime={props.onFeedScratchToTime}
+        onDeleteScratch={props.onDeleteScratch}
+        showNotice={props.showNotice}
+        formatRelativeTime={formatRelativeNodeTime}
+      />
 
-      {organizePanelOpen && activeSpace ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[860px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] sm:p-5">
-            <div className="flex items-center justify-between gap-2">
-              <div>
-                <p className="text-sm text-slate-800">整理一下</p>
-                <p className="mt-1 text-xs text-slate-500">选择���容并移动到目标思路线</p>
-              </div>
-              <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setOrganizePanelOpen(false)}>
-                关闭
-              </button>
-            </div>
-            <div className="mt-3 flex flex-wrap items-center gap-2 rounded-xl border border-black/8 bg-[#f8f6f2] px-3 py-2">
-              <div className="flex items-center gap-1 text-xs">
-                {[
-                  { value: "current" as OrganizeScope, label: "当前线", count: organizeCurrentCount, disabled: !activeTrackId },
-                  { value: "all" as OrganizeScope, label: "全部", count: organizeAllNodes.length, disabled: false }
-                ].map((item) => (
-                  <button
-                    key={item.value}
-                    type="button"
-                    disabled={item.disabled}
-                    className={cn(
-                      "rounded-full border px-2.5 py-1 transition-colors",
-                      organizeScope === item.value ? "border-slate-900 bg-slate-900 text-white" : "border-black/12 bg-white text-slate-600 hover:text-slate-800",
-                      item.disabled ? "cursor-not-allowed opacity-45 hover:text-slate-600" : ""
-                    )}
-                    onClick={() => setOrganizeScope(item.value)}
-                  >
-                    {item.label} {item.count}
-                  </button>
-                ))}
-              </div>
-              <input
-                value={organizeQuery}
-                placeholder="搜索内容或来源思路线"
-                className="h-8 min-w-0 flex-1 rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-                onChange={(event) => setOrganizeQuery(event.target.value)}
-              />
-              <button
-                type="button"
-                className="rounded-full border border-black/12 bg-white px-3 py-1 text-xs text-slate-600 transition-colors hover:text-slate-800"
-                onClick={() =>
-                  setOrganizeSelectedNodeIds((prev) => {
-                    const visibleIds = organizeVisibleNodes.map((node) => node.nodeId);
-                    const visibleSet = new Set(visibleIds);
-                    if (organizeAllVisibleSelected) {
-                      return prev.filter((id) => !visibleSet.has(id));
-                    }
-                    const nextSet = new Set(prev);
-                    for (const id of visibleIds) nextSet.add(id);
-                    return [...nextSet];
-                  })
-                }
-              >
-                {organizeAllVisibleSelected ? "取消全选" : "全选当前结果"}
-              </button>
-            </div>
-            <div className="mt-3 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
-              {organizeVisibleNodes.length ? (
-                organizeVisibleNodes.map((node) => (
-                  <label
-                    key={node.nodeId}
-                    className={cn(
-                      "block rounded-xl border px-3 py-2 transition-colors",
-                      organizeSelectedSet.has(node.nodeId) ? "border-slate-900/35 bg-slate-50" : "border-black/10 bg-[#fcfaf6] hover:border-black/15"
-                    )}
-                  >
-                    <div className="flex items-start gap-2.5">
-                      <input
-                        type="checkbox"
-                        className="mt-0.5"
-                        checked={organizeSelectedSet.has(node.nodeId)}
-                        onChange={(event) =>
-                          setOrganizeSelectedNodeIds((prev) => {
-                            if (event.target.checked) {
-                              if (prev.includes(node.nodeId)) return prev;
-                              return [...prev, node.nodeId];
-                            }
-                            return prev.filter((id) => id !== node.nodeId);
-                          })
-                        }
-                      />
-                      <div className="min-w-0 flex-1">
-                        <p className="text-[13px] leading-[1.55] text-slate-700 [overflow-wrap:anywhere]">
-                          {node.questionText || `节点 ${node.nodeId.slice(0, 8)}`}
-                        </p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          来自：{node.fromTrackTitle || "未命名思路线"}
-                          {node.createdAt ? ` · ${formatRelativeNodeTime(node.createdAt)}` : ""}
-                        </p>
-                      </div>
-                    </div>
-                  </label>
-                ))
-              ) : (
-                <p className="rounded-xl border border-black/8 bg-[#fcfaf6] px-3 py-6 text-center text-sm text-slate-500">
-                  当前范围没有待整理内容
-                </p>
-              )}
-            </div>
-            <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-              <p className="text-xs text-slate-500">已选 {organizeSelectedNodeIds.length} 条</p>
-              <div className="flex flex-wrap items-center justify-end gap-2">
-                <span className="text-xs text-slate-600">移动到</span>
-                <select
-                  value={organizeTargetTrackId}
-                  className="h-8 max-w-[220px] rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-                  onChange={(event) => setOrganizeTargetTrackId(event.target.value)}
-                >
-                  {organizeTargetTracks.map((track) => (
-                    <option key={track.id} value={track.id}>
-                      {trackCardTitle(track).slice(0, 24)}
-                    </option>
-                  ))}
-                  <option value="__new__">创建新方向</option>
-                </select>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  className="rounded-full border border-black/12 text-slate-700"
-                  onClick={() => setOrganizePanelOpen(false)}
-                >
-                取消
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:opacity-50"
-                  disabled={!organizeSelectedNodeIds.length || isApplyingOrganize}
-                  onClick={applyOrganize}
-                >
-                  {isApplyingOrganize ? "移动中..." : "移动"}
-                </Button>
-              </div>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <OrganizePanel
+        open={organizePanelOpen && Boolean(activeSpace)}
+        activeTrackId={activeTrackId}
+        scope={organizeScope}
+        onScopeChange={setOrganizeScope}
+        currentCount={organizeCurrentCount}
+        allCount={organizeAllNodes.length}
+        query={organizeQuery}
+        onQueryChange={setOrganizeQuery}
+        visibleNodes={organizeVisibleNodes}
+        selectedSet={organizeSelectedSet}
+        selectedNodeIds={organizeSelectedNodeIds}
+        setSelectedNodeIds={setOrganizeSelectedNodeIds}
+        allVisibleSelected={organizeAllVisibleSelected}
+        targetTrackId={organizeTargetTrackId}
+        onTargetTrackIdChange={setOrganizeTargetTrackId}
+        targetTracks={organizeTargetTrackOptions}
+        isApplying={isApplyingOrganize}
+        onClose={() => setOrganizePanelOpen(false)}
+        onApply={applyOrganize}
+        formatRelativeTime={formatRelativeNodeTime}
+      />
 
       {galleryOpen && activeSpace ? (
         <div
@@ -2707,11 +2500,14 @@ export function ThinkingLayer(props: {
                         }}
                       >
                         {hasSrc ? (
-                          <img
-                            src={asset.src as string}
-                            alt=""
-                            className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
-                          />
+                          <>
+                            {/* eslint-disable-next-line @next/next/no-img-element -- gallery thumbnails can be local blob URLs that next/image cannot optimize. */}
+                            <img
+                              src={asset.src as string}
+                              alt=""
+                              className="h-full w-full object-cover transition-transform duration-500 group-hover:scale-[1.04]"
+                            />
+                          </>
                         ) : (
                           <span className="grid h-full w-full place-items-center text-xs text-slate-400">
                             预览不可用
@@ -2836,97 +2632,31 @@ export function ThinkingLayer(props: {
         </div>
       ) : null}
 
-      {renameSpaceOpen && activeSpace ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[560px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">重命名空间</p>
-            <input
-              value={renameSpaceDraft}
-              maxLength={220}
-              className="mt-3 h-11 w-full rounded-xl border border-black/12 bg-white px-3 text-sm text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
-              onChange={(event) => setRenameSpaceDraft(event.target.value)}
-              onKeyDown={(event) => event.key === "Enter" && renameSpace()}
-            />
-            <p className="mt-1 text-xs text-slate-500">修改后会同步到空间列表与详情。</p>
-            <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", renameSpaceHint ? "opacity-100" : "opacity-0")}>{renameSpaceHint}</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="ghost"
-                className="rounded-full border border-black/12 text-slate-700"
-                onClick={() => setRenameSpaceOpen(false)}
-              >
-                取消
-              </Button>
-              <Button type="button" size="sm" className="rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800" onClick={renameSpace}>
-                {isRenamingSpace ? "保存中..." : "保存"}
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <RenameSpaceDialog
+        open={renameSpaceOpen && Boolean(activeSpace)}
+        draft={renameSpaceDraft}
+        hint={renameSpaceHint}
+        isSaving={isRenamingSpace}
+        onDraftChange={setRenameSpaceDraft}
+        onCancel={() => setRenameSpaceOpen(false)}
+        onSave={renameSpace}
+      />
 
-      {exportOpen ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="flex h-[min(760px,calc(100vh-2rem))] w-[920px] max-w-[calc(100vw-2rem)] min-h-0 flex-col rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <div className="mb-3 flex items-center justify-between gap-3">
-              <div>
-                <p className="text-sm text-slate-800">Markdown 导出</p>
-                <p className="mt-1 text-xs text-slate-500">长内容可直接滚动查看，也可下载为 `.md` 文件。</p>
-              </div>
-              <div className="flex items-center gap-2">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled={exportLoading || !exportMarkdown.trim()}
-                  className="rounded-full text-slate-700 hover:bg-black/[0.05] disabled:opacity-50"
-                  onClick={downloadExportMarkdown}
-                >
-                  下载
-                </Button>
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="ghost"
-                  disabled={exportLoading || !exportMarkdown.trim()}
-                  className="rounded-full text-slate-700 hover:bg-black/[0.05] disabled:opacity-50"
-                  onClick={copyExportMarkdown}
-                >
-                  复制
-                </Button>
-                <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setExportOpen(false)}>
-                  关闭
-                </button>
-              </div>
-            </div>
-            <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain rounded-xl border border-black/12 bg-[#f7f4ef] px-4 py-4">
-              <pre className="whitespace-pre-wrap break-words text-xs leading-[1.7] text-slate-700">
-                {exportLoading ? "导出生成中..." : exportMarkdown || "暂无导出内容"}
-              </pre>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <ExportSpaceDialog
+        open={exportOpen}
+        markdown={exportMarkdown}
+        loading={exportLoading}
+        onClose={() => setExportOpen(false)}
+        onDownload={downloadExportMarkdown}
+        onCopy={copyExportMarkdown}
+      />
 
-      {deleteSpaceOpen && activeSpace ? (
-        <div className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
-          <div className="w-[460px] max-w-[calc(100vw-2rem)] rounded-2xl border border-black/12 bg-white p-5 shadow-[0_20px_48px_rgba(15,23,42,0.22)]">
-            <p className="text-sm text-slate-800">删除这个空间？</p>
-            <p className="mt-2 line-clamp-2 text-xs text-slate-500">{activeSpace.rootQuestionText}</p>
-            <p className="mt-1 text-xs text-slate-500">删除后不可恢复，轨道、节点与关联会一并清理。</p>
-            <div className="mt-4 flex justify-end gap-2">
-              <Button type="button" size="sm" variant="ghost" className="rounded-full border border-black/12 text-slate-700" onClick={() => setDeleteSpaceOpen(false)}>
-                取消
-              </Button>
-              <Button type="button" size="sm" className="rounded-full bg-red-600 text-slate-50 hover:bg-red-500" onClick={deleteSpace}>
-                确认删除
-              </Button>
-            </div>
-          </div>
-        </div>
-      ) : null}
+      <DeleteSpaceDialog
+        open={deleteSpaceOpen && Boolean(activeSpace)}
+        spaceTitle={activeSpace?.rootQuestionText ?? ""}
+        onCancel={() => setDeleteSpaceOpen(false)}
+        onConfirm={deleteSpace}
+      />
 
       <input
         ref={nodeImageInputRef}
@@ -2959,6 +2689,7 @@ export function ThinkingLayer(props: {
             >
               关闭
             </button>
+            {/* eslint-disable-next-line @next/next/no-img-element -- full-size previews preserve runtime blob/data URLs and intrinsic sizing. */}
             <img src={previewImage.src} alt={previewImage.alt} className="max-h-[82vh] w-full rounded-[20px] object-contain shadow-[0_24px_60px_rgba(15,23,42,0.35)]" />
           </div>
         </div>
@@ -2986,185 +2717,6 @@ export function ThinkingLayer(props: {
           }
         }
       `}</style>
-    </div>
-  );
-}
-
-function MenuItem(props: { label: string; onClick: () => void; disabled?: boolean }) {
-  return (
-    <button
-      type="button"
-      disabled={props.disabled}
-      className={cn(
-        "block w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
-        props.disabled ? "cursor-not-allowed text-slate-400" : "text-slate-700 hover:bg-slate-100"
-      )}
-      onClick={props.onClick}
-    >
-      {props.label}
-    </button>
-  );
-}
-
-function NodeMenu(props: {
-  disabled: boolean;
-  onEdit: () => void;
-  onCopy: () => void;
-  onDelete: () => void;
-  imageSrc?: string | null;
-  imageAlt?: string;
-  imageBusy?: boolean;
-  canManageImage?: boolean;
-  onAddImage?: () => void;
-  onPreviewImage?: () => void;
-  onReplaceImage?: () => void;
-  onRemoveImage?: () => void;
-  triggerClassName?: string;
-}) {
-  const [open, setOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement | null>(null);
-  const triggerRef = useRef<HTMLButtonElement | null>(null);
-  const [menuStyle, setMenuStyle] = useState<{ top: number; left: number } | null>(null);
-  const hasImage = Boolean(props.imageSrc);
-  const triggerDisabled = props.disabled || props.imageBusy;
-
-  useEffect(() => {
-    if (!open) return;
-    const updatePosition = () => {
-      const rect = triggerRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const menuWidth = 192;
-      const left = Math.min(rect.left - 12, window.innerWidth - menuWidth - 12);
-      const top = Math.min(rect.bottom + 8, window.innerHeight - 260);
-      setMenuStyle({
-        top: Math.max(12, top),
-        left: Math.max(12, left)
-      });
-    };
-    updatePosition();
-    const onPointerDown = (event: MouseEvent) => {
-      if (!menuRef.current) return;
-      if (
-        event.target instanceof Node &&
-        !menuRef.current.contains(event.target) &&
-        !triggerRef.current?.contains(event.target)
-      ) {
-        setOpen(false);
-      }
-    };
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    const onScroll = () => setOpen(false);
-    window.addEventListener("mousedown", onPointerDown);
-    window.addEventListener("keydown", onKeyDown);
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", onScroll, true);
-    return () => {
-      window.removeEventListener("mousedown", onPointerDown);
-      window.removeEventListener("keydown", onKeyDown);
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", onScroll, true);
-    };
-  }, [open]);
-
-  const runAction = (fn: () => void) => {
-    fn();
-    setOpen(false);
-  };
-
-  const menuContent = (
-    <div
-      ref={menuRef}
-      role="menu"
-      aria-hidden={!open}
-      style={menuStyle ?? undefined}
-      className={cn(
-        "fixed z-[80] w-48 rounded-xl border border-black/12 bg-white p-1.5 shadow-[0_10px_22px_rgba(15,23,42,0.16)]",
-        open ? "block" : "hidden"
-      )}
-    >
-      {hasImage ? (
-        <>
-          {props.onPreviewImage ? <MenuItem label="查看图片" disabled={triggerDisabled} onClick={() => runAction(props.onPreviewImage as () => void)} /> : null}
-          {props.canManageImage && props.onReplaceImage ? (
-            <MenuItem label={props.imageBusy ? "处理中..." : "更换图片"} disabled={triggerDisabled} onClick={() => runAction(props.onReplaceImage as () => void)} />
-          ) : null}
-          {props.canManageImage && props.onRemoveImage ? (
-            <MenuItem label="移除图片" disabled={triggerDisabled} onClick={() => runAction(props.onRemoveImage as () => void)} />
-          ) : null}
-          {(props.onPreviewImage || (props.canManageImage && (props.onReplaceImage || props.onRemoveImage))) ? <div className="my-1 h-px bg-black/8" /> : null}
-        </>
-      ) : props.canManageImage && props.onAddImage ? (
-        <>
-          <MenuItem label={props.imageBusy ? "处理中..." : "添加图片"} disabled={triggerDisabled} onClick={() => runAction(props.onAddImage as () => void)} />
-          <div className="my-1 h-px bg-black/8" />
-        </>
-      ) : null}
-      <button
-        type="button"
-        role="menuitem"
-        disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onEdit)}
-      >
-        修改
-      </button>
-      <button
-        type="button"
-        role="menuitem"
-        disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onCopy)}
-      >
-        复制
-      </button>
-      <div className="my-1 h-px bg-black/8" />
-      <button
-        type="button"
-        role="menuitem"
-        disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
-        onClick={() => runAction(props.onDelete)}
-      >
-        删除
-      </button>
-    </div>
-  );
-
-  return (
-    <div className={cn("relative inline-block", props.triggerClassName)}>
-      <button
-        ref={triggerRef}
-        type="button"
-        aria-label={hasImage ? "节点图片菜单" : "节点菜单"}
-        aria-haspopup="menu"
-        aria-expanded={open}
-        className={cn(
-          "relative flex items-center justify-center overflow-hidden transition-colors",
-          hasImage
-            ? "h-9 w-9 rounded-[12px] bg-transparent"
-            : "h-7 w-7 rounded-full bg-transparent text-slate-400 hover:bg-white/80 hover:text-slate-700",
-          triggerDisabled ? "cursor-not-allowed opacity-60" : open ? "cursor-pointer" : "cursor-pointer hover:bg-black/[0.025]"
-        )}
-        disabled={triggerDisabled}
-        onClick={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          setOpen((prev) => !prev);
-        }}
-      >
-        {hasImage && props.imageSrc ? (
-          <>
-            <img src={props.imageSrc} alt={props.imageAlt ?? "节点图片"} className="h-full w-full rounded-[12px] object-cover" />
-          </>
-        ) : (
-          <span aria-hidden="true" className="text-base leading-none">
-            ⋯
-          </span>
-        )}
-      </button>
-      {typeof document !== "undefined" ? createPortal(menuContent, document.body) : null}
     </div>
   );
 }

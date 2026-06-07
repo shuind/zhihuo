@@ -63,8 +63,12 @@ export function StageRenderer({
   )
 
   const coreLines = useMemo(
-    () => softWrap(compiled.core.text, 9),
-    [compiled.core.text]
+    () => softWrap(compiled.core.text, compiled.width < 560 ? 7 : 9),
+    [compiled.core.text, compiled.width]
+  )
+  const visibleLabels = useMemo(
+    () => buildVisibleLabels(compiled.stars, compiled.width, compiled.height, compiled.core, selectedStarId, hoverId),
+    [compiled.core, compiled.height, compiled.stars, compiled.width, hoverId, selectedStarId]
   )
 
   function getLocalPointer(event: ReactPointerEvent<SVGElement>) {
@@ -74,8 +78,8 @@ export function StageRenderer({
     const x = ((event.clientX - rect.left) / rect.width) * compiled.width
     const y = ((event.clientY - rect.top) / rect.height) * compiled.height
     return {
-      x: clamp(x, 12, compiled.width - 12),
-      y: clamp(y, 12, compiled.height - 12),
+      x: clamp(x, 24, compiled.width - 24),
+      y: clamp(y, 24, compiled.height - 24),
       width: compiled.width,
       height: compiled.height,
     }
@@ -108,7 +112,7 @@ export function StageRenderer({
     event.stopPropagation()
     if (Math.hypot(point.x - drag.startX, point.y - drag.startY) > 3) drag.moved = true
     drag.lastPosition = point
-    onMoveStar(drag.star, point)
+    if (drag.moved) onMoveStar(drag.star, point)
   }
 
   function endDrag(event: ReactPointerEvent<SVGCircleElement>) {
@@ -133,7 +137,7 @@ export function StageRenderer({
       className={cn(
         "relative h-full w-full overflow-hidden",
         // deep dark canvas; intentionally not pure black, has a hint of cool warmth
-        "bg-[#0a0a0c]",
+              "bg-[#09090b]",
         className
       )}
     >
@@ -143,7 +147,7 @@ export function StageRenderer({
         className="pointer-events-none absolute inset-0"
         style={{
           background:
-            "radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 55%, rgba(0,0,0,0.55) 100%)",
+            "radial-gradient(ellipse at 50% 50%, rgba(0,0,0,0) 52%, rgba(0,0,0,0.62) 100%)",
         }}
       />
 
@@ -195,16 +199,16 @@ export function StageRenderer({
         <g>
           {compiled.strands.map((s) => {
             const d = `M ${s.fromXY.x} ${s.fromXY.y} Q ${s.control.x} ${s.control.y} ${s.toXY.x} ${s.toXY.y}`
-            const lineOpacity = 0.10 + s.weight * 0.18
-            const dustOpacity = 0.18 + s.weight * 0.25
+            const lineOpacity = 0.08 + s.weight * 0.22
+            const dustOpacity = 0.14 + s.weight * 0.24
             return (
               <g key={s.id}>
                 <path
                   d={d}
                   fill="none"
                   stroke="rgb(237,230,212)"
-                  strokeWidth={0.55 + s.weight * 0.45}
-                  strokeDasharray="1.4 5"
+                  strokeWidth={0.5 + s.weight * 0.55}
+                  strokeDasharray="1.2 5.5"
                   strokeLinecap="round"
                   opacity={lineOpacity}
                 />
@@ -213,7 +217,7 @@ export function StageRenderer({
                     key={i}
                     cx={dp.x}
                     cy={dp.y}
-                    r={0.7}
+                    r={0.55 + s.weight * 0.22}
                     fill="rgb(237,230,212)"
                     opacity={dustOpacity}
                   />
@@ -251,15 +255,16 @@ export function StageRenderer({
             const isSelected = selectedStarId === star.id
             const isHover = hoverId === star.id
             const showHalo = star.halo || isSelected || isHover
+            const hitRadius = Math.max(star.r * 4.2, compiled.width < 560 ? 18 : 12)
             return (
               <g key={star.id}>
                 {showHalo && (
                   <circle
                     cx={star.x}
                     cy={star.y}
-                    r={star.r * (isSelected ? 5 : 3.8)}
+                    r={star.r * (isSelected ? 5.5 : isHover ? 4.6 : 3.8)}
                     fill="url(#sm-star-halo)"
-                    opacity={isSelected ? 1 : isHover ? 0.85 : 0.7}
+                    opacity={isSelected ? 1 : isHover ? 0.9 : 0.66}
                     pointerEvents="none"
                   />
                 )}
@@ -270,11 +275,22 @@ export function StageRenderer({
                   fill={isSelected ? "rgb(255,245,210)" : "rgb(245,232,194)"}
                   opacity={isSelected ? 1 : star.opacity}
                 />
+                {isSelected ? (
+                  <circle
+                    cx={star.x}
+                    cy={star.y}
+                    r={star.r + 4.5}
+                    fill="none"
+                    stroke="rgba(245,232,194,0.58)"
+                    strokeWidth={0.8}
+                    pointerEvents="none"
+                  />
+                ) : null}
                 {/* invisible larger hit target for easy clicking */}
                 <circle
                   cx={star.x}
                   cy={star.y}
-                  r={Math.max(star.r * 3, 10)}
+                  r={hitRadius}
                   fill="transparent"
                   className={cn(onMoveStar ? "cursor-grab active:cursor-grabbing" : "cursor-pointer", dragId === star.id ? "cursor-grabbing" : null)}
                   style={{ touchAction: "none" }}
@@ -302,10 +318,10 @@ export function StageRenderer({
           style={{
             left: compiled.core.x,
             top: compiled.core.y,
-            maxWidth: Math.min(compiled.width * 0.22, 220),
+            maxWidth: Math.min(compiled.width * (compiled.width < 560 ? 0.38 : 0.22), 220),
           }}
         >
-          <div className="font-sans text-[14px] leading-[1.65] tracking-[0.04em] text-[#EDE6D4]">
+          <div className="font-sans text-[13.5px] leading-[1.65] tracking-[0.04em] text-[#EDE6D4] sm:text-[14px]">
             {coreLines.map((l, i) => (
               <div key={i}>{l}</div>
             ))}
@@ -313,32 +329,15 @@ export function StageRenderer({
         </div>
 
         {/* star labels: only stars carrying text */}
-        {compiled.stars
-          .filter((s) =>
-            s.text && shouldShowStarLabel(s, compiled.width, selectedStarId)
-          )
-          .map((star) => {
-            const dx = star.x - compiled.core.x
-            const labelOffset = Math.max(star.r * 3, 14)
+        {visibleLabels
+          .map(({ star, style }) => {
             const isHero = star.role === "hero"
-            const labelMaxWidth = Math.min(200, Math.max(128, compiled.width * 0.36))
-            const edgePadding = 18
-            const wouldClipLeft = star.x - labelOffset - labelMaxWidth < edgePadding
-            const wouldClipRight = star.x + labelOffset + labelMaxWidth > compiled.width - edgePadding
-            const onRight = wouldClipLeft ? true : wouldClipRight ? false : dx >= 0
-            const labelStyle: CSSProperties = {
-              left: onRight ? star.x + labelOffset : star.x - labelOffset,
-              top: clamp(star.y, 48, compiled.height - 48),
-              transform: onRight ? "translateY(-50%)" : "translate(-100%, -50%)",
-              textAlign: onRight ? "left" : "right",
-              maxWidth: labelMaxWidth,
-            }
             const isSelected = selectedStarId === star.id
             return (
               <div
                 key={`label-${star.id}`}
                 className="pointer-events-auto absolute cursor-pointer select-none transition-opacity"
-                style={labelStyle}
+                style={style}
                 onClick={() => onSelectStar?.(star)}
                 onMouseEnter={() => setHoverId(star.id)}
                 onMouseLeave={() => setHoverId((h) => (h === star.id ? null : h))}
@@ -348,7 +347,7 @@ export function StageRenderer({
                     "font-sans leading-[1.55]",
                     isHero
                       ? "text-[13.5px] text-[#EDE6D4]"
-                      : "text-[12.5px] text-[#b4ad9c]",
+                      : "text-[12px] text-[#b4ad9c]",
                     isSelected ? "text-[#F5E8C2]" : null
                   )}
                   style={{ overflowWrap: "anywhere", whiteSpace: "pre-wrap" }}
@@ -388,12 +387,163 @@ function clamp(value: number, min: number, max: number) {
   return Math.min(max, Math.max(min, value))
 }
 
-function shouldShowStarLabel(
+type VisibleLabel = {
+  star: CompiledStar
+  style: CSSProperties
+  box: { left: number; top: number; right: number; bottom: number }
+}
+
+function buildVisibleLabels(
+  stars: CompiledStar[],
+  width: number,
+  height: number,
+  core: { x: number; y: number; r: number },
+  selectedStarId: string | null | undefined,
+  hoverId: string | null
+): VisibleLabel[] {
+  const mobile = width < 560
+  const compact = width < 760 || height < 520
+  const labelBudget = mobile ? 3 : compact ? 5 : clamp(Math.round(width / 190), 5, 9)
+  const edgePadding = mobile ? 14 : 22
+  const minTop = mobile ? 58 : 42
+  const maxBottom = height - (mobile ? 86 : 44)
+  const labelMaxWidth = mobile ? Math.min(164, width - edgePadding * 2) : Math.min(210, Math.max(138, width * 0.26))
+  const occupied: Array<{ left: number; top: number; right: number; bottom: number }> = [
+    {
+      left: core.x - core.r * 1.75,
+      top: core.y - core.r * 1.15,
+      right: core.x + core.r * 1.75,
+      bottom: core.y + core.r * 1.15,
+    },
+  ]
+
+  const candidates = stars
+    .filter((star) => Boolean(star.text))
+    .filter((star) => {
+      if (star.id === selectedStarId || star.id === hoverId) return true
+      if (mobile) return star.role === "hero"
+      if (compact) return star.role === "hero" || star.role === "support"
+      return star.role !== "ambient"
+    })
+    .sort((a, b) => {
+      const aActive = a.id === selectedStarId ? 3 : a.id === hoverId ? 2 : 0
+      const bActive = b.id === selectedStarId ? 3 : b.id === hoverId ? 2 : 0
+      return bActive - aActive || b.labelPriority - a.labelPriority
+    })
+
+  const labels: VisibleLabel[] = []
+  for (const star of candidates) {
+    const forced = star.id === selectedStarId || star.id === hoverId
+    if (!forced && labels.length >= labelBudget) continue
+    const label = placeLabel(star, width, core, labelMaxWidth, edgePadding, minTop, maxBottom, occupied)
+    if (!label) {
+      if (!forced) continue
+      const fallback = forcePlaceLabel(star, width, core, labelMaxWidth, edgePadding, minTop, maxBottom)
+      labels.push(fallback)
+      occupied.push(fallback.box)
+      continue
+    }
+    labels.push(label)
+    occupied.push(label.box)
+  }
+
+  return labels
+}
+
+function placeLabel(
   star: CompiledStar,
   width: number,
-  selectedStarId: string | null | undefined
+  core: { x: number; y: number },
+  maxWidth: number,
+  edgePadding: number,
+  minTop: number,
+  maxBottom: number,
+  occupied: Array<{ left: number; top: number; right: number; bottom: number }>
+): VisibleLabel | null {
+  const estimate = estimateLabelSize(star, maxWidth)
+  const labelOffset = Math.max(star.r * 3.4, width < 560 ? 18 : 15)
+  const dx = star.x - core.x
+  const wouldClipLeft = star.x - labelOffset - maxWidth < edgePadding
+  const wouldClipRight = star.x + labelOffset + maxWidth > width - edgePadding
+  const preferredRight = wouldClipLeft ? true : wouldClipRight ? false : dx >= 0
+  const sides = preferredRight ? [true, false] : [false, true]
+  const nudges = [0, -22, 22, -44, 44, -66, 66]
+
+  for (const onRight of sides) {
+    const left = onRight ? star.x + labelOffset : star.x - labelOffset - estimate.width
+    const clampedLeft = clamp(left, edgePadding, width - edgePadding - estimate.width)
+    for (const nudge of nudges) {
+      const top = clamp(star.y - estimate.height / 2 + nudge, minTop, Math.max(minTop, maxBottom - estimate.height))
+      const box = {
+        left: clampedLeft,
+        top,
+        right: clampedLeft + estimate.width,
+        bottom: top + estimate.height,
+      }
+      if (occupied.some((item) => boxesOverlap(box, item, 8))) continue
+      return {
+        star,
+        box,
+        style: {
+          left: onRight ? clampedLeft : clampedLeft + estimate.width,
+          top: top + estimate.height / 2,
+          transform: onRight ? "translateY(-50%)" : "translate(-100%, -50%)",
+          textAlign: onRight ? "left" : "right",
+          maxWidth,
+          opacity: star.role === "echo" ? 0.78 : 1,
+        },
+      }
+    }
+  }
+  return null
+}
+
+function forcePlaceLabel(
+  star: CompiledStar,
+  width: number,
+  core: { x: number; y: number },
+  maxWidth: number,
+  edgePadding: number,
+  minTop: number,
+  maxBottom: number
+): VisibleLabel {
+  const estimate = estimateLabelSize(star, maxWidth)
+  const onRight = star.x < core.x || star.x - maxWidth < edgePadding
+  const left = onRight
+    ? clamp(star.x + 18, edgePadding, width - edgePadding - estimate.width)
+    : clamp(star.x - 18 - estimate.width, edgePadding, width - edgePadding - estimate.width)
+  const top = clamp(star.y - estimate.height / 2, minTop, Math.max(minTop, maxBottom - estimate.height))
+  return {
+    star,
+    box: { left, top, right: left + estimate.width, bottom: top + estimate.height },
+    style: {
+      left: onRight ? left : left + estimate.width,
+      top: top + estimate.height / 2,
+      transform: onRight ? "translateY(-50%)" : "translate(-100%, -50%)",
+      textAlign: onRight ? "left" : "right",
+      maxWidth,
+    },
+  }
+}
+
+function estimateLabelSize(star: CompiledStar, maxWidth: number) {
+  const text = star.text ?? ""
+  const charsPerLine = Math.max(8, Math.floor(maxWidth / (containsWideGlyph(text) ? 13 : 7.2)))
+  const lines = Math.max(1, Math.ceil(text.length / charsPerLine))
+  return {
+    width: Math.min(maxWidth, Math.max(76, Math.min(text.length, charsPerLine) * (containsWideGlyph(text) ? 13 : 7.2))),
+    height: lines * 19 + (star.timestamp ? 17 : 0),
+  }
+}
+
+function containsWideGlyph(text: string) {
+  return /[^\u0000-\u00ff]/.test(text)
+}
+
+function boxesOverlap(
+  a: { left: number; top: number; right: number; bottom: number },
+  b: { left: number; top: number; right: number; bottom: number },
+  gap: number
 ) {
-  if (selectedStarId === star.id) return true
-  if (width < 560) return false
-  return true
+  return !(a.right + gap < b.left || b.right + gap < a.left || a.bottom + gap < b.top || b.bottom + gap < a.top)
 }
