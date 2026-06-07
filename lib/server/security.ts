@@ -164,7 +164,7 @@ export function buildUserExportMarkdown(
   lines.push("# 知惑导出（Markdown）");
   lines.push("");
   lines.push(`- 导出时间：${formatFriendlyDateTime(new Date().toISOString())}`);
-  lines.push(`- 导出范围：${includeLife ? "时间层" : ""}${includeLife && includeThinking ? " + " : ""}${includeThinking ? "思路层" : ""}`);
+  lines.push(`- 导出范围：${includeLife ? "时间层" : ""}${includeLife && includeThinking ? " + " : ""}${includeThinking ? "想一想" : ""}`);
   lines.push("");
 
   if (includeLife) {
@@ -192,7 +192,7 @@ export function buildUserExportMarkdown(
     }
 
     if (writtenToTimeSpaces.length) {
-      lines.push("### 来自思路层（已写入时间）");
+      lines.push("### 来自想一想（已封存）");
       lines.push("");
       for (const [index, space] of writtenToTimeSpaces.entries()) {
         lines.push(`- ${index + 1}. ${space.root_question_text}`);
@@ -203,11 +203,11 @@ export function buildUserExportMarkdown(
   }
 
   if (includeThinking) {
-    lines.push("## 思路层（仅活跃）");
+    lines.push("## 想一想（仅活跃）");
     lines.push("");
 
     if (!activeSpaces.length) {
-      lines.push("- 暂无活跃思路空间");
+      lines.push("- 暂无活跃思考空间");
       lines.push("");
     } else {
       for (const [spaceIndex, space] of activeSpaces.entries()) {

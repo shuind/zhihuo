@@ -52,6 +52,10 @@ export function SettingsLayer(props: {
   fixedTopSpaceIds: string[];
   setFixedTopSpacesEnabled: (enabled: boolean) => void;
   setFixedTopSpaceIds: (ids: string[]) => void;
+  showThinkingDimensions: boolean;
+  setShowThinkingDimensions: (enabled: boolean) => void;
+  autoSealRemindersDisabled: boolean;
+  setAutoSealRemindersDisabled: (disabled: boolean) => void;
   sessionEmail: string | null;
   cloudSyncEnabled: boolean;
   cloudSyncReady: boolean;
@@ -345,7 +349,7 @@ export function SettingsLayer(props: {
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
             <CardTitle>时区设置</CardTitle>
-            <CardDescription>用于时间层和思路层的本地显示。</CardDescription>
+            <CardDescription>用于时间层和想一想的本地显示。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <label className="grid gap-2 rounded-lg border border-slate-300 bg-white px-3 py-3">
@@ -370,7 +374,46 @@ export function SettingsLayer(props: {
 
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
-            <CardTitle>思路顶部空间</CardTitle>
+            <CardTitle>想一想偏好</CardTitle>
+            <CardDescription>控制进阶思考里的辅助信息和封存提醒。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="flex items-start gap-3 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={props.showThinkingDimensions}
+                onChange={(event) => {
+                  props.setShowThinkingDimensions(event.target.checked);
+                  props.showNotice(event.target.checked ? "思考维度已显示" : "思考维度已隐藏");
+                }}
+                className="mt-0.5 h-4 w-4 accent-slate-800"
+              />
+              <span>
+                <span className="block">显示思考维度</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">默认隐藏；打开后只在节点辅助信息里显示。</span>
+              </span>
+            </label>
+            <label className="flex items-start gap-3 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm text-slate-700">
+              <input
+                type="checkbox"
+                checked={!props.autoSealRemindersDisabled}
+                onChange={(event) => {
+                  props.setAutoSealRemindersDisabled(!event.target.checked);
+                  props.showNotice(event.target.checked ? "自动封存提醒已开启" : "自动封存提醒已关闭");
+                }}
+                className="mt-0.5 h-4 w-4 accent-slate-800"
+              />
+              <span>
+                <span className="block">自动封存提醒</span>
+                <span className="mt-1 block text-xs leading-5 text-slate-500">安静两周后先提醒，不再自动替你封存。</span>
+              </span>
+            </label>
+          </CardContent>
+        </Card>
+
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
+            <CardTitle>想一想顶部空间</CardTitle>
             <CardDescription>固定显示三个空间，不会被最新修改的空间刷掉。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
@@ -611,7 +654,7 @@ export function SettingsLayer(props: {
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
             <CardTitle>全量导出</CardTitle>
-            <CardDescription>仅支持 Markdown 导出，可选时间层 / 思路层。</CardDescription>
+            <CardDescription>仅支持 Markdown 导出，可选时间层 / 想一想。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex flex-wrap items-center gap-4 rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm">
@@ -631,7 +674,7 @@ export function SettingsLayer(props: {
                   onChange={(event) => setIncludeThinking(event.target.checked)}
                   className="h-4 w-4 accent-slate-800"
                 />
-                思路层
+                想一想
               </label>
             </div>
             <Textarea

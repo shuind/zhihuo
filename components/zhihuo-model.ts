@@ -142,6 +142,7 @@ export type ThinkingStore = {
   timezone: string;
   fixedTopSpacesEnabled: boolean;
   fixedTopSpaceIds: string[];
+  showThinkingDimensions?: boolean;
 };
 
 export type StarDot = {
@@ -195,7 +196,8 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   assistEnabled: true,
   timezone: DEFAULT_TIMEZONE,
   fixedTopSpacesEnabled: false,
-  fixedTopSpaceIds: []
+  fixedTopSpaceIds: [],
+  showThinkingDimensions: false
 };
 
 export function createId() {
@@ -611,7 +613,8 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     assistEnabled: store.assistEnabled !== false,
     timezone: sanitizeTimeZone(store.timezone),
     fixedTopSpacesEnabled: store.fixedTopSpacesEnabled === true,
-    fixedTopSpaceIds
+    fixedTopSpaceIds,
+    showThinkingDimensions: store.showThinkingDimensions === true
   };
 }
 

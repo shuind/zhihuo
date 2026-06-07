@@ -40,7 +40,7 @@ async function compileStore() {
   const tsconfig = {
     compilerOptions: {
       target: "ES2022",
-      lib: ["es2022"],
+      lib: ["es2022", "dom"],
       skipLibCheck: true,
       strict: true,
       esModuleInterop: true,
@@ -58,7 +58,7 @@ async function compileStore() {
         "@/*": ["./*"]
       }
     },
-    files: ["lib/server/store.ts", "lib/server/types.ts", "lib/server/utils.ts"].map((file) =>
+    files: ["lib/server/store.ts", "lib/server/types.ts", "lib/server/utils.ts", "components/zhihuo-model.ts"].map((file) =>
       toTsPath(path.join(rootDir, file))
     )
   };
@@ -193,11 +193,27 @@ function runStoreAssertions(store) {
   assert(store.listUserSyncRepairItems(db, userId).length === 0, "resolved repair item should leave active list");
 }
 
+function runModelAssertions(model) {
+  const oldStore = model.normalizeThinkingStore({});
+  assert(oldStore.showThinkingDimensions === false, "old thinking store should hide dimensions by default");
+
+  const visibleStore = model.normalizeThinkingStore({
+    ...model.EMPTY_THINKING_STORE,
+    showThinkingDimensions: true
+  });
+  assert(visibleStore.showThinkingDimensions === true, "thinking dimension visibility should persist when enabled");
+
+  const roundTripped = model.normalizeThinkingStore(JSON.parse(JSON.stringify(visibleStore)));
+  assert(roundTripped.showThinkingDimensions === true, "thinking dimension visibility should survive JSON round trip");
+}
+
 async function run() {
   await compileStore();
   const require = createRequire(import.meta.url);
   const store = require(path.join(tempDir, "lib", "server", "store.js"));
+  const model = require(path.join(tempDir, "components", "zhihuo-model.js"));
   runStoreAssertions(store);
+  runModelAssertions(model);
   console.log("[store-test] all checks passed");
 }
 

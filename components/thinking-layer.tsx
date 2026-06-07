@@ -17,8 +17,10 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import {
+  DIMENSION_LABEL,
   copyText,
   formatTimeInTimeZone,
+  type DimensionKey,
   type ThinkingScratchItem,
   type ThinkingSpaceMeta,
   type ThinkingSpaceStatus,
@@ -68,7 +70,7 @@ function trackCardPreview(track: ThinkingTrackView) {
 }
 
 function spaceStatusLabel(status: ThinkingSpaceStatus) {
-  return status === "hidden" ? "已写入时间" : "进行中";
+  return status === "hidden" ? "已封存" : "进行中";
 }
 
 export type ThinkingTrackNodeView = {
@@ -78,6 +80,7 @@ export type ThinkingTrackNodeView = {
   noteText: string | null;
   answerText: string | null;
   createdAt?: string;
+  dimension: DimensionKey;
   isSuggested: boolean;
   echoTrackId: string | null;
   echoNodeId: string | null;
@@ -122,6 +125,12 @@ type AddQuestionPayload = {
   rawInput: string;
   trackId: string | null;
   fromSuggestion?: boolean;
+};
+
+type AutoSealPrompt = {
+  spaceId: string;
+  title: string;
+  inactiveDays: number;
 };
 
 function buildSettleLetterLines(tracks: ThinkingTrackView[]) {
@@ -216,6 +225,12 @@ export function ThinkingLayer(props: {
   onReentryHandled: () => void;
   writeEnabled?: boolean;
   mediaAssetSources?: Record<string, string>;
+  showThinkingDimensions?: boolean;
+  autoSealPrompt?: AutoSealPrompt | null;
+  autoSealBusy?: boolean;
+  onAutoSealSeal?: (spaceId: string) => Promise<boolean>;
+  onAutoSealSnooze?: (spaceId: string) => void;
+  onAutoSealDisable?: () => void;
   showNotice: (message: string) => void;
 }) {
   const [newSpaceInput, setNewSpaceInput] = useState("");
@@ -264,6 +279,7 @@ export function ThinkingLayer(props: {
   const [editingQuestionDraft, setEditingQuestionDraft] = useState("");
   const [uploadingImageNodeId, setUploadingImageNodeId] = useState<string | null>(null);
   const [previewImage, setPreviewImage] = useState<{ src: string; alt: string } | null>(null);
+  const [autoSealSubmitting, setAutoSealSubmitting] = useState(false);
   const [clipboardMode, setClipboardMode] = useState<"cut" | "copy" | null>(null);
   const [clipboardNodeId, setClipboardNodeId] = useState<string | null>(null);
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
@@ -884,7 +900,7 @@ export function ThinkingLayer(props: {
       .filter((node) => node.fromTrackId !== organizeTargetTrackId)
       .map((node) => ({ nodeId: node.nodeId, targetTrackId: organizeTargetTrackId }));
     if (!moves.length) {
-      props.showNotice("所选内容已经在目标思路线");
+      props.showNotice("所选内容已经在目标方向");
       return;
     }
     setIsApplyingOrganize(true);
@@ -985,7 +1001,7 @@ export function ThinkingLayer(props: {
       }
       if (!activeSpace) return;
       if (activeSpace.status !== "active") {
-        setInputHint("这个空间已写入时间");
+        setInputHint("这个空间已封存");
         return;
       }
       const cleanedInput = rawInput.trim();
@@ -1111,6 +1127,20 @@ export function ThinkingLayer(props: {
     setWriteToTimeOpen(true);
   }, [activeSpace]);
 
+  const sealAutoPrompt = useCallback(() => {
+    if (!props.autoSealPrompt || !props.onAutoSealSeal || autoSealSubmitting || props.autoSealBusy) return;
+    const spaceId = props.autoSealPrompt.spaceId;
+    setAutoSealSubmitting(true);
+    void (async () => {
+      try {
+        const ok = await props.onAutoSealSeal?.(spaceId);
+        if (!ok) props.showNotice("封存失败，请稍后再试");
+      } finally {
+        setAutoSealSubmitting(false);
+      }
+    })();
+  }, [autoSealSubmitting, props]);
+
   const [writeToTimeSealed, setWriteToTimeSealed] = useState(false);
 
   const submitWriteToTime = useCallback(async (snapshot: SettleLetterSnapshot): Promise<{ ok: boolean; message?: string }> => {
@@ -1137,9 +1167,9 @@ export function ThinkingLayer(props: {
     setWriteToTimeOpen(false);
     if (writeToTimeSealed) {
       setMoreOpen(false);
-    setThinkingViewMode("spaces");
+      setThinkingViewMode("spaces");
       setDetailSpaceId(null);
-      props.showNotice("已写入时间");
+      props.showNotice("已封存");
     }
     setWriteToTimeSealed(false);
   }, [isWritingToTime, props, writeToTimeSealed]);
@@ -1395,7 +1425,7 @@ export function ThinkingLayer(props: {
   const createNewDirection = useCallback(() => {
     if (!activeSpace) return;
     if (activeSpace.status !== "active") {
-      setInputHint("这个空间已写入时间");
+      setInputHint("这个空间已封存");
       return;
     }
     const normalizedInput = questionInput.trim();
@@ -1496,6 +1526,53 @@ export function ThinkingLayer(props: {
           </div>
         ) : null}
 
+        {props.autoSealPrompt ? (
+          <div
+            data-auto-seal-prompt="true"
+            className="absolute left-1/2 top-4 z-40 w-[calc(100%-2rem)] max-w-xl -translate-x-1/2 rounded-2xl border border-slate-300/70 bg-white/95 px-4 py-3 text-slate-800 shadow-[0_18px_44px_rgba(15,23,42,0.16)] backdrop-blur"
+          >
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div className="min-w-0">
+                <p className="line-clamp-1 text-sm font-medium">{props.autoSealPrompt.title}</p>
+                <p className="mt-1 text-xs leading-5 text-slate-500">
+                  这段思考安静 {props.autoSealPrompt.inactiveDays} 天了，要封存进时间吗？
+                </p>
+              </div>
+              <div className="flex shrink-0 items-center gap-2">
+                <Button
+                  type="button"
+                  size="sm"
+                  className="rounded-full bg-slate-900 px-3 text-xs text-white hover:bg-slate-800"
+                  disabled={autoSealSubmitting || props.autoSealBusy}
+                  onClick={sealAutoPrompt}
+                >
+                  {autoSealSubmitting || props.autoSealBusy ? "封存中..." : "封存"}
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full border border-slate-300 bg-white px-3 text-xs text-slate-700"
+                  disabled={autoSealSubmitting || props.autoSealBusy}
+                  onClick={() => props.onAutoSealSnooze?.(props.autoSealPrompt?.spaceId ?? "")}
+                >
+                  再想想
+                </Button>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="ghost"
+                  className="rounded-full px-3 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                  disabled={autoSealSubmitting || props.autoSealBusy}
+                  onClick={() => props.onAutoSealDisable?.()}
+                >
+                  关闭自动提醒
+                </Button>
+              </div>
+            </div>
+          </div>
+        ) : null}
+
         <header
           className={cn(
             "relative z-10",
@@ -1580,7 +1657,7 @@ export function ThinkingLayer(props: {
                     style={moreMenuStyle ?? undefined}
                     className="fixed z-[90] w-44 rounded-xl border border-black/10 bg-white/98 p-1.5 shadow-[0_14px_30px_rgba(16,20,24,0.16)] backdrop-blur-sm"
                   >
-                    <MenuItem label="写入时间" disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
+                    <MenuItem label="封存" disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"} onClick={openWriteToTimeDialog} />
                     <MenuItem label="导出" disabled={!activeSpace} onClick={() => (setMoreOpen(false), openExport())} />
                     <MenuItem label="整理一下" disabled={!writeEnabled || !activeSpace || activeSpace.status !== "active"} onClick={openOrganizePanel} />
                     <MenuItem
@@ -1667,7 +1744,7 @@ export function ThinkingLayer(props: {
                       setCreateSpaceOpen(true);
                     }}
                   >
-                    + 新空间
+                    + 新思考
                   </button>
                 </div>
               </div>
@@ -1977,6 +2054,11 @@ export function ThinkingLayer(props: {
                                   </div>
                                   <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400/90">
                                     <div className="flex flex-wrap items-center gap-2">
+                                      {props.showThinkingDimensions ? (
+                                        <span data-thinking-dimension-label="true" className="rounded-full bg-white/45 px-2 py-0.5 text-[10.5px] text-slate-500">
+                                          {DIMENSION_LABEL[node.dimension] ?? "未命名维度"}
+                                        </span>
+                                      ) : null}
                                     </div>
                                     {node.echoTrackId ? (
                                       <button
@@ -1987,7 +2069,7 @@ export function ThinkingLayer(props: {
                                           switchTrack(node.echoTrackId as string);
                                         }}
                                       >
-                                        在其他思路也出现过
+                                        在其他方向也出现过
                                       </button>
                                     ) : (
                                       <span>{formatNodeClockTime(node.createdAt, props.timezone)}</span>
@@ -2050,7 +2132,7 @@ export function ThinkingLayer(props: {
                 {!props.focusMode ? (
                   <aside data-other-tracks="true" className="min-h-0 w-[220px] justify-self-end border-l border-black/[0.04] pl-5 md:pt-1">
                     <div className="flex h-full min-h-0 flex-col">
-                      <p className="mb-4 text-[12px] tracking-[0.04em] text-slate-400">其他思路</p>
+                      <p className="mb-4 text-[12px] tracking-[0.04em] text-slate-400">其他方向</p>
                       <div className="grid max-h-full gap-4 overflow-y-auto pr-1">
                         {otherTracks.map((track) => (
                             <button
@@ -2127,7 +2209,7 @@ export function ThinkingLayer(props: {
                       data-zh-input="multiline"
                       rows={1}
                       disabled={!writeEnabled || activeSpace.status !== "active"}
-                      placeholder={activeSpace.status === "active" ? "继续这条思路…" : "这个空间已写入时间"}
+                      placeholder={activeSpace.status === "active" ? "继续想一想…" : "这个空间已封存"}
                       className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/80 disabled:text-slate-500 focus-visible:ring-0"
                       onChange={(event) => setQuestionInput(event.target.value)}
                       onKeyDown={(event) => {
@@ -2231,7 +2313,7 @@ export function ThinkingLayer(props: {
                     <p className="text-[15px] leading-[1.75] text-slate-800 [overflow-wrap:anywhere]">{latestScratch.rawText}</p>
                     <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
                       <span>{formatRelativeNodeTime(latestScratch.updatedAt)}</span>
-                      {latestScratch.derivedSpaceId ? <span>已进入思路</span> : null}
+                      {latestScratch.derivedSpaceId ? <span>已进入想一想</span> : null}
                     </div>
                   </button>
                 ) : null}

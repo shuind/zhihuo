@@ -50,7 +50,7 @@ export function OrganizePanel(props: {
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-sm text-slate-800">整理一下</p>
-            <p className="mt-1 text-xs text-slate-500">选择���容并移动到目标思路线</p>
+            <p className="mt-1 text-xs text-slate-500">选择内容并移动到目标方向</p>
           </div>
           <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={props.onClose}>
             关闭
@@ -79,7 +79,7 @@ export function OrganizePanel(props: {
           </div>
           <input
             value={props.query}
-            placeholder="搜索内容或来源思路线"
+            placeholder="搜索内容或来源方向"
             className="h-8 min-w-0 flex-1 rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
             onChange={(event) => props.onQueryChange(event.target.value)}
           />
@@ -132,7 +132,7 @@ export function OrganizePanel(props: {
                       {node.questionText || `节点 ${node.nodeId.slice(0, 8)}`}
                     </p>
                     <p className="mt-1 text-[11px] text-slate-500">
-                      来自：{node.fromTrackTitle || "未命名思路线"}
+                      来自：{node.fromTrackTitle || "未命名方向"}
                       {node.createdAt ? ` · ${props.formatRelativeTime(node.createdAt)}` : ""}
                     </p>
                   </div>

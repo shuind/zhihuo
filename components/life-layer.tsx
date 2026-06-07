@@ -788,7 +788,7 @@ function DetailBody(props: {
   };
 
   const latestEchoNote = canContinueLatestReflection ? reflectionNotes[1] ?? null : latestReflectionNote;
-  const noteStateLabel = currentEditableNote ? "继续这次回看" : latestReflectionNote ? "写下新的回看" : "等待回看";
+  const noteStateLabel = currentEditableNote ? "继续这次回望" : latestReflectionNote ? "写下新的回望" : "等待回望";
   const reflectionCount = reflectionNotes.length;
   const letterHint = storedLetterLines.length
     ? `${storedLetterLines.length} 行沉淀`
@@ -860,7 +860,7 @@ function DetailBody(props: {
               <div className="rounded-[1.1rem] border border-white/[0.055] bg-white/[0.018] px-5 py-4 shadow-[0_18px_48px_rgba(0,0,0,0.14)]">
                 <div className="flex items-center justify-between gap-4">
                   <div className="flex items-center gap-3">
-                    <h3 className="text-[12px] tracking-[0.1em] text-[rgba(218,225,229,0.86)]">回看札记</h3>
+                    <h3 className="text-[12px] tracking-[0.1em] text-[rgba(218,225,229,0.86)]">回望札记</h3>
                     <span className="text-[11px] tracking-[0.08em] text-[rgba(132,140,146,0.48)]">{noteStateLabel}</span>
                   </div>
                   <span className="text-[11px] tabular-nums tracking-[0.04em] text-[rgba(132,140,146,0.4)]">{noteDraft.length}/{LIFE_NOTE_MAX_LENGTH}</span>
@@ -868,7 +868,7 @@ function DetailBody(props: {
                 {latestEchoNote ? (
                   <div className="mt-4 border-l border-white/[0.055] pl-4">
                     <div className="mb-1.5 flex items-center gap-3 text-[11px] tracking-[0.08em] text-[rgba(132,140,146,0.44)]">
-                      <span>最近回看</span>
+                      <span>最近回望</span>
                       <time>{formatDateTimeInTimeZone(latestEchoNote.createdAt, props.timezone)}</time>
                     </div>
                     <p className="text-[14px] leading-[1.78] text-[rgba(180,188,193,0.7)]">{latestEchoNote.noteText}</p>
@@ -881,7 +881,7 @@ function DetailBody(props: {
                   autoResize
                   maxAutoHeight={180}
                   data-zh-input="multiline"
-                  placeholder={"现在回看这件事时，留下这一层的话。"}
+                  placeholder={"现在回望这件事时，留下这一层的话。"}
                   className="mt-3 min-h-[6.4rem] border-0 bg-transparent px-0 py-0 text-[16px] leading-[1.9] text-[rgba(205,212,216,0.88)] outline-none placeholder:text-[rgba(136,144,149,0.44)] focus-visible:ring-0"
                   onChange={(event) => setNoteDraft(event.target.value)}
                   onBlur={commitNote}
@@ -893,7 +893,7 @@ function DetailBody(props: {
                       className="flex w-full items-center justify-between text-[12px] tracking-[0.08em] text-[rgba(146,154,160,0.54)] transition-colors duration-500 hover:text-[rgba(202,210,214,0.78)]"
                       onClick={() => setReflectionHistoryOpen((open) => !open)}
                     >
-                      <span>{`回看过 ${reflectionCount} 次`}</span>
+                      <span>{`回望过 ${reflectionCount} 次`}</span>
                       <span>{reflectionHistoryOpen ? "收起回声" : "展开回声"}</span>
                     </button>
                     <AnimatePresence initial={false}>

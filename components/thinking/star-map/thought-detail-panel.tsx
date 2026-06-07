@@ -109,7 +109,7 @@ export function ThoughtDetailPanel({
           onClick={() => onJumpToTrackNode(track.id, heroNode.id)}
           className="rounded-full px-2 py-1 text-[11.5px] text-[rgba(237,230,212,0.45)] transition-colors hover:bg-white/[0.04] hover:text-[rgba(237,230,212,0.85)]"
         >
-          在思路视图打开
+          在想一想中打开
         </button>
       </div>
 
@@ -150,7 +150,7 @@ export function ThoughtDetailPanel({
                   void submit()
                 }
               }}
-              placeholder="继续从这里展开思路…"
+              placeholder="继续想一想…"
               rows={1}
               className="min-h-[28px] resize-none border-0 bg-transparent p-0 text-[13.5px] shadow-none focus-visible:ring-0"
               style={{ color: "#EDE6D4" }}

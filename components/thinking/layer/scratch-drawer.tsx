@@ -46,7 +46,7 @@ export function ScratchDrawer(props: {
                         <p className="text-[14px] leading-[1.7] text-slate-800 [overflow-wrap:anywhere]">{item.rawText}</p>
                         <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
                           <span>{props.formatRelativeTime(item.updatedAt)}</span>
-                          {linkedSpace ? <span>已进入思路</span> : null}
+                          {linkedSpace ? <span>已进入想一想</span> : null}
                         </div>
                       </div>
                       <div className="flex shrink-0 items-center gap-2">

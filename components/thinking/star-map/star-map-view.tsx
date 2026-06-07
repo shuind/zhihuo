@@ -352,7 +352,7 @@ export function StarMapView({
 
         {frozen ? (
           <div className="pointer-events-none absolute right-5 top-5 text-[11px] tracking-[0.08em] text-[#5b584f] sm:right-6 sm:top-7">
-            已写入时间
+            已封存
           </div>
         ) : null}
 

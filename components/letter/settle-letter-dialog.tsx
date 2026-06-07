@@ -240,7 +240,7 @@ export function SettleLetterDialog({
                       disabled={busy}
                       className="rounded-full bg-slate-900 px-5 py-2 text-[13px] text-white hover:bg-slate-800 disabled:opacity-60"
                     >
-                      写入时间
+                      封存
                     </button>
                   </>
                 )}

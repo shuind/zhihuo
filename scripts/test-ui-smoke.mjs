@@ -1,7 +1,7 @@
 ﻿const baseUrl = (process.env.TEST_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
 const email = process.env.TEST_UI_EMAIL || "zhihuo-ui-smoke@example.com";
 const password = "StrongPass123!";
-const QUESTION_PLACEHOLDER = "继续这条思路…";
+const QUESTION_PLACEHOLDER = "继续想一想…";
 
 function assert(condition, message) {
   if (!condition) throw new Error(message);
@@ -36,14 +36,14 @@ async function assertNoMojibake(page, scope) {
 }
 
 async function ensureSignedIn(page) {
-  await page.waitForSelector('button:has-text("思路"), input[placeholder="邮箱"]', { timeout: 60000 });
+  await page.waitForSelector('button:has-text("想一想"), input[placeholder="邮箱"]', { timeout: 60000 });
 
-  const thinkingTab = page.getByRole("button", { name: "思路" }).first();
+  const thinkingTab = page.getByRole("button", { name: "想一想" }).first();
   if (await thinkingTab.isVisible().catch(() => false)) return;
 
   if (await tryApiLogin(page)) {
     await page.goto(baseUrl, { waitUntil: "domcontentloaded" });
-    await page.getByRole("button", { name: "思路" }).waitFor({ timeout: 20000 });
+    await page.getByRole("button", { name: "想一想" }).waitFor({ timeout: 20000 });
     return;
   }
 
@@ -54,18 +54,18 @@ async function ensureSignedIn(page) {
   const code = await requestRegisterCode();
   await page.getByPlaceholder("邮箱验证码").fill(code);
   await page.getByRole("button", { name: "注册并登录" }).click();
-  await page.getByRole("button", { name: "思路" }).waitFor({ timeout: 20000 });
+  await page.getByRole("button", { name: "想一想" }).waitFor({ timeout: 20000 });
 }
 
 async function openThinking(page) {
-  const thinkingTab = page.getByRole("button", { name: "思路" }).first();
+  const thinkingTab = page.getByRole("button", { name: "想一想" }).first();
   if (await thinkingTab.isVisible().catch(() => false)) await thinkingTab.click();
-  await page.getByRole("button", { name: /新空间/ }).first().waitFor({ timeout: 12000 });
+  await page.getByRole("button", { name: /新思考/ }).first().waitFor({ timeout: 12000 });
 }
 
 async function createSpace(page, title) {
   console.log("[ui-smoke] create space");
-  await page.getByRole("button", { name: /新空间/ }).first().click();
+  await page.getByRole("button", { name: /新思考/ }).first().click();
   const dialog = page.locator('[data-create-space-dialog="true"]').last();
   const input =
     (await dialog.locator('[data-create-space-input="true"]').count()) > 0
@@ -88,7 +88,7 @@ async function assertWorkbenchLayout(page) {
   await page.locator('[data-composer="true"]').waitFor({ timeout: 10000 });
   await page.locator('[data-track-panel="true"]').waitFor({ timeout: 10000 });
   await page.locator('[data-other-tracks="true"]').waitFor({ timeout: 10000 });
-  const globalThinkingTabVisible = await page.getByRole("button", { name: "思路" }).first().isVisible().catch(() => false);
+  const globalThinkingTabVisible = await page.getByRole("button", { name: "想一想" }).first().isVisible().catch(() => false);
   assert(!globalThinkingTabVisible, "详情页打开后全局顶栏仍然可见");
   await expectComposerGuard(page);
 }
@@ -108,7 +108,7 @@ async function assertBackToSpacesAndReopen(page, title) {
   console.log("[ui-smoke] assert back to spaces");
   await page.getByRole("button", { name: "返回空间列表" }).click();
   await page.locator('[data-thinking-spaces="true"]').waitFor({ timeout: 10000 });
-  await page.getByRole("button", { name: "思路" }).first().waitFor({ timeout: 10000 });
+  await page.getByRole("button", { name: "想一想" }).first().waitFor({ timeout: 10000 });
   await page.getByRole("button", { name: title }).first().click();
   await page.locator('[data-thinking-detail="true"]').waitFor({ timeout: 10000 });
 }
@@ -369,11 +369,11 @@ async function openMoreMenu(page, spaceTitle) {
 }
 
 async function assertFreezeAndExport(page, spaceTitle) {
-  console.log("[ui-smoke] assert export+write-to-time");
+  console.log("[ui-smoke] assert export+seal");
   if (!(await openMoreMenu(page, spaceTitle))) {
-    throw new Error("未找到“更多”入口，无法执行导出/写入时间断言");
+    throw new Error("未找到“更多”入口，无法执行导出/封存断言");
   }
-  // 先导出，再写入时间，避免写入后详情面板退场导致菜单不可达。
+  // 先导出，再封存，避免封存后详情面板退场导致菜单不可达。
   await page.getByRole("button", { name: "导出" }).click();
   const exportArea =
     (await page.locator('[data-export-markdown="true"]').count()) > 0
@@ -400,9 +400,9 @@ async function assertFreezeAndExport(page, spaceTitle) {
   await page.getByRole("button", { name: "关闭" }).first().click();
 
   if (!(await openMoreMenu(page, spaceTitle))) {
-    throw new Error("导出后未找到“更多”入口，无法写入时间");
+    throw new Error("导出后未找到“更多”入口，无法封存");
   }
-  await page.getByRole("button", { name: "写入时间" }).click();
+  await page.getByRole("button", { name: "封存" }).click();
   const settleDialog = page.locator('[data-settle-letter-dialog="true"]').last();
   if ((await settleDialog.count()) > 0) {
     await settleDialog.waitFor({ timeout: 10000 });
@@ -419,11 +419,11 @@ async function assertFreezeAndExport(page, spaceTitle) {
     if (!sealed) {
       const phase = await settleDialog.getAttribute("data-settle-letter-phase");
       const text = await settleDialog.innerText().catch(() => "");
-      throw new Error(`写入时间确认未完成，phase=${phase || "missing"} text=${text.slice(-120)}`);
+      throw new Error(`封存确认未完成，phase=${phase || "missing"} text=${text.slice(-120)}`);
     }
     await settleDialog.locator('[data-settle-letter-done="true"]').click();
-  } else if (await page.getByRole("button", { name: "写入时间" }).last().isVisible().catch(() => false)) {
-    await page.getByRole("button", { name: "写入时间" }).last().click();
+  } else if (await page.getByRole("button", { name: "封存" }).last().isVisible().catch(() => false)) {
+    await page.getByRole("button", { name: "封存" }).last().click();
     await page.getByRole("button", { name: "完成" }).last().waitFor({ timeout: 15000 });
     await page.getByRole("button", { name: "完成" }).last().click();
   }
@@ -442,7 +442,7 @@ async function addLifeEntry(page, text) {
     countAfter = await page.locator('[data-life-item="true"]').count();
     if (countAfter > countBefore) break;
   }
-  assert(countAfter > countBefore, "写入时间后列表条目数未增加");
+  assert(countAfter > countBefore, "封存后列表条目数未增加");
 }
 
 async function assertTimeLayerDesktop(page) {
@@ -506,10 +506,10 @@ async function assertTabsAndMobile(page, spaceTitle) {
   await assertNoMojibake(page, "设置页");
 
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.getByRole("button", { name: "思路" }).click();
+  await page.getByRole("button", { name: "想一想" }).click();
   const noXOverflow = await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1);
   assert(noXOverflow, "移动端出现横向溢出");
-  await assertNoMojibake(page, "移动端思路页");
+  await assertNoMojibake(page, "移动端想一想页");
 
   const targetSpaceButton = page.getByRole("button", { name: spaceTitle }).first();
   const anySpaceButton = page
@@ -522,7 +522,7 @@ async function assertTabsAndMobile(page, spaceTitle) {
     if (!(await anySpaceButton.isVisible().catch(() => false))) return;
     await anySpaceButton.click({ timeout: 3000 });
   }
-  await page.waitForSelector('input[placeholder="继续这条思路…"], input[placeholder="这个空间已写入时间"]', { timeout: 10000 });
+  await page.waitForSelector('input[placeholder="继续想一想…"], input[placeholder="这个空间已封存"]', { timeout: 10000 });
 }
 
 async function run() {

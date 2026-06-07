@@ -10,6 +10,14 @@ import { cn } from "@/lib/utils";
 import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
 import { AuthDialog, BindingDialog, PinGate } from "@/components/time-archive/auth";
+import {
+  AUTO_SEAL_SNOOZE_MS,
+  isAutoSealSnoozed,
+  loadAutoSealPreferences,
+  pruneAutoSealPreferences,
+  saveAutoSealPreferences,
+  type AutoSealPreferences
+} from "@/components/time-archive/auto-seal-preferences";
 import { MobileBottomTab, TopTab } from "@/components/time-archive/navigation";
 import { PullRefreshIndicator } from "@/components/time-archive/pull-refresh-indicator";
 import {
@@ -75,10 +83,12 @@ import {
   type ThinkingStore,
   EMPTY_LIFE_STORE,
   EMPTY_THINKING_STORE,
+  DIMENSIONS,
   LIFE_STORAGE_KEY,
   MAX_ACTIVE_SPACES,
   OPENING_MS,
   THINKING_STORAGE_KEY,
+  classifyDimension,
   createId,
   createStars,
   formatDateTime,
@@ -165,6 +175,7 @@ type ApiThinkingTrackNode = {
   answer_text?: string | null;
   created_at: string;
   is_suggested: boolean;
+  dimension?: string | null;
   echo_track_id?: string | null;
   echo_node_id?: string | null;
 };
@@ -471,11 +482,10 @@ type SyncRepairSummary = {
   failedReason: string | null;
 };
 
-const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
+const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先封存或删除一个活跃空间，再恢复这段思考";
 const OFFLINE_RETRY_BASE_MS = 1200;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
-const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
-const AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS = 60 * 1000;
+const AUTO_SEAL_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 const PULL_REFRESH_THRESHOLD_PX = 72;
 const PULL_REFRESH_MAX_DISTANCE_PX = 112;
 
@@ -985,6 +995,7 @@ function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): Thinkin
       noteText: null,
       answerText: null,
       isSuggested: node.isSuggested,
+      dimension: node.dimension,
       createdAt: node.createdAt,
       echoTrackId: null,
       echoNodeId: null
@@ -1091,7 +1102,7 @@ function syncStoreNodesFromView(store: ThinkingStore, spaceId: string, view: Thi
           orderIndex,
           isSuggested: node.isSuggested,
         state: "normal" as const,
-        dimension: existing?.dimension ?? "definition"
+        dimension: node.dimension ?? existing?.dimension ?? "definition"
       };
       orderIndex += 1;
       return next;
@@ -1188,6 +1199,13 @@ function mapApiThinkingMeta(item: ApiThinkingSpaceMeta): ThinkingSpaceMeta {
   };
 }
 
+function normalizeThinkingDimension(value: unknown, fallbackText: string): ThinkingNode["dimension"] {
+  if (typeof value === "string" && DIMENSIONS.includes(value as ThinkingNode["dimension"])) {
+    return value as ThinkingNode["dimension"];
+  }
+  return classifyDimension(fallbackText);
+}
+
 function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
   return {
     spaceId: payload.root.id,
@@ -1204,6 +1222,7 @@ function mapApiThinkingView(payload: ApiThinkingSpaceView): ThinkingSpaceView {
         noteText: typeof node.note_text === "string" ? node.note_text : null,
         answerText: typeof node.answer_text === "string" ? node.answer_text : null,
         isSuggested: Boolean(node.is_suggested),
+        dimension: normalizeThinkingDimension(node.dimension, node.raw_question_text),
         createdAt: node.created_at,
         echoTrackId: typeof node.echo_track_id === "string" ? node.echo_track_id : null,
         echoNodeId: typeof node.echo_node_id === "string" ? node.echo_node_id : null
@@ -1469,7 +1488,9 @@ export function TimeArchive() {
   } | null>(null);
   const [latestSyncBackup, setLatestSyncBackup] = useState<OfflineSyncBackupRecord | null>(null);
   const [backupPreview, setBackupPreview] = useState<BackupPreviewState | null>(null);
-  const [autoWriteSuppressedUntil, setAutoWriteSuppressedUntil] = useState(0);
+  const [autoSealPreferences, setAutoSealPreferences] = useState<AutoSealPreferences>(() => loadAutoSealPreferences());
+  const [autoSealPrompt, setAutoSealPrompt] = useState<{ spaceId: string; title: string; inactiveDays: number } | null>(null);
+  const [autoSealBusySpaceId, setAutoSealBusySpaceId] = useState<string | null>(null);
   const [startupRecovering, setStartupRecovering] = useState(true);
   const [pullRefresh, setPullRefresh] = useState<{
     phase: "idle" | "pulling" | "ready" | "refreshing" | "done" | "offline";
@@ -1487,10 +1508,8 @@ export function TimeArchive() {
   const bindingCheckUserIdRef = useRef<string | null>(null);
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
-  const autoWriteSuppressedUntilRef = useRef(0);
   const isOnlineRef = useRef(isOnline);
   const mediaObjectUrlsRef = useRef<string[]>([]);
-  const autoWritingSpaceIdsRef = useRef<Set<string>>(new Set());
   const pullRefreshStartYRef = useRef<number | null>(null);
   const pullRefreshActiveRef = useRef(false);
   const pullRefreshTriggeredRef = useRef(false);
@@ -1516,6 +1535,50 @@ export function TimeArchive() {
       noticeTimerRef.current = null;
     }, duration);
   }, []);
+
+  const updateAutoSealPreferences = useCallback((updater: (current: AutoSealPreferences) => AutoSealPreferences) => {
+    setAutoSealPreferences((current) => {
+      const next = updater(current);
+      saveAutoSealPreferences(next);
+      return next;
+    });
+  }, []);
+
+  const setAutoSealRemindersDisabled = useCallback(
+    (disabled: boolean) => {
+      updateAutoSealPreferences((current) => ({
+        ...current,
+        disabled
+      }));
+      if (disabled) setAutoSealPrompt(null);
+    },
+    [updateAutoSealPreferences]
+  );
+
+  const snoozeAutoSealPrompt = useCallback(
+    (spaceId: string) => {
+      if (!spaceId) return;
+      updateAutoSealPreferences((current) => ({
+        ...current,
+        snoozedUntilBySpaceId: {
+          ...current.snoozedUntilBySpaceId,
+          [spaceId]: new Date(Date.now() + AUTO_SEAL_SNOOZE_MS).toISOString()
+        }
+      }));
+      setAutoSealPrompt((current) => (current?.spaceId === spaceId ? null : current));
+      showNotice("已延后 7 天提醒");
+    },
+    [showNotice, updateAutoSealPreferences]
+  );
+
+  const disableAutoSealPrompts = useCallback(() => {
+    updateAutoSealPreferences((current) => ({
+      ...current,
+      disabled: true
+    }));
+    setAutoSealPrompt(null);
+    showNotice("自动封存提醒已关闭");
+  }, [showNotice, updateAutoSealPreferences]);
 
   const applyOnlineState = useCallback((online: boolean) => {
     setIsOnline((current) => (current === online ? current : online));
@@ -1547,6 +1610,16 @@ export function TimeArchive() {
     setCloudSessionEnabled(true);
     setRuntimeReady(true);
   }, []);
+
+  useEffect(() => {
+    setAutoSealPreferences(loadAutoSealPreferences());
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const activeSpaceIds = thinkingStore.spaces.filter((space) => space.status === "active").map((space) => space.id);
+    updateAutoSealPreferences((current) => pruneAutoSealPreferences(current, activeSpaceIds));
+  }, [hydrated, thinkingStore.spaces, updateAutoSealPreferences]);
 
   useEffect(() => {
     isOnlineRef.current = isOnline;
@@ -1765,10 +1838,6 @@ export function TimeArchive() {
       latestRevisionRef.current = offlineMeta.revision;
     }
   }, [offlineMeta?.revision]);
-
-  useEffect(() => {
-    autoWriteSuppressedUntilRef.current = autoWriteSuppressedUntil;
-  }, [autoWriteSuppressedUntil]);
 
   const markLocalChange = useCallback(() => {
     updateOfflineMeta((current) => ({
@@ -2555,7 +2624,7 @@ export function TimeArchive() {
                 orderIndex: indexWithinTrack,
                 isSuggested: node.isSuggested,
                 state: "normal",
-                dimension: "definition"
+                dimension: node.dimension
               });
             }
           }
@@ -2725,7 +2794,6 @@ export function TimeArchive() {
         markCloudSynced(targetUserId, nextRevision, {
           hasLocalChanges: hasPendingLocalChanges
         });
-        setAutoWriteSuppressedUntil(Date.now() + AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS);
         setSyncPhase(hasPendingLocalChanges ? "push" : "ready");
         if (targetUserId) {
           setOfflineRuntimeState("user_sync_ready");
@@ -2766,7 +2834,7 @@ export function TimeArchive() {
       }
       const incompleteSpaceIds = getIncompleteSpaceIdsForExport(thinkingStore, thinkingViewCacheRef.current);
       if (incompleteSpaceIds.length > 0) {
-        showNotice("本地思路内容未完整加载，已阻止覆盖云端");
+        showNotice("本地想一想内容未完整加载，已阻止覆盖云端");
         return false;
       }
       const payload = await buildLocalExportPayload(user, activeOwnerKey);
@@ -2804,7 +2872,7 @@ export function TimeArchive() {
     async (user: SessionUser, ownerKey: OfflineOwnerKey, reason: string) => {
       const incompleteSpaceIds = getIncompleteSpaceIdsForExport(thinkingStore, thinkingViewCacheRef.current);
       if (incompleteSpaceIds.length > 0) {
-        return { ok: false as const, error: "本地思路内容未完整加载，已阻止覆盖云端" };
+        return { ok: false as const, error: "本地想一想内容未完整加载，已阻止覆盖云端" };
       }
       const snapshotMeta = createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId(), {
         ownerMode: "user",
@@ -3962,7 +4030,6 @@ export function TimeArchive() {
                   : space
               )
             }));
-            setAutoWriteSuppressedUntil(Date.now() + AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS);
             markLocalChange();
           }
           const existingView = getLocalSpaceView(existing.id);
@@ -4584,12 +4651,12 @@ export function TimeArchive() {
             await finalizeCloudWrite(spaceId, sessionUser?.userId ?? null);
             const hidden = await hideLifeDoubtFromTimeline(doubt.id);
             if (!hidden) {
-              showNotice("已进入思路，但时间卡片隐藏失败");
+              showNotice("已进入想一想，但时间卡片隐藏失败");
               return;
             }
             setTab("thinking");
             setThinkingJumpTarget({ spaceId, mode: "root" });
-            showNotice(payload.created ? "已进入思路" : "已恢复原空间");
+            showNotice(payload.created ? "已进入想一想" : "已恢复原空间");
             return;
           }
           const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
@@ -4599,7 +4666,7 @@ export function TimeArchive() {
           }
           setTab("thinking");
           setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
-          showNotice("已进入思路");
+          showNotice("已进入想一想");
         } catch (error) {
           if (isOfflineNetworkError(error)) {
             const created = await createThinkingSpaceApi(doubt.rawText, doubt.id);
@@ -4609,12 +4676,12 @@ export function TimeArchive() {
             }
             const hidden = await hideLifeDoubtFromTimeline(doubt.id);
             if (!hidden) {
-              showNotice("已进入思路，但时间卡片隐藏失败");
+              showNotice("已进入想一想，但时间卡片隐藏失败");
               return;
             }
             setTab("thinking");
             setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
-            showNotice("已进入思路");
+            showNotice("已进入想一想");
             return;
           }
           showNotice("网络异常，请稍后再试");
@@ -4635,12 +4702,12 @@ export function TimeArchive() {
           }
           const hidden = await hideLifeDoubtFromTimeline(doubt.id);
           if (!hidden) {
-            showNotice("已进入思路，但时间卡片隐藏失败");
+            showNotice("已进入想一想，但时间卡片隐藏失败");
             return;
           }
           setTab("thinking");
           setThinkingJumpTarget({ spaceId: created.spaceId, mode: "root" });
-          showNotice("已进入思路");
+          showNotice("已进入想一想");
         } catch {
           showNotice("网络异常，请稍后再试");
         }
@@ -5032,7 +5099,7 @@ export function TimeArchive() {
     async (scratchId: string, clientSpaceId?: string | null, clientParkingTrackId?: string | null) => {
       const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
       if (!scratch) return { ok: false as const, message: "随记不存在" };
-      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已封存" };
 
       if (scratch.derivedSpaceId) {
         const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
@@ -5075,7 +5142,7 @@ export function TimeArchive() {
     async (scratchId: string, clientSpaceId?: string | null, clientParkingTrackId?: string | null) => {
       const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
       if (!scratch) return { ok: false as const, message: "随记不存在" };
-      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已封存" };
       if (scratch.derivedSpaceId) {
         const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
         if (existing) {
@@ -5267,7 +5334,7 @@ export function TimeArchive() {
     async (scratchId: string) => {
       const scratch = thinkingStore.scratch.find((item) => item.id === scratchId);
       if (!scratch) return { ok: false as const, message: "随记不存在" };
-      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已写入时间" };
+      if (scratch.fedTimeDoubtId) return { ok: false as const, message: "该随记已封存" };
       if (scratch.derivedSpaceId) {
         const existing = thinkingStore.spaces.find((space) => space.id === scratch.derivedSpaceId) ?? null;
         if (existing) {
@@ -5326,6 +5393,7 @@ export function TimeArchive() {
         noteText: null,
         answerText: null,
         isSuggested: payload.fromSuggestion === true,
+        dimension: classifyDimension(nextQuestion),
         createdAt: now,
         echoTrackId: null,
         echoNodeId: null
@@ -5605,6 +5673,7 @@ export function TimeArchive() {
         noteText: null,
         answerText: null,
         isSuggested: payload.fromSuggestion === true,
+        dimension: classifyDimension(nextQuestion),
         createdAt: now,
         echoTrackId: null,
         echoNodeId: null
@@ -7165,7 +7234,7 @@ export function TimeArchive() {
           if (handleUnauthorized(response)) return { ok: false as const, message: "登录已失效，请重新登录" };
           if (!response.ok) {
             if (response.status === 404) return { ok: false as const, message: "空间不存在" };
-            return { ok: false as const, message: "写入时间失败" };
+            return { ok: false as const, message: "封存失败" };
           }
           await finalizeCloudWrite(null, sessionUser?.userId ?? null);
           return { ok: true as const };
@@ -7348,20 +7417,61 @@ export function TimeArchive() {
     [lifeStore.doubts, markLocalChange, queueMutation, thinkingStore, thinkingView]
   );
 
+  const sealAutoPromptSpace = useCallback(
+    async (spaceId: string) => {
+      if (autoSealBusySpaceId) return false;
+      const space = thinkingStore.spaces.find((item) => item.id === spaceId && item.status === "active");
+      if (!space) {
+        setAutoSealPrompt((current) => (current?.spaceId === spaceId ? null : current));
+        return false;
+      }
+      const view =
+        thinkingViewCacheRef.current[spaceId] ??
+        (thinkingView?.spaceId === spaceId ? thinkingView : null) ??
+        buildSpaceViewFromStore(thinkingStore, spaceId);
+      if (view) thinkingViewCacheRef.current[spaceId] = view;
+      const letterLines = view ? buildSettleLetterLinesFromView(view) : [];
+
+      setAutoSealBusySpaceId(spaceId);
+      try {
+        const result = await handleThinkingWriteToTime(spaceId, {
+          preserveOriginalTime: true,
+          letterLines
+        });
+        if (!result.ok) {
+          showNotice(result.message || "封存失败，请稍后再试");
+          return false;
+        }
+        setAutoSealPrompt((current) => (current?.spaceId === spaceId ? null : current));
+        updateAutoSealPreferences((current) => {
+          const { [spaceId]: _removed, ...snoozedUntilBySpaceId } = current.snoozedUntilBySpaceId;
+          void _removed;
+          return {
+            ...current,
+            snoozedUntilBySpaceId
+          };
+        });
+        if (activeSpaceIdRef.current === spaceId) {
+          const nextActive = thinkingStore.spaces
+            .filter((item) => item.status === "active" && item.id !== spaceId)
+            .sort(sortSpacesByLatestActivity)[0]?.id ?? null;
+          setActiveSpaceId(nextActive);
+          setThinkingView(nextActive ? thinkingViewCacheRef.current[nextActive] ?? buildSpaceViewFromStore(thinkingStore, nextActive) : null);
+        }
+        showNotice("已封存");
+        return true;
+      } finally {
+        setAutoSealBusySpaceId(null);
+      }
+    },
+    [autoSealBusySpaceId, handleThinkingWriteToTime, showNotice, thinkingStore, thinkingView, updateAutoSealPreferences]
+  );
+
   useEffect(() => {
     if (!hydrated || !pinReady || (pinEnabled && !pinUnlocked)) return;
     const nowMs = Date.now();
-    if (nowMs < autoWriteSuppressedUntilRef.current) return;
-    if (!cloudSyncReady || !isOnline) return;
-    if (offlineMeta?.syncState.hasLocalChanges === true || pendingMutationCount > 0) return;
-    if (isBackupPreviewing || deadLetterMutations.length > 0 || lastSyncError) return;
-    if (
-      syncPhase !== "idle" &&
-      syncPhase !== "ready" &&
-      syncPhase !== "manual_pull_done" &&
-      syncPhase !== "manual_upload_done" &&
-      syncPhase !== "manual_overwrite_done"
-    ) {
+    if (editingLocked || autoSealPreferences.disabled) {
+      setAutoSealPrompt(null);
       return;
     }
     const fixedSpaceIds = new Set(thinkingStore.fixedTopSpacesEnabled ? thinkingStore.fixedTopSpaceIds : []);
@@ -7369,50 +7479,37 @@ export function TimeArchive() {
       .filter((space) => {
         if (space.status !== "active") return false;
         if (fixedSpaceIds.has(space.id)) return false;
-        if (autoWritingSpaceIdsRef.current.has(space.id)) return false;
+        if (isAutoSealSnoozed(autoSealPreferences, space.id, nowMs)) return false;
         const spaceNodes = thinkingStore.nodes.filter((node) => node.spaceId === space.id && node.state !== "hidden");
-        return nowMs - getSpaceLatestActivityTime(space, spaceNodes) >= AUTO_WRITE_TO_TIME_AFTER_MS;
+        return nowMs - getSpaceLatestActivityTime(space, spaceNodes) >= AUTO_SEAL_AFTER_MS;
       })
       .sort((a, b) => getSpaceLatestActivityTime(a, thinkingStore.nodes) - getSpaceLatestActivityTime(b, thinkingStore.nodes));
 
-    if (!candidates.length) return;
-    for (const space of candidates) autoWritingSpaceIdsRef.current.add(space.id);
-
-    void (async () => {
-      let writtenCount = 0;
-      for (const space of candidates) {
-        try {
-          const view = thinkingViewCacheRef.current[space.id] ?? buildSpaceViewFromStore(thinkingStore, space.id);
-          if (view) thinkingViewCacheRef.current[space.id] = view;
-          const letterLines = view ? buildSettleLetterLinesFromView(view) : [];
-          const result = await handleThinkingWriteToTime(space.id, {
-            preserveOriginalTime: true,
-            letterLines
-          });
-          if (result.ok) writtenCount += 1;
-        } finally {
-          autoWritingSpaceIdsRef.current.delete(space.id);
-        }
-      }
-      if (writtenCount > 0) {
-        showNotice(writtenCount === 1 ? "两周未活动的思考已写入时间" : `两周未活动的 ${writtenCount} 个思考已写入时间`);
-      }
-    })();
+    const candidate = candidates[0] ?? null;
+    if (!candidate) {
+      setAutoSealPrompt(null);
+      return;
+    }
+    const latestActivity = getSpaceLatestActivityTime(
+      candidate,
+      thinkingStore.nodes.filter((node) => node.spaceId === candidate.id && node.state !== "hidden")
+    );
+    setAutoSealPrompt((current) =>
+      current?.spaceId === candidate.id
+        ? current
+        : {
+            spaceId: candidate.id,
+            title: candidate.rootQuestionText,
+            inactiveDays: Math.max(14, Math.floor((nowMs - latestActivity) / 86_400_000))
+          }
+    );
   }, [
-    handleThinkingWriteToTime,
-    cloudSyncReady,
-    deadLetterMutations.length,
+    autoSealPreferences,
+    editingLocked,
     hydrated,
-    isOnline,
-    isBackupPreviewing,
-    lastSyncError,
-    offlineMeta?.syncState.hasLocalChanges,
-    pendingMutationCount,
     pinEnabled,
     pinReady,
     pinUnlocked,
-    showNotice,
-    syncPhase,
     thinkingStore,
     thinkingStore.fixedTopSpaceIds,
     thinkingStore.fixedTopSpacesEnabled,
@@ -7980,7 +8077,7 @@ export function TimeArchive() {
             <SyncStatusPill summary={syncSummary} surface="dark" onClick={() => setTab("settings")} />
             <nav className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
               <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle />
-              <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
+              <TopTab label="想一想" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
               <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={false} subtle />
             </nav>
           </div>
@@ -7991,7 +8088,7 @@ export function TimeArchive() {
               <SyncStatusPill summary={syncSummary} surface={isThinkingTab || isSettingsTab ? "light" : "dark"} onClick={() => setTab("settings")} />
               <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
-                <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
+                <TopTab label="想一想" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
                 <TopTab label="设置" active={isSettingsTab} onClick={() => setTab("settings")} daytime={!isLifeTab} subtle={false} />
               </div>
             </nav>
@@ -8077,6 +8174,12 @@ export function TimeArchive() {
                 reentryTarget={thinkingJumpTarget}
                 onReentryHandled={() => setThinkingJumpTarget(null)}
                 mediaAssetSources={mediaAssetSources}
+                showThinkingDimensions={thinkingStore.showThinkingDimensions === true}
+                autoSealPrompt={autoSealPrompt}
+                autoSealBusy={autoSealBusySpaceId !== null}
+                onAutoSealSeal={sealAutoPromptSpace}
+                onAutoSealSnooze={snoozeAutoSealPrompt}
+                onAutoSealDisable={disableAutoSealPrompts}
                 showNotice={showNotice}
               />
             </motion.section>
@@ -8096,6 +8199,10 @@ export function TimeArchive() {
                 activeThinkingSpaces={activeThinkingSpaceOptions}
                 fixedTopSpacesEnabled={thinkingStore.fixedTopSpacesEnabled}
                 fixedTopSpaceIds={thinkingStore.fixedTopSpaceIds}
+                showThinkingDimensions={thinkingStore.showThinkingDimensions === true}
+                setShowThinkingDimensions={(enabled) => setThinkingStore((prev) => ({ ...prev, showThinkingDimensions: enabled }))}
+                autoSealRemindersDisabled={autoSealPreferences.disabled}
+                setAutoSealRemindersDisabled={setAutoSealRemindersDisabled}
                 sessionEmail={sessionUser?.email ?? null}
                 cloudSyncEnabled={cloudSyncEnabled}
                 cloudSyncReady={cloudSyncReady}
@@ -8197,7 +8304,7 @@ export function TimeArchive() {
         <div className="mobile-main-nav absolute inset-x-0 bottom-0 z-30 md:hidden">
           <nav className="mx-auto grid h-14 w-full max-w-md grid-cols-3 px-3">
             <MobileBottomTab label="时间" icon="life" active={isLifeTab} onClick={() => setTab("life")} />
-            <MobileBottomTab label="思路" icon="thinking" active={isThinkingTab} onClick={() => setTab("thinking")} />
+            <MobileBottomTab label="想一想" icon="thinking" active={isThinkingTab} onClick={() => setTab("thinking")} />
             <MobileBottomTab label="设置" icon="settings" active={isSettingsTab} onClick={() => setTab("settings")} />
           </nav>
           <div className="h-[calc(var(--safe-bottom)+4px)]" />
