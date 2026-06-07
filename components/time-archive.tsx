@@ -18,7 +18,14 @@ import {
   saveAutoSealPreferences,
   type AutoSealPreferences
 } from "@/components/time-archive/auto-seal-preferences";
+import { blobToBase64, readImageDimensions, sha256Hex, sha256HexForBlob } from "@/components/time-archive/browser-utils";
 import { MobileBottomTab, TopTab } from "@/components/time-archive/navigation";
+import { areOfflineMetaEqual } from "@/components/time-archive/offline-snapshot-meta";
+import {
+  canStartGlobalPullRefresh,
+  PULL_REFRESH_MAX_DISTANCE_PX,
+  PULL_REFRESH_THRESHOLD_PX
+} from "@/components/time-archive/pull-refresh";
 import { PullRefreshIndicator } from "@/components/time-archive/pull-refresh-indicator";
 import {
   getSyncModeLabel,
@@ -221,73 +228,6 @@ const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先封存
 const OFFLINE_RETRY_BASE_MS = 1200;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_SEAL_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
-const PULL_REFRESH_THRESHOLD_PX = 72;
-const PULL_REFRESH_MAX_DISTANCE_PX = 112;
-
-async function sha256Hex(input: string) {
-  const encoder = new TextEncoder();
-  const digest = await crypto.subtle.digest("SHA-256", encoder.encode(input));
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function blobToBase64(blob: Blob) {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  let binary = "";
-  const chunkSize = 0x8000;
-  for (let index = 0; index < bytes.length; index += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(index, index + chunkSize));
-  }
-  return btoa(binary);
-}
-
-async function sha256HexForBlob(blob: Blob) {
-  const digest = await crypto.subtle.digest("SHA-256", await blob.arrayBuffer());
-  return Array.from(new Uint8Array(digest))
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
-}
-
-async function readImageDimensions(file: Blob): Promise<{ width: number | null; height: number | null }> {
-  if (typeof window === "undefined") return { width: null, height: null };
-  return new Promise((resolve) => {
-    const objectUrl = URL.createObjectURL(file);
-    const image = new Image();
-    image.onload = () => {
-      resolve({ width: image.naturalWidth || null, height: image.naturalHeight || null });
-      URL.revokeObjectURL(objectUrl);
-    };
-    image.onerror = () => {
-      resolve({ width: null, height: null });
-      URL.revokeObjectURL(objectUrl);
-    };
-    image.src = objectUrl;
-  });
-}
-
-function areOfflineMetaEqual(a: OfflineSnapshotMeta, b: OfflineSnapshotMeta) {
-  return (
-    a.localProfileId === b.localProfileId &&
-    a.ownerMode === b.ownerMode &&
-    a.boundUserId === b.boundUserId &&
-    a.revision === b.revision &&
-    a.completeness === b.completeness &&
-    a.lastAppliedLogId === b.lastAppliedLogId &&
-    a.syncState.lastSyncedAt === b.syncState.lastSyncedAt &&
-    a.syncState.hasLocalChanges === b.syncState.hasLocalChanges &&
-    a.syncState.bindingRequired === b.syncState.bindingRequired
-  );
-}
-
-function canStartGlobalPullRefresh(target: EventTarget | null) {
-  if (!(target instanceof Element)) return true;
-  const scrollable = target.closest(
-    "[data-track-scroll], [data-thinking-spaces], [data-life-detail], .overflow-y-auto, .overflow-auto"
-  );
-  if (!(scrollable instanceof HTMLElement)) return true;
-  return scrollable.scrollTop <= 0;
-}
 
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("life");
