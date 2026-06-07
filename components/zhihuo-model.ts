@@ -35,6 +35,7 @@ export type LifeStore = {
   notes: LifeNote[];
   meta: {
     twelvePlaybackSeen: boolean;
+    firstDoubtGuideDismissedAt?: string;
   };
 };
 
@@ -401,7 +402,7 @@ export function loadLifeStore(): LifeStore {
     if (!legacy) return EMPTY_LIFE_STORE;
     const parsed = JSON.parse(legacy) as {
       doubts?: Array<{ id?: string; text?: string; createdAt?: string; archivedAt?: string | null; note?: string }>;
-      meta?: { twelvePlaybackSeen?: boolean };
+      meta?: { twelvePlaybackSeen?: boolean; firstDoubtGuideDismissedAt?: string };
     };
     const doubts: LifeDoubt[] = [];
     const notes: LifeNote[] = [];
@@ -426,7 +427,15 @@ export function loadLifeStore(): LifeStore {
         notes.push({ id: createId(), doubtId: id, noteText: collapseWhitespace(item.note).slice(0, LIFE_NOTE_MAX_LENGTH), createdAt: new Date().toISOString() });
       }
     }
-    return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(parsed.meta?.twelvePlaybackSeen) } };
+    return {
+      doubts,
+      notes,
+      meta: {
+        twelvePlaybackSeen: Boolean(parsed.meta?.twelvePlaybackSeen),
+        firstDoubtGuideDismissedAt:
+          typeof parsed.meta?.firstDoubtGuideDismissedAt === "string" ? toIso(parsed.meta.firstDoubtGuideDismissedAt) : undefined
+      }
+    };
   } catch {
     return EMPTY_LIFE_STORE;
   }
@@ -478,7 +487,15 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
     }))
     .filter((item) => item.doubtId && item.noteText)
     .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
-  return { doubts, notes, meta: { twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen) } };
+  return {
+    doubts,
+    notes,
+    meta: {
+      twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen),
+      firstDoubtGuideDismissedAt:
+        typeof store.meta?.firstDoubtGuideDismissedAt === "string" ? toIso(store.meta.firstDoubtGuideDismissedAt) : undefined
+    }
+  };
 }
 
 export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingStore {

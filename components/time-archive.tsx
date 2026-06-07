@@ -1,6 +1,7 @@
 "use client";
 
 import { AnimatePresence, motion } from "framer-motion";
+import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -8,6 +9,17 @@ import { cn } from "@/lib/utils";
 
 import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
+import { AuthDialog, BindingDialog, PinGate } from "@/components/time-archive/auth";
+import { MobileBottomTab, TopTab } from "@/components/time-archive/navigation";
+import { PullRefreshIndicator } from "@/components/time-archive/pull-refresh-indicator";
+import {
+  getSyncModeLabel,
+  getSyncPhaseLabel,
+  getSyncSummary,
+  type OfflineRuntimeState,
+  type SyncSummary,
+  type SyncPhase
+} from "@/components/time-archive/sync-status";
 import type { StarMapStatePatch } from "@/components/thinking/star-map";
 import { ThinkingLayer, type ThinkingSpaceView } from "@/components/thinking-layer";
 import {
@@ -41,10 +53,8 @@ import {
   saveOfflineMediaAsset,
   updateOfflineMutation,
   updateOfflineMediaAsset,
-  verifyPin,
   type OfflineOwnerKey,
   type OfflineMediaAssetRecord,
-  type OfflineMediaAssetStatus,
   type OfflineSnapshot,
   type OfflineSnapshotMeta,
   type OfflineSyncBackupRecord,
@@ -182,20 +192,6 @@ type ApiThinkingSpaceView = {
   empty_track_ids?: string[];
 };
 
-type ApiThinkingMediaAsset = {
-  id?: string;
-  userId?: string;
-  fileName?: string;
-  mimeType?: string;
-  byteSize?: number;
-  sha256?: string;
-  width?: number | null;
-  height?: number | null;
-  createdAt?: string;
-  uploadedAt?: string | null;
-  deletedAt?: string | null;
-};
-
 type SessionUser = {
   userId: string;
   email: string;
@@ -208,6 +204,38 @@ type ThinkingJumpTarget = {
   nodeId?: string | null;
   doubtId?: string;
 };
+
+function SyncStatusPill(props: { summary: SyncSummary; surface: "dark" | "light"; onClick: () => void }) {
+  const dotClass =
+    props.summary.tone === "good"
+      ? "bg-emerald-400"
+      : props.summary.tone === "working"
+        ? "bg-sky-400"
+        : props.summary.tone === "warning"
+          ? "bg-amber-400"
+          : props.surface === "light"
+            ? "bg-slate-400"
+            : "bg-slate-500";
+  const shellClass =
+    props.surface === "light"
+      ? "border-slate-300/50 bg-white/70 text-slate-700 hover:bg-white"
+      : "border-white/[0.05] bg-black/25 text-slate-200/72 hover:bg-black/35 hover:text-slate-100";
+
+  return (
+    <button
+      type="button"
+      className={cn(
+        "pointer-events-auto inline-flex h-8 shrink-0 items-center gap-2 rounded-full border px-3 text-[11px] tracking-[0.08em] backdrop-blur transition-colors",
+        shellClass
+      )}
+      onClick={props.onClick}
+      aria-label={`同步状态：${props.summary.label}`}
+    >
+      <span className={cn("h-1.5 w-1.5 rounded-full", dotClass)} />
+      <span>{props.summary.label}</span>
+    </button>
+  );
+}
 
 type UserExportPayload = {
   version: "2026-03-03";
@@ -433,23 +461,6 @@ type BackupPreviewState = {
   previousSnapshot: OfflineSnapshot;
 };
 
-type SyncPhase =
-  | "idle"
-  | "checking"
-  | "bootstrap"
-  | "pull"
-  | "push"
-  | "conflict"
-  | "repairing"
-  | "manual_pull"
-  | "manual_push"
-  | "manual_overwrite"
-  | "manual_upload_done"
-  | "manual_pull_done"
-  | "manual_overwrite_done"
-  | "ready"
-  | "error";
-
 type SyncRepairSummary = {
   startedAt: string;
   finishedAt: string;
@@ -460,19 +471,8 @@ type SyncRepairSummary = {
   failedReason: string | null;
 };
 
-type OfflineRuntimeState =
-  | "signed_out"
-  | "guest_ready"
-  | "user_bootstrapping"
-  | "user_syncing"
-  | "user_sync_ready"
-  | "user_offline_ready"
-  | "binding_required"
-  | "switching_account";
-
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先写入或删除一个活跃空间，再恢复这条思路";
 const OFFLINE_RETRY_BASE_MS = 1200;
-const OFFLINE_RETRY_MAX_MS = 5 * 60 * 1000;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
 const AUTO_WRITE_TO_TIME_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
 const AUTO_WRITE_TO_TIME_SUPPRESS_AFTER_SYNC_MS = 60 * 1000;
@@ -554,21 +554,6 @@ function collectUnreferencedMediaAssetIds(store: ThinkingStore, candidateAssetId
   return [...next];
 }
 
-function mapOfflineMediaAssetToThinkingMediaAsset(asset: OfflineMediaAssetRecord): ThinkingMediaAsset {
-  return {
-    id: asset.id,
-    fileName: asset.fileName,
-    mimeType: asset.mimeType,
-    byteSize: asset.byteSize,
-    sha256: asset.sha256,
-    width: asset.width,
-    height: asset.height,
-    createdAt: asset.createdAt,
-    uploadedAt: asset.uploadedAt,
-    deletedAt: asset.deletedAt
-  };
-}
-
 function hasMeaningfulLocalData(lifeStore: typeof EMPTY_LIFE_STORE, thinkingStore: ThinkingStore) {
   return (
     lifeStore.doubts.length > 0 ||
@@ -578,18 +563,6 @@ function hasMeaningfulLocalData(lifeStore: typeof EMPTY_LIFE_STORE, thinkingStor
     thinkingStore.mediaAssets.length > 0 ||
     thinkingStore.scratch.length > 0 ||
     Object.values(thinkingStore.inbox).some((items) => items.length > 0)
-  );
-}
-
-function isCloudPayloadEmpty(payload: UserExportPayload) {
-  return (
-    payload.life.doubts.length === 0 &&
-    payload.life.notes.length === 0 &&
-    payload.thinking.spaces.length === 0 &&
-    payload.thinking.nodes.length === 0 &&
-    (payload.thinking.scratch?.length ?? 0) === 0 &&
-    (payload.thinking.media_assets?.length ?? 0) === 0 &&
-    Object.values(payload.thinking.inbox).every((items) => items.length === 0)
   );
 }
 
@@ -922,7 +895,7 @@ function canonicalizeExportPayload(payload: UserExportPayload) {
   };
 }
 
-function arePayloadsEquivalent(localPayload: UserExportPayload, cloudPayload: UserExportPayload) {
+function _arePayloadsEquivalent(localPayload: UserExportPayload, cloudPayload: UserExportPayload) {
   return stableStringify(canonicalizeExportPayload(localPayload)) === stableStringify(canonicalizeExportPayload(cloudPayload));
 }
 
@@ -1433,29 +1406,6 @@ function getIncompleteSpaceIdsForExport(store: ThinkingStore, thinkingViews: Rec
     .map((space) => space.id);
 }
 
-function describeOfflineRuntimeState(state: OfflineRuntimeState, options: { sessionEmail: string | null; isOnline: boolean }) {
-  switch (state) {
-    case "signed_out":
-      return "未登录";
-    case "guest_ready":
-      return options.sessionEmail ? "账号未绑定云端同步" : "本地离线模式";
-    case "user_bootstrapping":
-      return "账号数据初始化中";
-    case "user_syncing":
-      return "云端同步中";
-    case "user_sync_ready":
-      return options.isOnline ? "账号云端同步已就绪" : "账号离线工作模式";
-    case "user_offline_ready":
-      return "账号离线工作模式";
-    case "binding_required":
-      return "等待选择绑定方式";
-    case "switching_account":
-      return "账号切换中";
-    default:
-      return "同步状态未知";
-  }
-}
-
 function canStartGlobalPullRefresh(target: EventTarget | null) {
   if (!(target instanceof Element)) return true;
   const scrollable = target.closest(
@@ -1466,7 +1416,7 @@ function canStartGlobalPullRefresh(target: EventTarget | null) {
 }
 
 export function TimeArchive() {
-  const [tab, setTab] = useState<LayerTab>("thinking");
+  const [tab, setTab] = useState<LayerTab>("life");
   const [hydrated, setHydrated] = useState(false);
   const [runtimeReady, setRuntimeReady] = useState(false);
   const [isNativeApp, setIsNativeApp] = useState(false);
@@ -1621,31 +1571,19 @@ export function TimeArchive() {
   const hasTrackedLocalChanges = offlineMeta?.syncState.hasLocalChanges === true;
   const hasUnqueuedLocalChanges = hasTrackedLocalChanges && pendingMutationCount === 0;
   const syncModeLabel = useMemo(
-    () => {
-      if (!sessionUser) {
-        if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
-        return describeOfflineRuntimeState(offlineRuntimeState, {
-          sessionEmail: null,
-          isOnline
-        });
-      }
-      if (isBackupPreviewing) return "正在预览本机备份";
-      if (!isOnline) {
-        return pendingMutationCount > 0 || hasTrackedLocalChanges ? "离线可用，网络恢复后自动同步" : "离线可用";
-      }
-      if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
-      if (lastSyncError) return "云端暂不可达，稍后重试";
-      if (syncPhase === "checking") return "正在检查云端";
-      if (syncPhase === "bootstrap" || syncPhase === "pull") return "正在拉取云端更新";
-      if (syncPhase === "conflict") return "正在基于最新云端版本重放本地改动";
-      if (deadLetterMutations.length > 0) return "发现同步异常，需要处理";
-      if (pendingMutationCount > 0 || hasTrackedLocalChanges) return "有本地改动等待同步";
-      if (cloudSyncReady || offlineRuntimeState === "user_sync_ready") return "云同步正常";
-      return describeOfflineRuntimeState(offlineRuntimeState, {
-        sessionEmail: sessionUser.email,
-        isOnline
-      });
-    },
+    () =>
+      getSyncModeLabel({
+        cloudSyncReady,
+        deadLetterCount: deadLetterMutations.length,
+        hasTrackedLocalChanges,
+        isBackupPreviewing,
+        isOnline,
+        lastSyncError,
+        offlineRuntimeState,
+        pendingMutationCount,
+        sessionEmail: sessionUser?.email ?? null,
+        syncPhase
+      }),
     [
       cloudSyncReady,
       deadLetterMutations.length,
@@ -1659,44 +1597,38 @@ export function TimeArchive() {
       syncPhase
     ]
   );
-  const syncPhaseLabel = useMemo(() => {
-    switch (syncPhase) {
-      case "checking":
-        return "检查云端";
-      case "bootstrap":
-        return "拉取云端";
-      case "pull":
-        return "拉取云端";
-      case "push":
-        return "推送中";
-      case "conflict":
-        return "检测到冲突";
-      case "repairing":
-        return "同步刷新中";
-      case "manual_pull":
-        return "正在拉取云端";
-      case "manual_push":
-        return "正在上传本地改动";
-      case "manual_overwrite":
-        return "正在用本地覆盖云端";
-      case "manual_upload_done":
-        return "本地已上传";
-      case "manual_pull_done":
-        return "已拉取云端";
-      case "manual_overwrite_done":
-        return "本地已覆盖云端";
-      case "ready":
-        return "已收敛";
-      case "error":
-        return "同步异常";
-      default:
-        return "空闲";
-    }
-  }, [syncPhase]);
+  const syncPhaseLabel = useMemo(() => getSyncPhaseLabel(syncPhase), [syncPhase]);
+  const syncSummary = useMemo<SyncSummary>(
+    () =>
+      getSyncSummary({
+        cloudSyncReady,
+        deadLetterCount: deadLetterMutations.length,
+        hasTrackedLocalChanges,
+        isBackupPreviewing,
+        isOnline,
+        lastSyncError,
+        offlineRuntimeState,
+        pendingMutationCount,
+        sessionEmail: sessionUser?.email ?? null,
+        syncPhase
+      }),
+    [
+      cloudSyncReady,
+      deadLetterMutations.length,
+      hasTrackedLocalChanges,
+      isBackupPreviewing,
+      isOnline,
+      lastSyncError,
+      offlineRuntimeState,
+      pendingMutationCount,
+      sessionUser?.email,
+      syncPhase
+    ]
+  );
   const syncIssueMutations = deadLetterMutations;
   const syncWarning = useMemo(() => {
     if (hasUnqueuedLocalChanges) {
-      return "检测到本地已变更，但没有对应的待上传队列。已阻止自动云端覆盖，请复制诊断排查这次操作为何未入队。";
+      return "本机有改动还没有准备好同步。已先保留在本机，可在高级同步诊断里查看。";
     }
     if (lastSyncError === "unauthorized") return "登录已过期，需要重新登录";
     if (lastSyncError) {
@@ -1704,9 +1636,9 @@ export function TimeArchive() {
         typeof nextSyncRetryAt === "number" && Number.isFinite(nextSyncRetryAt)
           ? `，将在 ${new Date(nextSyncRetryAt).toLocaleTimeString("zh-CN")} 后重试`
           : "";
-      return `同步失败：${lastSyncError}${retryText}`;
+      return `云端暂时连不上${retryText}。本机内容会先保留。`;
     }
-    if (lastCanonicalSyncError) return `检测到快照重建异常：${lastCanonicalSyncError}`;
+    if (lastCanonicalSyncError) return "云端整理时遇到异常，本机内容会先保留。";
     if (
       cloudSyncReady &&
       typeof cloudRevision === "number" &&
@@ -1714,7 +1646,7 @@ export function TimeArchive() {
       cloudRevision !== offlineMeta.revision &&
       offlineMeta.syncState.hasLocalChanges !== true
     ) {
-      return "本地版本号与云端版本号不一致，建议执行同步刷新";
+      return "云端有新内容，系统会继续尝试整理同步。";
     }
     if (
       cloudSyncReady &&
@@ -1722,7 +1654,7 @@ export function TimeArchive() {
       offlineMeta?.syncState.lastSyncedAt &&
       Date.now() - new Date(offlineMeta.syncState.lastSyncedAt).getTime() > 60 * 1000
     ) {
-      return "待同步改动停留较久，建议执行同步刷新";
+      return `有 ${pendingMutationCount} 条改动还没同步，连上网后会自动处理。`;
     }
     return null;
   }, [
@@ -2460,7 +2392,7 @@ export function TimeArchive() {
         if (response.status === 401) {
           setSessionUser(null);
           clearLastUserMarker();
-          setOfflineRuntimeState("signed_out");
+          setOfflineRuntimeState("guest_ready");
         }
         setAuthReady(true);
         return false;
@@ -2493,7 +2425,7 @@ export function TimeArchive() {
     }
   }, []);
 
-  const syncLifeFromApi = useCallback(
+  const _syncLifeFromApi = useCallback(
     async (silent = false) => {
       try {
         const response = await apiFetch("/v1/doubts?range=all&include_notes=true", {
@@ -2522,7 +2454,7 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
-  const syncThinkingSpacesFromApi = useCallback(
+  const _syncThinkingSpacesFromApi = useCallback(
     async (silent = false) => {
       try {
         const response = await apiFetch("/v1/thinking/spaces", { method: "GET", cache: "no-store" });
@@ -2551,7 +2483,7 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
-  const syncThinkingScratchFromApi = useCallback(
+  const _syncThinkingScratchFromApi = useCallback(
     async (silent = false) => {
       try {
         const response = await apiFetch("/v1/thinking/scratch", { method: "GET", cache: "no-store" });
@@ -2575,7 +2507,7 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
-  const loadThinkingViewFromApi = useCallback(
+  const _loadThinkingViewFromApi = useCallback(
     async (spaceId: string, silent = false) => {
       try {
         const response = await apiFetch(`/v1/thinking/spaces/${spaceId}`, { method: "GET", cache: "no-store" });
@@ -2642,7 +2574,7 @@ export function TimeArchive() {
     [handleUnauthorized, showNotice]
   );
 
-  const fetchCloudExport = useCallback(async () => {
+  const _fetchCloudExport = useCallback(async () => {
     const response = await apiFetch("/v1/system/export", { method: "GET", cache: "no-store" });
     if (handleUnauthorized(response) || !response.ok) return null;
     const payload = (await response.json().catch(() => null)) as { payload?: UserExportPayload; checksum?: string } | null;
@@ -3009,7 +2941,7 @@ export function TimeArchive() {
     ]
   );
 
-  const syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
+  const _syncQueuedMutations = useCallback(async (ownerKey: OfflineOwnerKey | null) => {
     if (!ownerKey || !ownerKey.startsWith("user:")) return;
     if (offlineSyncingRef.current) return;
     if (!isOnline) return;
@@ -3498,7 +3430,7 @@ export function TimeArchive() {
     ]
   );
 
-  const finalizeCloudWrite = useCallback(
+  const _finalizeCloudWrite = useCallback(
     async (preferredSpaceId?: string | null, userId?: string | null) => {
       await refreshFromCloud(preferredSpaceId ?? activeSpaceIdRef.current, userId ?? sessionUser?.userId ?? null, {
         allowLocalOverwrite: true
@@ -3688,6 +3620,10 @@ export function TimeArchive() {
       await queueMutation("/v1/doubts", payload);
       setLifeStore((prev) => ({
         ...prev,
+        meta: {
+          ...prev.meta,
+          firstDoubtGuideDismissedAt: prev.meta.firstDoubtGuideDismissedAt ?? now
+        },
         doubts: [
           {
             id: localDoubtId,
@@ -4210,11 +4146,13 @@ export function TimeArchive() {
           setOfflineRuntimeState(isOnlineRef.current ? "user_bootstrapping" : "user_offline_ready");
         }
       } else {
-        setOfflineSnapshotExists(false);
-        setActiveOwnerKey(null);
-        const signedOutMeta = createOfflineSnapshotMeta(localProfileId);
-        resetArchiveState(signedOutMeta);
-        setOfflineRuntimeState("signed_out");
+        const ownerKey = getGuestOwnerKey(localProfileId);
+        const guestMeta = createOfflineSnapshotMeta(localProfileId);
+        setActiveOwnerKey(ownerKey);
+        const snapshot = await loadOwnerSnapshot(ownerKey, guestMeta);
+        if (cancelled) return;
+        if (!snapshot) setOfflineSnapshotExists(false);
+        setOfflineRuntimeState("guest_ready");
       }
       setHydrated(true);
       setStartupRecovering(false);
@@ -4275,8 +4213,16 @@ export function TimeArchive() {
         userBootstrapRef.current = null;
         bindingCheckUserIdRef.current = null;
         setBindingDialog(null);
-        setActiveOwnerKey(null);
-        setOfflineRuntimeState("signed_out");
+        const guestOwnerKey = getGuestOwnerKey(localProfileId);
+        const guestMeta = createOfflineSnapshotMeta(localProfileId);
+        if (activeOwnerKey !== guestOwnerKey) {
+          setActiveOwnerKey(guestOwnerKey);
+          await loadOwnerSnapshot(guestOwnerKey, guestMeta);
+          if (cancelled) return;
+        } else if (offlineMeta.ownerMode !== "guest") {
+          resetArchiveState(guestMeta);
+        }
+        setOfflineRuntimeState("guest_ready");
         return;
       }
 
@@ -4342,6 +4288,7 @@ export function TimeArchive() {
     offlineMeta,
     offlineRuntimeState,
     refreshFromCloud,
+    resetArchiveState,
     sessionUser,
     runQueuedMutationSync,
     updateOfflineMeta
@@ -4491,10 +4438,10 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated) return;
     setActiveSpaceId((prev) => {
-      if (prev && thinkingStore.spaces.some((space) => space.id === prev && space.status === "active")) return prev;
+      if (prev && thinkingStore.spaces.some((space) => space.id === prev && (space.status === "active" || thinkingViewMode === "detail"))) return prev;
       return [...thinkingStore.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity)[0]?.id ?? null;
     });
-  }, [hydrated, thinkingStore.spaces]);
+  }, [hydrated, thinkingStore.spaces, thinkingViewMode]);
 
   useEffect(() => {
     if (!hydrated) return;
@@ -7395,14 +7342,6 @@ export function TimeArchive() {
             : space
         )
       }));
-      const nextSpacesForPick = thinkingStore.spaces
-        .map((space) => (space.id === spaceId ? { ...space, status: "hidden" as const } : space))
-        .filter((space) => space.status === "active")
-        .sort(sortSpacesByLatestActivity);
-      const nextActive = nextSpacesForPick[0]?.id ?? null;
-      setActiveSpaceId(nextActive);
-      if (nextActive) setThinkingView(thinkingViewCacheRef.current[nextActive] ?? null);
-      else setThinkingView(null);
       markLocalChange();
       return { ok: true as const };
     },
@@ -7726,13 +7665,15 @@ export function TimeArchive() {
         setBindingDialog(null);
         setAuthDialogOpen(false);
         setCloudSessionEnabled(true);
-        setActiveOwnerKey(null);
-        resetArchiveState(createOfflineSnapshotMeta(localProfileId));
-        setOfflineRuntimeState("signed_out");
+        const ownerKey = getGuestOwnerKey(localProfileId);
+        const guestMeta = createOfflineSnapshotMeta(localProfileId);
+        setActiveOwnerKey(ownerKey);
+        await loadOwnerSnapshot(ownerKey, guestMeta);
+        setOfflineRuntimeState("guest_ready");
         showNotice("已退出登录");
       }
     })();
-  }, [resetArchiveState, showNotice]);
+  }, [loadOwnerSnapshot, showNotice]);
 
   const openAuthDialog = useCallback(() => {
     setCloudSessionEnabled(true);
@@ -7820,9 +7761,10 @@ export function TimeArchive() {
     setSessionUser(null);
     setThinkingView(null);
     setActiveSpaceId(null);
-    setActiveOwnerKey(null);
-    setOfflineRuntimeState("signed_out");
-    setOfflineMeta(createOfflineSnapshotMeta(localProfileIdRef.current || getOrCreateLocalProfileId()));
+    const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
+    setActiveOwnerKey(getGuestOwnerKey(localProfileId));
+    setOfflineRuntimeState("guest_ready");
+    setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
     setDeadLetterMutations([]);
     refreshPinState();
   }, [refreshPinState]);
@@ -8002,10 +7944,6 @@ export function TimeArchive() {
     );
   }
 
-  if (!sessionUser) {
-    return <AuthPanel onAuthed={() => void syncAuth()} />;
-  }
-
   const thinkingChromeHidden = tab === "thinking" && (thinkingFocusMode || thinkingViewMode === "detail");
   const isLifeTab = tab === "life";
   const isThinkingTab = tab === "thinking";
@@ -8025,7 +7963,7 @@ export function TimeArchive() {
       onTouchEnd={handlePullRefreshEnd}
       onTouchCancel={handlePullRefreshEnd}
     >
-      <PullRefreshIndicator state={pullRefresh} />
+      <PullRefreshIndicator thresholdPx={PULL_REFRESH_THRESHOLD_PX} state={pullRefresh} />
       {showGlobalHeader ? (
       <header
         className={cn(
@@ -8038,7 +7976,8 @@ export function TimeArchive() {
         )}
       >
         {isLifeTab ? (
-          <div className="mx-auto flex w-full max-w-[1680px] items-center justify-end">
+          <div className="mx-auto flex w-full max-w-[1680px] items-center justify-end gap-2">
+            <SyncStatusPill summary={syncSummary} surface="dark" onClick={() => setTab("settings")} />
             <nav className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
               <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle />
               <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
@@ -8047,8 +7986,9 @@ export function TimeArchive() {
           </div>
         ) : (
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
-            <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab || isSettingsTab ? "text-slate-700" : "text-slate-300/80")}><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
+            <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab || isSettingsTab ? "text-slate-700" : "text-slate-300/80")}><NextImage src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" width={16} height={16} className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="pointer-events-auto flex items-center gap-2">
+              <SyncStatusPill summary={syncSummary} surface={isThinkingTab || isSettingsTab ? "light" : "dark"} onClick={() => setTab("settings")} />
               <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
                 <TopTab label="思路" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
@@ -8167,6 +8107,7 @@ export function TimeArchive() {
                 onForgotPin={handleForgotPin}
                 onOpenAuth={openAuthDialog}
                 syncStatus={{
+                  syncSummary,
                   modeLabel: syncModeLabel,
                   phase: syncPhaseLabel,
                   localRevision: offlineMeta?.revision ?? null,
@@ -8284,508 +8225,3 @@ export function TimeArchive() {
     </div>
   );
 }
-
-function TopTab(props: { label: string; active: boolean; onClick: () => void; daytime: boolean; subtle?: boolean }) {
-  return (
-    <Button
-      type="button"
-      size="sm"
-      variant="ghost"
-      className={cn(
-        "rounded-full border px-3 text-xs tracking-[0.12em] transition-colors",
-        props.subtle
-          ? props.active
-            ? "border-white/[0.06] bg-white/[0.03] text-[rgba(236,233,226,0.8)]"
-            : "border-white/[0.03] bg-transparent text-[rgba(224,219,211,0.38)] hover:bg-white/[0.025] hover:text-[rgba(236,233,226,0.68)]"
-          :
-        props.active
-          ? props.daytime
-            ? "border-slate-600/35 bg-slate-100/75 text-slate-900"
-            : "border-slate-300/40 bg-slate-800/70 text-slate-100"
-          : props.daytime
-            ? "border-slate-500/15 bg-slate-100/20 text-slate-700 hover:bg-slate-100/65"
-            : "border-slate-300/15 bg-slate-900/20 text-slate-300/80 hover:bg-slate-900/50"
-      )}
-      onClick={props.onClick}
-    >
-      {props.label}
-    </Button>
-  );
-}
-
-function MobileBottomTab(props: {
-  label: string;
-  active: boolean;
-  onClick: () => void;
-  icon: "life" | "thinking" | "settings";
-}) {
-  return (
-    <button
-      type="button"
-      data-active={props.active ? "true" : "false"}
-      className="mobile-main-nav-item relative flex h-full w-full flex-col items-center justify-center gap-[2px]"
-      onClick={props.onClick}
-    >
-      <span className="mobile-main-nav-icon" aria-hidden="true">
-        <MobileBottomTabIcon icon={props.icon} />
-      </span>
-      <span className="text-[11px] tracking-[0.08em]">{props.label}</span>
-      <span className="mobile-main-nav-indicator absolute bottom-0 h-[2px] w-8 rounded-full" />
-    </button>
-  );
-}
-
-function MobileBottomTabIcon(props: { icon: "life" | "thinking" | "settings" }) {
-  if (props.icon === "life") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-        <circle cx="9" cy="9" r="6.25" stroke="currentColor" strokeWidth="1.3" />
-        <path d="M9 5.6V9.2L11.2 10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-      </svg>
-    );
-  }
-
-  if (props.icon === "thinking") {
-    return (
-      <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-        <path d="M4.25 4.8H11.6M4.25 9H13.75M4.25 13.2H10.1" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-        <circle cx="13.8" cy="4.8" r="1.2" fill="currentColor" />
-      </svg>
-    );
-  }
-
-  return (
-    <svg width="18" height="18" viewBox="0 0 18 18" fill="none">
-      <path
-        d="M9 2.8L9.55 4.42C9.66 4.74 9.96 4.96 10.3 4.99L12.02 5.13C12.76 5.19 13.06 6.12 12.48 6.58L11.14 7.63C10.87 7.84 10.75 8.19 10.84 8.51L11.25 10.18C11.42 10.89 10.63 11.45 10.02 11L8.58 9.95C8.3 9.75 7.93 9.75 7.65 9.95L6.21 11C5.6 11.45 4.81 10.89 4.98 10.18L5.39 8.51C5.48 8.19 5.36 7.84 5.09 7.63L3.75 6.58C3.17 6.12 3.47 5.19 4.21 5.13L5.93 4.99C6.27 4.96 6.57 4.74 6.68 4.42L7.23 2.8C7.47 2.1 8.53 2.1 8.77 2.8Z"
-        stroke="currentColor"
-        strokeWidth="1.2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-      />
-      <circle cx="9" cy="9" r="6.2" stroke="currentColor" strokeWidth="1.1" opacity="0.32" />
-    </svg>
-  );
-}
-
-function PullRefreshIndicator(props: {
-  state: {
-    phase: "idle" | "pulling" | "ready" | "refreshing" | "done" | "offline";
-    distance: number;
-    message: string;
-  };
-}) {
-  const visible = props.state.phase !== "idle";
-  const progress =
-    props.state.phase === "refreshing" || props.state.phase === "done" || props.state.phase === "offline"
-      ? 1
-      : Math.min(1, props.state.distance / PULL_REFRESH_THRESHOLD_PX);
-  return (
-    <div
-      className={cn(
-        "pointer-events-none absolute left-1/2 top-[calc(var(--safe-top)+10px)] z-50 -translate-x-1/2 transition-all duration-200",
-        visible ? "translate-y-0 opacity-100" : "-translate-y-3 opacity-0"
-      )}
-      style={{
-        transform: `translate(-50%, ${visible ? Math.min(26, props.state.distance * 0.18) : -12}px)`
-      }}
-    >
-      <div className="flex items-center gap-2 rounded-full border border-slate-300/40 bg-white/92 px-3 py-1.5 text-xs text-slate-800 shadow-lg backdrop-blur">
-        <span
-          className={cn(
-            "grid h-4 w-4 place-items-center rounded-full border border-slate-400/50",
-            props.state.phase === "refreshing" && "animate-spin border-slate-300 border-t-slate-800"
-          )}
-          aria-hidden="true"
-        >
-          {props.state.phase === "refreshing" ? null : (
-            <span
-              className="h-2 w-2 rounded-full bg-slate-800 transition-transform"
-              style={{ transform: `scale(${Math.max(0.3, progress)})` }}
-            />
-          )}
-        </span>
-        <span>{props.state.message}</span>
-      </div>
-    </div>
-  );
-}
-
-function PinGate(props: { lockedUntil: number; onVerified: () => void }) {
-  const [pin, setPin] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (props.lockedUntil <= Date.now()) return;
-    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [props.lockedUntil]);
-
-  void tick;
-
-  const lockedSeconds = Math.max(0, Math.ceil((props.lockedUntil - Date.now()) / 1000));
-
-  const submit = useCallback(() => {
-    if (submitting) return;
-    setSubmitting(true);
-    setError("");
-    void (async () => {
-      try {
-        const result = await verifyPin(pin);
-        if (!result.ok) {
-          setError(result.error ?? "PIN 校验失败");
-          return;
-        }
-        setPin("");
-        props.onVerified();
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [pin, props, submitting]);
-
-  return (
-    <div className="grid h-screen place-items-center bg-slate-950 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-300/15 bg-slate-900/70 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-        <p className="text-sm tracking-[0.22em] text-slate-300/85">本地锁屏</p>
-        <p className="mt-2 text-xs text-slate-400/75">请输入 PIN 以解锁离线内容。</p>
-        <input
-          type="password"
-          inputMode="numeric"
-          value={pin}
-          onChange={(event) => setPin(event.target.value.replace(/\D+/g, "").slice(0, 12))}
-          placeholder="PIN"
-          className="mt-4 h-10 w-full rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-          onKeyDown={(event) => event.key === "Enter" && submit()}
-          disabled={lockedSeconds > 0}
-        />
-        <Button
-          type="button"
-          disabled={submitting || lockedSeconds > 0}
-          className="mt-4 w-full rounded-full border border-slate-300/30 bg-slate-900/70 text-slate-100 hover:bg-slate-800/90"
-          onClick={submit}
-        >
-          {lockedSeconds > 0 ? `请等待 ${lockedSeconds}s` : submitting ? "解锁中..." : "解锁"}
-        </Button>
-        <p className={cn("mt-3 min-h-[1.2em] text-xs text-red-300/85", error ? "opacity-100" : "opacity-0")}>{error}</p>
-      </div>
-    </div>
-  );
-}
-
-function AuthDialog(props: { onClose: () => void; onAuthed: () => void }) {
-  return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md">
-        <AuthPanel onAuthed={props.onAuthed} onClose={props.onClose} />
-      </div>
-    </div>
-  );
-}
-
-function BindingDialog(props: { submitting: boolean; onUploadLocal: () => void; onKeepCloud: () => void }) {
-  return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
-      <div className="w-full max-w-md rounded-3xl border border-slate-200/15 bg-slate-950/95 p-6 text-slate-100 shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
-        <p className="text-sm tracking-[0.18em] text-slate-300/85">首次绑定账号</p>
-        <h2 className="mt-3 text-xl font-medium">云端已存在数据</h2>
-        <p className="mt-2 text-sm leading-6 text-slate-300/80">
-          当前设备里也有本地离线数据。为了避免误合并，这次需要明确选择保留哪一边。
-        </p>
-        <div className="mt-6 grid gap-3">
-          <Button
-            type="button"
-            disabled={props.submitting}
-            className="rounded-full border border-slate-200/25 bg-slate-100 text-slate-950 hover:bg-white"
-            onClick={props.onUploadLocal}
-          >
-            {props.submitting ? "处理中..." : "上传本地覆盖云端"}
-          </Button>
-          <Button
-            type="button"
-            disabled={props.submitting}
-            variant="ghost"
-            className="rounded-full border border-slate-300/20 bg-slate-900/60 text-slate-100 hover:bg-slate-800/80"
-            onClick={props.onKeepCloud}
-          >
-            保留云端丢弃本地
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-const REGISTER_CODE_BYPASS_ENABLED = process.env.NODE_ENV !== "production";
-
-function AuthPanel(props: { onAuthed: () => void; onClose?: () => void }) {
-  const [mode, setMode] = useState<"login" | "register" | "forgot">("login");
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
-  const [code, setCode] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [sendingCode, setSendingCode] = useState(false);
-  const [cooldownUntil, setCooldownUntil] = useState(0);
-  const [cooldownTick, setCooldownTick] = useState(0);
-  const [error, setError] = useState("");
-
-  useEffect(() => {
-    if (!cooldownUntil) return;
-    const timer = window.setInterval(() => {
-      if (Date.now() >= cooldownUntil) {
-        setCooldownUntil(0);
-        setCooldownTick(0);
-        window.clearInterval(timer);
-        return;
-      }
-      setCooldownTick((value) => value + 1);
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [cooldownUntil]);
-
-  const switchMode = useCallback((nextMode: "login" | "register" | "forgot") => {
-    setMode(nextMode);
-    setCode("");
-    setPassword("");
-    setConfirmPassword("");
-    setError("");
-    setCooldownUntil(0);
-    setCooldownTick(0);
-  }, []);
-
-  void cooldownTick;
-  const resendSeconds = Math.max(0, Math.ceil((cooldownUntil - Date.now()) / 1000));
-
-  const submit = useCallback(() => {
-    if (mode === "login") {
-      if (!email.trim() || !password) {
-        setError("请输入邮箱和密码");
-        return;
-      }
-    } else {
-      const needsCode = mode === "forgot" || !REGISTER_CODE_BYPASS_ENABLED;
-      if (!email.trim() || !password || !confirmPassword || (needsCode && !code.trim())) {
-        setError(
-          mode === "register" && REGISTER_CODE_BYPASS_ENABLED
-            ? "请输入邮箱、密码和重复密码"
-            : mode === "register"
-              ? "请输入邮箱、密码、重复密码和验证码"
-              : "请输入邮箱、新密码、重复密码和验证码"
-        );
-        return;
-      }
-      if (password !== confirmPassword) {
-        setError("两次输入的密码不一致");
-        return;
-      }
-    }
-
-    setSubmitting(true);
-    setError("");
-    void (async () => {
-      try {
-        const endpoint =
-          mode === "login" ? "/v1/auth/login" : mode === "register" ? "/v1/auth/register" : "/v1/auth/password/reset";
-        const body =
-          mode === "login"
-            ? { email, password }
-            : mode === "register"
-              ? { email, password, code: REGISTER_CODE_BYPASS_ENABLED ? "" : code }
-              : { email, code, newPassword: password };
-        const response = await apiFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(body)
-        });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string };
-          setError(payload.error || "认证失败");
-          return;
-        }
-        if (mode === "forgot") {
-          setError("");
-          setCode("");
-          setPassword("");
-          setConfirmPassword("");
-          setCooldownUntil(0);
-          setCooldownTick(0);
-          setMode("login");
-          return;
-        }
-        props.onAuthed();
-        props.onClose?.();
-      } catch {
-        setError("网络异常，请稍后再试");
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [code, confirmPassword, email, mode, password, props]);
-
-  const sendCode = useCallback(() => {
-    if (!email.trim()) {
-      setError("请先输入邮箱");
-      return;
-    }
-    setSendingCode(true);
-    setError("");
-    void (async () => {
-      try {
-        const endpoint = mode === "forgot" ? "/v1/auth/password/send-reset-code" : "/v1/auth/register/send-code";
-        const response = await apiFetch(endpoint, {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email })
-        });
-        if (!response.ok) {
-          const payload = (await response.json().catch(() => ({}))) as { error?: string };
-          setError(payload.error || "验证码发送失败");
-          return;
-        }
-        setCooldownUntil(Date.now() + 60_000);
-      } catch {
-        setError("网络异常，请稍后再试");
-      } finally {
-        setSendingCode(false);
-      }
-    })();
-  }, [email, mode]);
-
-  return (
-    <div className={cn("px-4", props.onClose ? "" : "grid h-screen place-items-center bg-slate-950")}>
-      <div className="w-full max-w-md rounded-2xl border border-slate-300/15 bg-slate-900/65 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-        <div className="flex items-start justify-between gap-3">
-          <p className="inline-flex items-center gap-2 text-sm tracking-[0.22em] text-slate-300/85"><img src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></p>
-          {props.onClose ? (
-            <button
-              type="button"
-              className="rounded-full border border-slate-300/20 px-2.5 py-1 text-xs text-slate-300/75 transition-colors hover:bg-slate-800/70"
-              onClick={props.onClose}
-            >
-              关闭
-            </button>
-          ) : null}
-        </div>
-        <p className="mt-2 text-xs tracking-[0.12em] text-slate-400/75">
-          {mode === "login"
-            ? "请先登录你的时间档案馆"
-            : mode === "register"
-              ? REGISTER_CODE_BYPASS_ENABLED
-                ? "本地开发环境可直接注册"
-                : "用邮箱验证码完成注册"
-              : "用邮箱验证码重置密码"}
-        </p>
-        <div className="mt-4 flex gap-2">
-          <button
-            type="button"
-            className={cn(
-              "rounded-full border px-3 py-1 text-xs transition-colors",
-              mode === "login" ? "border-slate-300/45 bg-slate-900 text-slate-100" : "border-slate-300/20 text-slate-300/75"
-            )}
-            onClick={() => switchMode("login")}
-          >
-            登录
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "rounded-full border px-3 py-1 text-xs transition-colors",
-              mode === "register" ? "border-slate-300/45 bg-slate-900 text-slate-100" : "border-slate-300/20 text-slate-300/75"
-            )}
-            onClick={() => switchMode("register")}
-          >
-            注册
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "rounded-full border px-3 py-1 text-xs transition-colors",
-              mode === "forgot" ? "border-slate-300/45 bg-slate-900 text-slate-100" : "border-slate-300/20 text-slate-300/75"
-            )}
-            onClick={() => switchMode("forgot")}
-          >
-            忘记密码
-          </button>
-        </div>
-        <div className="mt-4 grid gap-3">
-          <input
-            type="email"
-            value={email}
-            onChange={(event) => setEmail(event.target.value)}
-            placeholder="邮箱"
-            className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-          />
-          <input
-            type="password"
-            value={password}
-            onChange={(event) => setPassword(event.target.value)}
-            placeholder={mode === "forgot" ? "新密码（至少8位）" : "密码（至少8位）"}
-            className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-            onKeyDown={(event) => event.key === "Enter" && submit()}
-          />
-          {mode !== "login" ? (
-            <input
-              type="password"
-              value={confirmPassword}
-              onChange={(event) => setConfirmPassword(event.target.value)}
-              placeholder={mode === "register" ? "重复输入密码" : "重复输入新密码"}
-              className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-              onKeyDown={(event) => event.key === "Enter" && submit()}
-            />
-          ) : null}
-          {mode !== "login" && !(mode === "register" && REGISTER_CODE_BYPASS_ENABLED) ? (
-            <div className="flex gap-2">
-              <input
-                type="text"
-                inputMode="numeric"
-                value={code}
-                onChange={(event) => setCode(event.target.value.replace(/\D+/g, "").slice(0, 6))}
-                placeholder="邮箱验证码"
-                className="h-10 flex-1 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-                onKeyDown={(event) => event.key === "Enter" && submit()}
-              />
-              <Button
-                type="button"
-                disabled={sendingCode || resendSeconds > 0}
-                className="rounded-full border border-slate-300/20 bg-slate-950/40 px-4 text-xs text-slate-200 hover:bg-slate-900/70 disabled:text-slate-500"
-                onClick={sendCode}
-              >
-                {sendingCode ? "发送中..." : resendSeconds > 0 ? `${resendSeconds}s` : "发送验证码"}
-              </Button>
-            </div>
-          ) : null}
-          <Button
-            type="button"
-            disabled={submitting}
-            className="rounded-full border border-slate-300/30 bg-slate-900/70 text-slate-100 hover:bg-slate-800/90"
-            onClick={submit}
-          >
-            {submitting ? "处理中..." : mode === "login" ? "登录" : mode === "register" ? "注册并登录" : "重置密码"}
-          </Button>
-          {mode === "login" ? (
-            <button
-              type="button"
-              className="justify-self-start text-xs text-slate-400/75 transition-colors hover:text-slate-200/85"
-              onClick={() => switchMode("forgot")}
-            >
-              忘记密码？
-            </button>
-          ) : null}
-          <p className={cn("min-h-[1.2em] text-xs text-red-300/85", error ? "opacity-100" : "opacity-0")}>{error}</p>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-
-
-
-
-
-
-
-

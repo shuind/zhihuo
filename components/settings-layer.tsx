@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 
 import type { QueuedMutation } from "@/components/offline-store";
+import type { SyncSummary } from "@/components/time-archive/sync-status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
@@ -65,6 +66,7 @@ export function SettingsLayer(props: {
   onClearAll: () => void;
   onLogout: () => void;
   syncStatus: {
+    syncSummary: SyncSummary;
     modeLabel: string;
     phase: string;
     localRevision: number | null;
@@ -122,6 +124,7 @@ export function SettingsLayer(props: {
   const [confirmBackupOverwrite, setConfirmBackupOverwrite] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
+  const [advancedSyncOpen, setAdvancedSyncOpen] = useState(false);
 
   const [pinMode, setPinMode] = useState<"enable" | "change" | "disable">("enable");
   const [pinCurrent, setPinCurrent] = useState("");
@@ -137,6 +140,21 @@ export function SettingsLayer(props: {
   const pinnedSet = useMemo(() => new Set(props.fixedTopSpaceIds), [props.fixedTopSpaceIds]);
 
   const pinLockedSeconds = Math.max(0, Math.ceil((props.pinLockedUntil - Date.now()) / 1000));
+  const syncDotClass =
+    props.syncStatus.syncSummary.tone === "good"
+      ? "bg-emerald-500"
+      : props.syncStatus.syncSummary.tone === "working"
+        ? "bg-sky-500"
+        : props.syncStatus.syncSummary.tone === "warning"
+          ? "bg-amber-500"
+          : "bg-slate-400";
+  const pendingChangeText =
+    props.syncStatus.pendingMutationCount > 0
+      ? `${props.syncStatus.pendingMutationCount} 条改动等待同步`
+      : props.syncStatus.hasLocalChanges
+        ? "有改动等待同步"
+        : "没有待同步改动";
+  const lastSyncText = props.syncStatus.lastSyncedAt ? new Date(props.syncStatus.lastSyncedAt).toLocaleString("zh-CN") : "暂无同步记录";
 
   const getUnmergedItemText = (item: SyncRepairItemSummary) => {
     const rawText = item.payload.raw_text;
@@ -322,7 +340,7 @@ export function SettingsLayer(props: {
   };
 
   return (
-    <div className="h-full overflow-y-auto px-4 pb-8 pt-4 md:px-8">
+    <div data-settings-layer="true" className="h-full overflow-y-auto px-4 pb-8 pt-4 md:px-8">
       <div className="mx-auto grid w-full max-w-4xl gap-4">
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
@@ -723,6 +741,53 @@ export function SettingsLayer(props: {
 
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
+            <CardTitle>数据同步</CardTitle>
+            <CardDescription>系统会自动保存并同步改动，通常不需要手动处理。</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <div className="rounded-xl border border-slate-300 bg-white px-4 py-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <span className={`h-2.5 w-2.5 rounded-full ${syncDotClass}`} />
+                  <div>
+                    <p className="text-sm font-medium text-slate-900">{props.syncStatus.syncSummary.label}</p>
+                    <p className="mt-1 text-xs leading-5 text-slate-500">{props.syncStatus.modeLabel}</p>
+                  </div>
+                </div>
+                <div className="text-right text-xs leading-5 text-slate-500">
+                  <p>{pendingChangeText}</p>
+                  <p>上次同步：{lastSyncText}</p>
+                </div>
+              </div>
+            </div>
+            {props.syncStatus.warning ? (
+              <div className="rounded-xl border border-amber-300/70 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                {props.syncStatus.warning}
+              </div>
+            ) : null}
+            {props.backupPreview ? (
+              <div className="rounded-xl border border-sky-300/70 bg-sky-50 px-4 py-3 text-sm text-sky-950">
+                正在预览 {new Date(props.backupPreview.createdAt).toLocaleString("zh-CN")} 的本机备份。预览不会自动同步，也不会替换当前账号数据。
+              </div>
+            ) : null}
+          </CardContent>
+          <CardFooter>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+              onClick={() => setAdvancedSyncOpen((open) => !open)}
+            >
+              {advancedSyncOpen ? "收起高级同步诊断" : "高级同步诊断"}
+            </Button>
+          </CardFooter>
+        </Card>
+
+        {advancedSyncOpen ? (
+          <>
+        <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
+          <CardHeader>
             <CardTitle>同步与修复</CardTitle>
             <CardDescription>用于查看当前同步健康度，并在发现双端不一致时执行云端优先的同步刷新。</CardDescription>
           </CardHeader>
@@ -1010,6 +1075,8 @@ export function SettingsLayer(props: {
             )}
           </CardContent>
         </Card>
+          </>
+        ) : null}
       </div>
     </div>
   );

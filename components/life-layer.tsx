@@ -31,9 +31,9 @@ type DateGroup = {
   items: LifeDoubt[];
 };
 
-const EASE: [number, number, number, number] = [0.24, 0.61, 0.35, 1];
 const EASE_GENTLE: [number, number, number, number] = [0.2, 0.72, 0.22, 1];
 const REFLECTION_CONTINUE_WINDOW_MS = 10 * 60 * 1000;
+const FIRST_DOUBT_EXAMPLE = "为什么我总在真正开始前犹豫？";
 
 export function LifeLayer(props: {
   store: LifeStore;
@@ -103,6 +103,7 @@ export function LifeLayer(props: {
   const isSplitView = Boolean(selectedDoubt);
   const showSearchInput = !isMobile ? isSplitView : Boolean(selectedDoubt && mobileSearchMode);
   const normalizedSearch = useMemo(() => collapseWhitespace(searchQuery).toLocaleLowerCase(), [searchQuery]);
+  const showFirstDoubtGuide = props.ready && allDoubts.length === 0 && !props.store.meta.firstDoubtGuideDismissedAt && !showSearchInput;
 
   const filteredDoubts = useMemo(() => {
     if (!normalizedSearch) return allDoubts;
@@ -173,15 +174,37 @@ export function LifeLayer(props: {
     [props]
   );
 
+  const dismissFirstDoubtGuide = useCallback(() => {
+    props.setStore((prev) =>
+      prev.meta.firstDoubtGuideDismissedAt
+        ? prev
+        : {
+            ...prev,
+            meta: {
+              ...prev.meta,
+              firstDoubtGuideDismissedAt: new Date().toISOString()
+            }
+          }
+    );
+  }, [props]);
+
+  const fillFirstDoubtExample = useCallback(() => {
+    setInputValue(FIRST_DOUBT_EXAMPLE);
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus();
+    });
+  }, []);
+
   const saveDoubt = useCallback(async () => {
     if (props.editable === false) {
       props.showNotice("当前正在同步，稍后再写");
       return;
     }
-    const text = collapseWhitespace(inputValue);
+    const text = collapseWhitespace(composerRef.current?.value ?? inputValue);
     if (!text) return;
     const ok = await props.onCreateDoubt(text);
     if (!ok) return;
+    dismissFirstDoubtGuide();
     setInputValue("");
     setRitualVisible(true);
     if (ritualTimerRef.current) window.clearTimeout(ritualTimerRef.current);
@@ -189,7 +212,7 @@ export function LifeLayer(props: {
       setRitualVisible(false);
       ritualTimerRef.current = null;
     }, 1400);
-  }, [inputValue, props]);
+  }, [dismissFirstDoubtGuide, inputValue, props]);
 
   const handleSelect = useCallback(
     (doubtId: string) => {
@@ -307,6 +330,38 @@ export function LifeLayer(props: {
                           </Button>
                         </div>
                       </div>
+                      {showFirstDoubtGuide ? (
+                        <motion.div
+                          data-first-doubt-guide="true"
+                          className="mt-5 rounded-2xl border border-white/[0.055] bg-white/[0.025] px-4 py-4 text-[var(--time-text)] shadow-[0_18px_48px_rgba(0,0,0,0.16)] backdrop-blur"
+                          initial={{ opacity: 0, y: 8 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0, y: 8 }}
+                          transition={{ duration: 0.42, ease: EASE_GENTLE }}
+                        >
+                          <div className="flex flex-wrap items-start justify-between gap-3">
+                            <div className="min-w-0 flex-1 space-y-2">
+                              <p className="text-[15px] leading-7 tracking-[0.03em] text-[rgba(222,226,225,0.88)]">
+                                把想不明白的问题，先放在这里。
+                              </p>
+                              <button
+                                type="button"
+                                className="text-left text-[12px] leading-6 tracking-[0.06em] text-[rgba(175,183,184,0.68)] transition-colors duration-500 hover:text-[rgba(220,226,229,0.86)]"
+                                onClick={fillFirstDoubtExample}
+                              >
+                                例如：{FIRST_DOUBT_EXAMPLE}
+                              </button>
+                            </div>
+                            <button
+                              type="button"
+                              className="-m-2 p-2 text-[12px] tracking-[0.08em] text-[rgba(146,154,154,0.58)] transition-colors duration-500 hover:text-[rgba(220,226,229,0.8)]"
+                              onClick={dismissFirstDoubtGuide}
+                            >
+                              知道了
+                            </button>
+                          </div>
+                        </motion.div>
+                      ) : null}
                     </div>
                   ) : (
                     <div className="relative pt-1.5">
