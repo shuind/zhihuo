@@ -217,6 +217,7 @@ export function StarMapView({
   const isCurating = curateStatus === "loading"
   const hasManualPlacements = Object.keys(starPlacements).length > 0
   const showControls = canCurate || hasManualPlacements
+  const curateErrorLabel = curateError ? getCurateErrorLabel(curateError) : null
 
   function saveSyncedStarMapPatch(patch: StarMapStatePatch) {
     if (!onSaveStarMapState) return
@@ -333,7 +334,7 @@ export function StarMapView({
         <div className="pointer-events-none absolute left-5 top-5 select-none sm:left-8 sm:top-7">
           <div className="text-[17px] font-medium tracking-[0.04em] text-[#EDE6D4] sm:text-[19px]">思考星图</div>
           <div className="mt-1 text-[11px] tracking-[0.06em] text-[#7d7a72] sm:text-[12px]">
-            {curatedScene ? "AI 已为你重新策展" : "可视化你的思考轨迹与关联"}
+            {curatedScene ? "AI 已为你重新策展" : "星图已生成，可视化你的思考轨迹"}
           </div>
         </div>
 
@@ -390,15 +391,15 @@ export function StarMapView({
                 onClick={handleCurate}
               >
                 <SparkleIcon spinning={isCurating} />
-                <span className="whitespace-nowrap">{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "让 AI 策展"}</span>
+                <span className="whitespace-nowrap">{isCurating ? "正在策展…" : curatedScene ? "再策展一次" : "AI 策展"}</span>
               </button>
             ) : null}
           </div>
         ) : null}
 
-        {curateStatus === "error" && curateError ? (
+        {curateStatus === "error" && curateErrorLabel ? (
           <div className="pointer-events-none absolute bottom-20 left-1/2 max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-full border border-[#3a2a2a] bg-[#0f0e0b]/86 px-4 py-1.5 text-center text-[11px] tracking-[0.06em] text-[#c9a89a] backdrop-blur-sm">
-            策展失败 · 已保留当前星图
+            {curateErrorLabel}
           </div>
         ) : null}
       </div>
@@ -497,6 +498,13 @@ function hashText(value: string) {
     hash = (hash * 33) ^ value.charCodeAt(index)
   }
   return (hash >>> 0).toString(36)
+}
+
+function getCurateErrorLabel(error: string) {
+  if (/未授权|unauthorized|http_401|api key|apikey|deepseek|network|fetch/i.test(error)) {
+    return "AI 策展暂不可用 · 已保留当前星图"
+  }
+  return "策展失败 · 已保留当前星图"
 }
 
 function loadPersistedCuratedScene(spaceId: string, signature: string): Scene | null {

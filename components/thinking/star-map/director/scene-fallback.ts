@@ -29,17 +29,22 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   type Flat = {
     node: ThinkingTrackNodeView
     track: ThinkingTrackView
+    trackOrder: number
     indexInTrack: number
+    globalOrder: number
     timeMs: number
   }
   const flat: Flat[] = []
-  for (const track of tracks) {
+  for (let trackOrder = 0; trackOrder < tracks.length; trackOrder += 1) {
+    const track = tracks[trackOrder]
     for (let i = 0; i < track.nodes.length; i++) {
       const node = track.nodes[i]
       flat.push({
         node,
         track,
+        trackOrder,
         indexInTrack: i,
+        globalOrder: flat.length,
         timeMs: node.createdAt ? new Date(node.createdAt).getTime() : Number.MAX_SAFE_INTEGER - i,
       })
     }
@@ -60,20 +65,38 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   const minTime = validTimes.length ? Math.min(...validTimes) : now
   const maxTime = validTimes.length ? Math.max(...validTimes) : minTime + 1
   const timeSpan = Math.max(1, maxTime - minTime)
+  const dimensionCounts = new Map<string, number>()
+  for (const f of flat) {
+    dimensionCounts.set(f.node.dimension, (dimensionCounts.get(f.node.dimension) ?? 0) + 1)
+  }
 
   const ranked = flat
     .map((f) => {
       const text = f.node.questionText ?? ""
       const time = Number.isFinite(f.timeMs) ? f.timeMs : minTime
       const recency = (time - minTime) / timeSpan
-      const lengthSignal = Math.min(text.length / 72, 1) * 0.22
-      const onActive = f.track.id === activeTrackId ? 0.42 : 0
+      const lengthSignal = Math.min(text.length / 72, 1) * 0.18
+      const onActive = f.track.id === activeTrackId ? 0.24 : 0
       const hasAnswer = f.node.answerText ? 0.44 : 0
       const hasNote = f.node.noteText ? 0.24 : 0
       const hasImage = f.node.imageAssetId ? 0.32 : 0
       const concrete = isConcreteText(text) ? 0.22 : 0
+      const firstInTrack = f.indexInTrack === 0 ? 0.18 : 0
+      const latestInTrack = f.indexInTrack === f.track.nodes.length - 1 ? 0.14 : 0
+      const dimensionRarity = 0.14 / Math.max(1, dimensionCounts.get(f.node.dimension) ?? 1)
       const suggested = f.node.isSuggested ? -0.34 : 0
-      const score = recency * 0.34 + lengthSignal + onActive + hasAnswer + hasNote + hasImage + concrete + suggested
+      const score =
+        recency * 0.28 +
+        lengthSignal +
+        onActive +
+        hasAnswer +
+        hasNote +
+        hasImage +
+        concrete +
+        firstInTrack +
+        latestInTrack +
+        dimensionRarity +
+        suggested
       return { ...f, score }
     })
     .sort((a, b) => b.score - a.score)
@@ -86,15 +109,18 @@ export function buildFallbackScene(input: FallbackInput): Scene {
     total > heroCount ? 1 : 0,
     Math.min(5, Math.max(0, total - heroCount))
   )
-
-  const heroes = ranked.slice(0, heroCount)
-  const supports = ranked.slice(heroCount, heroCount + supportCount)
-  const ambients = ranked.slice(heroCount + supportCount)
+  const { heroes, supports, ambients } = pickRoleBands(ranked, heroCount, supportCount)
+  const labelBudget = clamp(
+    Math.round(total * 0.34),
+    Math.min(total, heroCount),
+    Math.min(total, Math.max(heroCount, 7))
+  )
 
   // 4. layout
-  const rng = makeRng(`${spaceSeed}::layout::v1`)
+  const rng = makeRng(`${spaceSeed}::layout::v2`)
   const stars: SceneStar[] = []
   const idMap = new Map<string, string>() // nodeId -> starId
+  let labeledCount = 0
 
   const dominantAngle = wrapAngle(rng() * 360)
   const counterAngle = wrapAngle(dominantAngle + 132 + rng() * 42)
@@ -113,6 +139,8 @@ export function buildFallbackScene(input: FallbackInput): Scene {
     idMap.set(h.node.id, id)
     heroAngleAll.push(angle)
     if (!heroAngleByTrack.has(h.track.id)) heroAngleByTrack.set(h.track.id, angle)
+    const text = cleanText(h.node.questionText, h.node.answerText, h.node.noteText)
+    if (text) labeledCount += 1
     stars.push({
       id,
       ring,
@@ -120,7 +148,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
       drift,
       role: "hero",
       halo: i < 2,
-      text: cleanText(h.node.questionText, h.node.answerText),
+      text,
       timestamp: hhmm(h.node.createdAt),
       trackId: h.track.id,
       nodeId: h.node.id,
@@ -137,6 +165,10 @@ export function buildFallbackScene(input: FallbackInput): Scene {
     const drift = (rng() - 0.5) * 1.8
     const id = mkId(s.node.id)
     idMap.set(s.node.id, id)
+    const shouldLabel =
+      labeledCount < labelBudget && Boolean(s.node.answerText || s.node.noteText || isConcreteText(s.node.questionText ?? ""))
+    const text = shouldLabel ? cleanText(s.node.questionText, s.node.answerText, s.node.noteText) : undefined
+    if (text) labeledCount += 1
     stars.push({
       id,
       ring,
@@ -144,7 +176,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
       drift,
       role: "support",
       halo: false,
-      text: cleanText(s.node.questionText, s.node.answerText),
+      text,
       timestamp: hhmm(s.node.createdAt),
       trackId: s.track.id,
       nodeId: s.node.id,
@@ -183,7 +215,7 @@ export function buildFallbackScene(input: FallbackInput): Scene {
   // 5. strands. NOT all-to-core. Mostly within-track time chain, with
   // probabilistic skips to keep it sparse. Plus echo cross-links if present.
   const strands: SceneStrand[] = []
-  const strandRng = makeRng(`${spaceSeed}::strands::v1`)
+  const strandRng = makeRng(`${spaceSeed}::strands::v2`)
 
   // group flat by track in time order
   const byTrack = new Map<string, Flat[]>()
@@ -235,17 +267,46 @@ export function buildFallbackScene(input: FallbackInput): Scene {
     }
   }
 
+  const resonancePool = ranked.slice(0, Math.min(48, ranked.length))
+  const resonanceCandidates: Array<{ fromId: string; toId: string; score: number; index: number }> = []
+  for (let i = 0; i < resonancePool.length; i += 1) {
+    for (let j = i + 1; j < resonancePool.length; j += 1) {
+      const a = resonancePool[i]
+      const b = resonancePool[j]
+      if (a.track.id === b.track.id) continue
+      const fromId = idMap.get(a.node.id)
+      const toId = idMap.get(b.node.id)
+      if (!fromId || !toId) continue
+      const score = resonanceScore(a.node, b.node)
+      if (score < 0.34) continue
+      resonanceCandidates.push({ fromId, toId, score, index: resonanceCandidates.length })
+    }
+  }
+  const resonanceLimit = clamp(Math.round(total * 0.14), total >= 4 ? 1 : 0, 4)
+  for (const candidate of resonanceCandidates
+    .sort((a, b) => b.score - a.score || a.index - b.index)
+    .slice(0, resonanceLimit)) {
+    strands.push({
+      id: `r-${candidate.fromId}-${candidate.toId}`,
+      fromId: candidate.fromId,
+      toId: candidate.toId,
+      weight: clamp(0.28 + candidate.score * 0.5, 0.3, 0.58),
+      detour: (strandRng() - 0.5) * 1.55,
+      dustCount: 2 + Math.floor(strandRng() * 4),
+    })
+  }
+
   // 6. one or two strands from core to a hero — but not all heroes.
   // Done by adding a virtual core star? No — director language doesn't
   // include a core node id. Skip it. Reference image also has no
   // "all roads lead to core" feel.
 
   return {
-    core: { text: rootText || "", intensity: 1 },
+    core: { text: rootText || "", intensity: total >= 8 ? 2 : 1 },
     stars,
     strands: trimStrands(strands, stars, total),
     // ambient star count scales softly with content density
-    ambientStarCount: clamp(60 + Math.floor(total * 1.5), 60, 140),
+    ambientStarCount: clamp(68 + Math.floor(total * 1.65) + tracks.length * 3, 68, 156),
   }
 }
 
@@ -259,6 +320,42 @@ function wrapAngle(a: number) {
 }
 function isConcreteText(text: string) {
   return /[0-9]|为什么|怎么|不能|害怕|想要|必须|一直|突然|如果|但是|因为|担心|决定/.test(text)
+}
+function pickRoleBands<T extends { track: { id: string }; score: number }>(
+  ranked: T[],
+  heroCount: number,
+  supportCount: number
+) {
+  const heroes = pickDiverse(ranked, heroCount, 1)
+  const heroSet = new Set(heroes)
+  const supportPool = ranked.filter((item) => !heroSet.has(item))
+  const supports = pickDiverse(supportPool, supportCount, 2)
+  const supportSet = new Set(supports)
+  return {
+    heroes,
+    supports,
+    ambients: supportPool.filter((item) => !supportSet.has(item)),
+  }
+}
+function pickDiverse<T extends { track: { id: string }; score: number }>(items: T[], count: number, firstPassLimit: number) {
+  const picked: T[] = []
+  const perTrack = new Map<string, number>()
+
+  for (const item of items) {
+    if (picked.length >= count) break
+    const used = perTrack.get(item.track.id) ?? 0
+    if (used >= firstPassLimit) continue
+    picked.push(item)
+    perTrack.set(item.track.id, used + 1)
+  }
+
+  for (const item of items) {
+    if (picked.length >= count) break
+    if (picked.includes(item)) continue
+    picked.push(item)
+  }
+
+  return picked
 }
 function pickAngleAwayFrom(taken: number[], rng: () => number): number {
   // try a few angles, pick the one furthest from any taken angle
@@ -286,21 +383,52 @@ function hhmm(input?: string): string | undefined {
   const mm = String(d.getMinutes()).padStart(2, "0")
   return `${hh}:${mm}`
 }
-function cleanText(question?: string | null, answer?: string | null): string | undefined {
-  // prefer the question; if blank, fall back to a short snippet of the answer
+function cleanText(question?: string | null, answer?: string | null, note?: string | null): string | undefined {
+  // prefer the question; if blank, fall back to a short snippet of the answer/note
   const q = (question ?? "").trim()
   if (q) return truncate(q, 56)
   const a = (answer ?? "").trim()
   if (a) return truncate(a, 56)
+  const n = (note ?? "").trim()
+  if (n) return truncate(n, 56)
   return undefined
 }
 function truncate(s: string, n: number) {
   if (s.length <= n) return s
   return s.slice(0, n - 1).trimEnd() + "…"
 }
+function resonanceScore(a: ThinkingTrackNodeView, b: ThinkingTrackNodeView) {
+  let score = 0
+  if (a.dimension === b.dimension) score += 0.22
+  if (a.echoNodeId === b.id || b.echoNodeId === a.id) score += 0.5
+  if (isConcreteText(a.questionText ?? "") && isConcreteText(b.questionText ?? "")) score += 0.1
+  const aKeywords = keywordSet([a.questionText, a.answerText, a.noteText].filter(Boolean).join(" "))
+  const bKeywords = keywordSet([b.questionText, b.answerText, b.noteText].filter(Boolean).join(" "))
+  let overlap = 0
+  for (const keyword of aKeywords) {
+    if (bKeywords.has(keyword)) overlap += 1
+  }
+  return score + Math.min(0.44, overlap * 0.14)
+}
+function keywordSet(text: string) {
+  const result = new Set<string>()
+  for (const match of text.toLowerCase().matchAll(/[a-z0-9_]{3,}/g)) {
+    result.add(match[0])
+  }
+  for (const match of text.matchAll(/[\u4e00-\u9fff]{2,}/g)) {
+    const value = match[0]
+    for (let index = 0; index < value.length - 1; index += 1) {
+      const keyword = value.slice(index, index + 2)
+      if (!COMMON_BIGRAMS.has(keyword)) result.add(keyword)
+    }
+  }
+  return result
+}
 function mkId(nodeId: string) {
   return `s_${nodeId}`
 }
+
+const COMMON_BIGRAMS = new Set(["什么", "怎么", "如何", "可以", "是否", "自己", "这个", "那个", "因为", "但是", "如果", "需要"])
 
 function trimStrands(strands: SceneStrand[], stars: SceneStar[], total: number): SceneStrand[] {
   const roleScore: Record<StarRole, number> = {
