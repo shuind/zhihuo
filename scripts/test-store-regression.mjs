@@ -46,6 +46,7 @@ async function compileStore() {
       esModuleInterop: true,
       module: "CommonJS",
       moduleResolution: "node10",
+      jsx: "react-jsx",
       resolveJsonModule: true,
       rootDir: toTsPath(rootDir),
       outDir: toTsPath(tempDir),
@@ -58,9 +59,16 @@ async function compileStore() {
         "@/*": ["./*"]
       }
     },
-    files: ["lib/server/store.ts", "lib/server/types.ts", "lib/server/utils.ts", "components/zhihuo-model.ts"].map((file) =>
-      toTsPath(path.join(rootDir, file))
-    )
+    files: [
+      "next-env.d.ts",
+      "lib/server/store.ts",
+      "lib/server/types.ts",
+      "lib/server/utils.ts",
+      "components/zhihuo-model.ts",
+      "components/time-archive/api-mappers.ts",
+      "components/time-archive/sync-payload.ts",
+      "components/time-archive/thinking-view-store.ts"
+    ].map((file) => toTsPath(path.join(rootDir, file)))
   };
   await writeFile(tsconfigPath, `${JSON.stringify(tsconfig, null, 2)}\n`, "utf8");
 
@@ -71,6 +79,7 @@ async function compileStore() {
   const aliasScopeDir = path.join(tempDir, "node_modules", "@");
   await mkdir(aliasScopeDir, { recursive: true });
   await cp(path.join(tempDir, "lib"), path.join(aliasScopeDir, "lib"), { recursive: true });
+  await cp(path.join(tempDir, "components"), path.join(aliasScopeDir, "components"), { recursive: true });
 }
 
 function createDb() {
@@ -207,13 +216,141 @@ function runModelAssertions(model) {
   assert(roundTripped.showThinkingDimensions === true, "thinking dimension visibility should survive JSON round trip");
 }
 
+function runTimeArchiveHelperAssertions(model, viewStore, apiMappers, syncPayload) {
+  const createdAt = "2026-01-01T00:00:00.000Z";
+  const store = model.normalizeThinkingStore({
+    ...model.EMPTY_THINKING_STORE,
+    spaces: [
+      {
+        id: "space-helper",
+        userId: "local_user",
+        rootQuestionText: "How should this be split?",
+        status: "active",
+        createdAt,
+        lastActivityAt: createdAt,
+        writtenToTimeAt: null,
+        sourceTimeDoubtId: null
+      }
+    ],
+    nodes: [
+      {
+        id: "node-helper",
+        spaceId: "space-helper",
+        parentNodeId: "track:main-track",
+        rawQuestionText: "Which boundary is safest?",
+        createdAt,
+        orderIndex: 0,
+        isSuggested: false,
+        state: "normal",
+        dimension: "resource"
+      }
+    ],
+    spaceMeta: [{ spaceId: "space-helper", exportVersion: 1, lastTrackId: "main-track", parkingTrackId: "parking-track" }]
+  });
+
+  const view = viewStore.buildSpaceViewFromStore(store, "space-helper");
+  assert(view?.tracks[0]?.nodes[0]?.dimension === "resource", "view build should preserve node dimension");
+  assert(viewStore.isSpaceViewConsistentWithStore(store, "space-helper", view), "built view should match store nodes");
+
+  const synced = viewStore.syncStoreNodesFromView(store, "space-helper", {
+    ...view,
+    tracks: [
+      {
+        ...view.tracks[0],
+        nodes: [{ ...view.tracks[0].nodes[0], questionText: "Updated boundary", dimension: "risk" }]
+      }
+    ]
+  });
+  const syncedNode = synced.nodes.find((node) => node.id === "node-helper");
+  assert(syncedNode?.parentNodeId === "track:main-track", "view sync should keep track parent encoding");
+  assert(syncedNode?.orderIndex === 0, "view sync should recompute stable order index");
+  assert(syncedNode?.dimension === "risk", "view sync should preserve incoming dimension");
+  assert(synced.spaceMeta.length === store.spaceMeta.length, "view sync should not drop space meta");
+
+  const mapped = apiMappers.mapSyncSnapshotThinking({
+    spaces: [{ id: "space-api", rootQuestionText: "API space", status: "active", createdAt }],
+    nodes: [{ id: "node-api", spaceId: "space-api", rawQuestionText: "API node", createdAt }]
+  });
+  assert(mapped.showThinkingDimensions === false, "mapped sync snapshot should default dimension visibility to false");
+  assert(mapped.nodes[0]?.dimension === "definition", "mapped sync snapshot should default missing node dimension");
+
+  const payloadA = {
+    version: "2026-03-03",
+    exported_at: "2026-01-02T00:00:00.000Z",
+    user_id: "user-a",
+    user_email: "a@example.test",
+    life: {
+      doubts: [
+        {
+          id: "doubt-1",
+          raw_text: "A doubt",
+          first_node_preview: null,
+          last_node_preview: null,
+          letter_lines: "[\"one\",\"two\"]",
+          created_at: createdAt,
+          archived_at: null,
+          deleted_at: null
+        }
+      ],
+      notes: []
+    },
+    thinking: {
+      spaces: [
+        {
+          id: "space-1",
+          rootQuestionText: "Question",
+          status: "active",
+          createdAt,
+          writtenToTimeAt: null,
+          sourceTimeDoubtId: null
+        }
+      ],
+      nodes: [],
+      space_meta: [],
+      inbox: {},
+      scratch: [],
+      media_assets: []
+    },
+    audit: []
+  };
+  const payloadB = {
+    ...payloadA,
+    life: {
+      doubts: [{ ...payloadA.life.doubts[0], letter_lines: ["one", "two"] }],
+      notes: []
+    },
+    thinking: {
+      ...payloadA.thinking,
+      spaces: [
+        {
+          id: "space-1",
+          root_question_text: "Question",
+          status: "active",
+          created_at: createdAt,
+          written_to_time_at: null,
+          source_time_doubt_id: null
+        }
+      ]
+    }
+  };
+  assert(
+    syncPayload.stableStringify(syncPayload.canonicalizeExportPayload(payloadA)) ===
+      syncPayload.stableStringify(syncPayload.canonicalizeExportPayload(payloadB)),
+    "canonical export payload should normalize equivalent camel/snake payloads"
+  );
+}
+
 async function run() {
   await compileStore();
   const require = createRequire(import.meta.url);
   const store = require(path.join(tempDir, "lib", "server", "store.js"));
   const model = require(path.join(tempDir, "components", "zhihuo-model.js"));
+  const viewStore = require(path.join(tempDir, "components", "time-archive", "thinking-view-store.js"));
+  const apiMappers = require(path.join(tempDir, "components", "time-archive", "api-mappers.js"));
+  const syncPayload = require(path.join(tempDir, "components", "time-archive", "sync-payload.js"));
   runStoreAssertions(store);
   runModelAssertions(model);
+  runTimeArchiveHelperAssertions(model, viewStore, apiMappers, syncPayload);
   console.log("[store-test] all checks passed");
 }
 
