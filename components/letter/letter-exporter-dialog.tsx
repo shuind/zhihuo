@@ -99,7 +99,7 @@ export function LetterExporterDialog({
       link.href = dataUrl;
       link.click();
     } catch (err) {
-      console.error("[v0] export failed", err);
+      console.error("letter export failed", err);
     } finally {
       setExporting(false);
     }

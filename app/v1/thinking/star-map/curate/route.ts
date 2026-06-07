@@ -4,7 +4,7 @@ import { SCENE_CURATOR_SYSTEM_PROMPT } from "@/components/thinking/star-map/dire
 import { validateScene } from "@/components/thinking/star-map/director/scene-validator"
 import type { Scene, SceneStar, SceneStrand } from "@/components/thinking/star-map/stage/scene-types"
 import { makeRng } from "@/components/thinking/star-map/stage/scene-compiler"
-import { DEFAULT_DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_MODEL, normalizeAiApiSettings, normalizeBaseUrl } from "@/lib/ai-settings"
+import { DEFAULT_AI_PROVIDER, getAiProviderDefaults, normalizeAiApiSettings, normalizeBaseUrl } from "@/lib/ai-settings"
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http"
 import { logWarn, withApiRoute } from "@/lib/server/observability"
 
@@ -109,15 +109,19 @@ export const POST = withApiRoute(
     }
 
     const ai = normalizeAiApiSettings(body.ai)
-    const apiKey = ai.apiKey || process.env.DEEPSEEK_API_KEY || ""
-    if (!apiKey) return errorJson(503, "请先在设置里填写 DeepSeek API Key")
+    const envDefaults = getAiProviderDefaults(DEFAULT_AI_PROVIDER)
+    const providerDefaults = getAiProviderDefaults(ai.provider)
+    const apiKey = ai.apiKey || process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || ""
+    if (!apiKey) return errorJson(503, "请先在设置里填写 AI API Key")
 
     const thoughts = sanitizeThoughts(body.thoughts)
     if (!thoughts.length) return errorJson(400, "valid thoughts is required")
 
     const rootQuestion = trimText(body.rootQuestion ?? "", 200)
-    const baseUrl = normalizeBaseUrl(ai.baseUrl || process.env.DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL)
-    const model = ai.model || process.env.STAR_MAP_CURATOR_MODEL || DEFAULT_DEEPSEEK_MODEL
+    const baseUrl = ai.apiKey
+      ? normalizeBaseUrl(ai.baseUrl, providerDefaults.baseUrl)
+      : normalizeBaseUrl(process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL, envDefaults.baseUrl)
+    const model = ai.apiKey ? ai.model : process.env.AI_MODEL || process.env.STAR_MAP_CURATOR_MODEL || envDefaults.model
     const response = await fetch(`${baseUrl}/chat/completions`, {
       method: "POST",
       headers: {
@@ -143,7 +147,7 @@ export const POST = withApiRoute(
 
     const raw = (await response.json().catch(() => null)) as unknown
     if (!response.ok) {
-      logWarn("thinking.star_map.curate.deepseek_failed", {
+      logWarn("thinking.star_map.curate.ai_failed", {
         status: response.status,
         error: summarizeApiError(raw),
       })

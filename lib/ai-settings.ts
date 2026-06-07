@@ -1,4 +1,4 @@
-export type AiProvider = "deepseek";
+export type AiProvider = "deepseek" | "openai-compatible";
 
 export type AiApiSettings = {
   provider: AiProvider;
@@ -11,6 +11,13 @@ export const AI_SETTINGS_STORAGE_KEY = "zhihuo_ai_api_settings_v1";
 export const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
 export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
+export const DEFAULT_OPENAI_COMPATIBLE_BASE_URL = "https://api.openai.com/v1";
+export const DEFAULT_OPENAI_COMPATIBLE_MODEL = "gpt-4o-mini";
+
+export const AI_PROVIDER_OPTIONS: Array<{ value: AiProvider; label: string }> = [
+  { value: "deepseek", label: "DeepSeek" },
+  { value: "openai-compatible", label: "OpenAI 兼容" }
+];
 
 export const DEFAULT_AI_SETTINGS: AiApiSettings = {
   provider: DEFAULT_AI_PROVIDER,
@@ -30,11 +37,13 @@ export function normalizeAiApiSettings(
     | null
     | undefined
 ): AiApiSettings {
+  const provider = normalizeAiProvider(input?.provider);
+  const defaults = getAiProviderDefaults(provider);
   return {
-    provider: input?.provider === "deepseek" ? "deepseek" : DEFAULT_AI_PROVIDER,
+    provider,
     apiKey: typeof input?.apiKey === "string" ? input.apiKey.trim() : "",
-    baseUrl: normalizeBaseUrl(input?.baseUrl, DEFAULT_DEEPSEEK_BASE_URL),
-    model: typeof input?.model === "string" && input.model.trim() ? input.model.trim() : DEFAULT_DEEPSEEK_MODEL
+    baseUrl: normalizeBaseUrl(input?.baseUrl, defaults.baseUrl),
+    model: typeof input?.model === "string" && input.model.trim() ? input.model.trim() : defaults.model
   };
 }
 
@@ -64,4 +73,21 @@ export function normalizeBaseUrl(value: unknown, fallback = DEFAULT_DEEPSEEK_BAS
   const trimmed = value.trim().replace(/\/+$/, "");
   if (!/^https?:\/\/[^/\s]+(?:\/[^\s]*)?$/i.test(trimmed)) return fallback;
   return trimmed;
+}
+
+export function normalizeAiProvider(value: unknown): AiProvider {
+  return value === "openai-compatible" || value === "deepseek" ? value : DEFAULT_AI_PROVIDER;
+}
+
+export function getAiProviderDefaults(provider: AiProvider) {
+  if (provider === "openai-compatible") {
+    return {
+      baseUrl: DEFAULT_OPENAI_COMPATIBLE_BASE_URL,
+      model: DEFAULT_OPENAI_COMPATIBLE_MODEL
+    };
+  }
+  return {
+    baseUrl: DEFAULT_DEEPSEEK_BASE_URL,
+    model: DEFAULT_DEEPSEEK_MODEL
+  };
 }

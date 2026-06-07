@@ -15,11 +15,16 @@ import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
 import {
+  AI_PROVIDER_OPTIONS,
+  DEFAULT_AI_PROVIDER,
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_OPENAI_COMPATIBLE_MODEL,
   clearAiApiSettings,
+  getAiProviderDefaults,
   loadAiApiSettings,
-  saveAiApiSettings
+  saveAiApiSettings,
+  type AiProvider
 } from "@/lib/ai-settings";
 
 const TIMEZONE_OPTIONS = [
@@ -94,6 +99,7 @@ export function SettingsLayer(props: {
   const [includeThinking, setIncludeThinking] = useState(true);
   const [exportText, setExportText] = useState("");
   const [loadingExport, setLoadingExport] = useState(false);
+  const [aiProvider, setAiProvider] = useState<AiProvider>(DEFAULT_AI_PROVIDER);
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_DEEPSEEK_BASE_URL);
   const [confirmOverwriteCloud, setConfirmOverwriteCloud] = useState(false);
@@ -162,6 +168,7 @@ export function SettingsLayer(props: {
 
   useEffect(() => {
     const settings = loadAiApiSettings();
+    setAiProvider(settings.provider);
     setAiApiKey(settings.apiKey);
     setAiBaseUrl(settings.baseUrl);
     setAiModel(settings.model);
@@ -173,7 +180,7 @@ export function SettingsLayer(props: {
 
   const saveAiSettings = () => {
     saveAiApiSettings({
-      provider: "deepseek",
+      provider: aiProvider,
       apiKey: aiApiKey,
       baseUrl: aiBaseUrl,
       model: aiModel
@@ -183,10 +190,18 @@ export function SettingsLayer(props: {
 
   const clearAiSettings = () => {
     clearAiApiSettings();
+    setAiProvider(DEFAULT_AI_PROVIDER);
     setAiApiKey("");
     setAiBaseUrl(DEFAULT_DEEPSEEK_BASE_URL);
     setAiModel(DEFAULT_DEEPSEEK_MODEL);
     props.showNotice("AI API 设置已清空");
+  };
+
+  const changeAiProvider = (provider: AiProvider) => {
+    setAiProvider(provider);
+    const defaults = getAiProviderDefaults(provider);
+    setAiBaseUrl(defaults.baseUrl);
+    setAiModel(defaults.model);
   };
 
   const loadExport = () => {
@@ -441,18 +456,22 @@ export function SettingsLayer(props: {
         <Card className="border-slate-400/25 bg-slate-100/90 text-slate-900">
           <CardHeader>
             <CardTitle>AI 策展 API</CardTitle>
-            <CardDescription>用于思考星图的“让 AI 策展”。默认使用 DeepSeek V4 Flash，API Key 只保存在本机。</CardDescription>
+            <CardDescription>用于思考星图与封存信笺凝练。支持 DeepSeek 与 OpenAI 兼容接口，API Key 只保存在本机。</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="grid gap-3 rounded-lg border border-slate-300 bg-white p-3">
               <label className="grid gap-2">
                 <span className="text-sm text-slate-700">服务商</span>
                 <select
-                  value="deepseek"
-                  disabled
-                  className="h-10 rounded-md border border-slate-300 bg-slate-50 px-3 text-sm text-slate-500 outline-none"
+                  value={aiProvider}
+                  onChange={(event) => changeAiProvider(event.target.value as AiProvider)}
+                  className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
                 >
-                  <option value="deepseek">DeepSeek</option>
+                  {AI_PROVIDER_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
                 </select>
               </label>
 
@@ -482,15 +501,19 @@ export function SettingsLayer(props: {
 
               <label className="grid gap-2">
                 <span className="text-sm text-slate-700">模型</span>
-                <select
+                <input
+                  list="ai-model-suggestions"
                   value={aiModel}
                   onChange={(event) => setAiModel(event.target.value)}
+                  placeholder={getAiProviderDefaults(aiProvider).model}
                   className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
-                >
+                />
+                <datalist id="ai-model-suggestions">
                   <option value="deepseek-v4-flash">deepseek-v4-flash（默认）</option>
                   <option value="deepseek-v4-pro">deepseek-v4-pro</option>
                   <option value="deepseek-chat">deepseek-chat（兼容别名）</option>
-                </select>
+                  <option value={DEFAULT_OPENAI_COMPATIBLE_MODEL}>{DEFAULT_OPENAI_COMPATIBLE_MODEL}</option>
+                </datalist>
               </label>
 
               <label className="grid gap-2">
@@ -499,13 +522,13 @@ export function SettingsLayer(props: {
                   type="url"
                   value={aiBaseUrl}
                   onChange={(event) => setAiBaseUrl(event.target.value)}
-                  placeholder={DEFAULT_DEEPSEEK_BASE_URL}
+                  placeholder={getAiProviderDefaults(aiProvider).baseUrl}
                   className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
                 />
               </label>
 
               <p className="text-xs leading-5 text-slate-500">
-                星图策展会把当前空间的根问题与思考节点发送给 DeepSeek。未填写 Key 时，会尝试使用服务端环境变量。
+                AI 会接收当前空间的根问题与思考节点。未填写 Key 时，会尝试使用服务端环境变量。
               </p>
             </div>
           </CardContent>
@@ -519,9 +542,10 @@ export function SettingsLayer(props: {
               variant="ghost"
               className="rounded-full border border-slate-400/40 bg-white text-slate-700"
               onClick={() => {
-                setAiBaseUrl(DEFAULT_DEEPSEEK_BASE_URL);
-                setAiModel(DEFAULT_DEEPSEEK_MODEL);
-                props.showNotice("已恢复 DeepSeek V4 默认项");
+                const defaults = getAiProviderDefaults(aiProvider);
+                setAiBaseUrl(defaults.baseUrl);
+                setAiModel(defaults.model);
+                props.showNotice("已恢复当前服务商默认项");
               }}
             >
               恢复默认

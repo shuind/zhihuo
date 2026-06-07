@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
 
 import {
-  DEFAULT_DEEPSEEK_BASE_URL,
-  DEFAULT_DEEPSEEK_MODEL,
+  DEFAULT_AI_PROVIDER,
+  getAiProviderDefaults,
   normalizeAiApiSettings,
   normalizeBaseUrl
 } from "@/lib/ai-settings";
@@ -31,16 +31,18 @@ export const POST = withApiRoute(
     const fallback = fallbackCondense(input);
     const hasRequestAiSettings = Boolean(input.ai);
     const ai = normalizeAiApiSettings(input.ai);
-    const apiKey = hasRequestAiSettings ? ai.apiKey : process.env.DEEPSEEK_API_KEY || "";
+    const envDefaults = getAiProviderDefaults(DEFAULT_AI_PROVIDER);
+    const providerDefaults = getAiProviderDefaults(ai.provider);
+    const apiKey = hasRequestAiSettings ? ai.apiKey : process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || "";
     if (!apiKey) return okJson(fallback);
 
     const baseUrl = hasRequestAiSettings
-      ? normalizeBaseUrl(ai.baseUrl, DEFAULT_DEEPSEEK_BASE_URL)
-      : normalizeBaseUrl(process.env.DEEPSEEK_BASE_URL, DEFAULT_DEEPSEEK_BASE_URL);
-    const model = hasRequestAiSettings ? ai.model : DEFAULT_DEEPSEEK_MODEL;
+      ? normalizeBaseUrl(ai.baseUrl, providerDefaults.baseUrl)
+      : normalizeBaseUrl(process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL, envDefaults.baseUrl);
+    const model = hasRequestAiSettings ? ai.model : process.env.AI_MODEL || envDefaults.model;
 
-    const aiResponse = await callDeepSeek({ input, apiKey, baseUrl, model }).catch((error: unknown) => {
-      logWarn("letter.condense.deepseek_network_failed", {
+    const aiResponse = await callChatCompletions({ input, apiKey, baseUrl, model }).catch((error: unknown) => {
+      logWarn("letter.condense.ai_network_failed", {
         error: error instanceof Error ? trimText(error.message, 200) : "unknown"
       });
       return null;
@@ -48,7 +50,7 @@ export const POST = withApiRoute(
 
     if (!aiResponse) return okJson(fallback);
     if (!aiResponse.ok) {
-      logWarn("letter.condense.deepseek_failed", {
+      logWarn("letter.condense.ai_failed", {
         status: aiResponse.status,
         error: summarizeApiError(aiResponse.raw)
       });
@@ -68,7 +70,7 @@ export const POST = withApiRoute(
   { rateLimit: { bucket: "letter-condense", max: 20, windowMs: 60 * 1000 } }
 );
 
-async function callDeepSeek({
+async function callChatCompletions({
   input,
   apiKey,
   baseUrl,
