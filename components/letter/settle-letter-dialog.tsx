@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, motion } from "framer-motion";
 import { LetterPaper, type PaperVariant } from "./letter-paper";
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
@@ -8,8 +8,11 @@ import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "./letter-exporter-dialog";
 import { saveLetterSealText, saveLetterVariant } from "@/lib/letter-variant-store";
 import { cn } from "@/lib/utils";
+import { loadAiApiSettings } from "@/lib/ai-settings";
+import type { LetterCondenseRequest, LetterCondenseResponse } from "@/lib/letter-ai";
 
 type Phase = "preview" | "sealing" | "sealed";
+type AiStatus = "idle" | "loading" | "ready" | "error";
 
 export type SettleLetterSnapshot = {
   title: string | null;
@@ -48,13 +51,20 @@ export function SettleLetterDialog({
   const [ornamentSealText, setOrnamentSealText] = useState("知");
   const [paperTitle, setPaperTitle] = useState("");
   const [paperLines, setPaperLines] = useState<string[]>([]);
+  const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
+  const [aiHint, setAiHint] = useState<string | null>(null);
+  const [hasUserEditedLetter, setHasUserEditedLetter] = useState(false);
   const paperRef = useRef<HTMLDivElement>(null);
+  const condenseRequestIdRef = useRef(0);
+  const userEditedRef = useRef(false);
 
   useEffect(() => {
     if (open) {
       setPhase("preview");
       setBusy(false);
       setErrMsg(null);
+      setAiStatus("idle");
+      setAiHint(null);
       setVariant(suggestVariant(writtenAt, false));
       setOrnamentSealText("知");
     }
@@ -77,11 +87,85 @@ export function SettleLetterDialog({
   );
   const hasOrnamentSeal = variant === "rice" || variant === "clay";
 
+  const requestCondense = useCallback(
+    async ({ overwrite, showFallbackHint = false }: { overwrite: boolean; showFallbackHint?: boolean }) => {
+      const requestId = condenseRequestIdRef.current + 1;
+      condenseRequestIdRef.current = requestId;
+      setAiStatus("loading");
+      setAiHint(null);
+
+      const ai = loadAiApiSettings();
+      const body: LetterCondenseRequest = {
+        doubt: doubtText,
+        nodes,
+        closing: closingNote
+      };
+      if (ai.apiKey) body.ai = ai;
+
+      try {
+        const response = await fetch("/v1/letter/condense", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body)
+        });
+        const data = (await response.json().catch(() => null)) as LetterCondenseResponse | { error?: string } | null;
+        if (condenseRequestIdRef.current !== requestId) return;
+        if (!response.ok || !data || !Array.isArray((data as LetterCondenseResponse).lines)) {
+          setAiStatus("error");
+          setAiHint("AI 凝练暂不可用，已保留当前信笺。");
+          return;
+        }
+
+        const result = data as LetterCondenseResponse;
+        if (result.source !== "ai") {
+          setAiStatus("idle");
+          if (showFallbackHint) setAiHint("暂无可用 AI，已保留当前信笺。");
+          return;
+        }
+
+        const shouldApply = overwrite || !userEditedRef.current;
+        if (shouldApply) {
+          setPaperTitle(result.title);
+          setPaperLines(result.lines);
+          userEditedRef.current = false;
+          setHasUserEditedLetter(false);
+        }
+        setAiStatus("ready");
+        setAiHint(shouldApply ? "已用 AI 凝练信笺。" : "AI 已凝练，手动编辑已保留。");
+      } catch {
+        if (condenseRequestIdRef.current !== requestId) return;
+        setAiStatus("error");
+        setAiHint("AI 凝练暂不可用，已保留当前信笺。");
+      }
+    },
+    [closingNote, doubtText, nodes]
+  );
+
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      condenseRequestIdRef.current += 1;
+      return;
+    }
+    userEditedRef.current = false;
+    setHasUserEditedLetter(false);
+    setAiStatus("idle");
+    setAiHint(null);
     setPaperTitle(defaultPaperTitle);
     setPaperLines(defaultPaperLines);
-  }, [open, defaultPaperTitle, defaultPaperLines]);
+    void requestCondense({ overwrite: false });
+  }, [open, defaultPaperTitle, defaultPaperLines, requestCondense]);
+
+  const handleTitleChange = useCallback((value: string) => {
+    userEditedRef.current = true;
+    setHasUserEditedLetter(true);
+    setPaperTitle(value);
+  }, []);
+
+  const handleLineChange = useCallback((index: number, value: string) => {
+    userEditedRef.current = true;
+    setHasUserEditedLetter(true);
+    setPaperLines((current) => current.map((line, lineIndex) => (lineIndex === index ? value : line)));
+  }, []);
 
   const handleConfirm = async () => {
     if (busy) return;
@@ -167,10 +251,8 @@ export function SettleLetterDialog({
                   sealSolarTerm={solarTermName}
                   size={useLongPaper ? "long" : "standard"}
                   editable={phase === "preview"}
-                  onTitleChange={setPaperTitle}
-                  onLineChange={(index, value) =>
-                    setPaperLines((current) => current.map((line, lineIndex) => (lineIndex === index ? value : line)))
-                  }
+                  onTitleChange={handleTitleChange}
+                  onLineChange={handleLineChange}
                 />
               </div>
             </div>
@@ -219,6 +301,9 @@ export function SettleLetterDialog({
                     {errMsg ? (
                       <p className="mt-4 text-[12px] text-rose-500">{errMsg}</p>
                     ) : null}
+                    {aiHint ? (
+                      <p className="mt-4 text-[12px] text-slate-500">{aiHint}</p>
+                    ) : null}
                   </>
                 ) : null}
               </div>
@@ -226,6 +311,16 @@ export function SettleLetterDialog({
               <div className="mt-5 flex items-center justify-end gap-2">
                 {phase === "preview" && (
                   <>
+                    <button
+                      type="button"
+                      data-settle-letter-regenerate="true"
+                      aria-label={hasUserEditedLetter ? "重新凝练并覆盖当前信笺" : "重新凝练信笺"}
+                      onClick={() => void requestCondense({ overwrite: true, showFallbackHint: true })}
+                      disabled={aiStatus === "loading"}
+                      className="rounded-full border border-black/12 px-4 py-2 text-[13px] text-slate-700 hover:bg-black/5 disabled:opacity-60"
+                    >
+                      {aiStatus === "loading" ? "凝练中…" : "重新凝练"}
+                    </button>
                     <button
                       type="button"
                       onClick={onClose}

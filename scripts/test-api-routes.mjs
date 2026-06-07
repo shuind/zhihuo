@@ -1,4 +1,6 @@
-﻿const baseUrl = (process.env.TEST_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
+import { createServer } from "node:http";
+
+const baseUrl = (process.env.TEST_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
 const password = "StrongPass123!";
 const email = `zhihuo-e2e-${Date.now()}@example.com`;
 
@@ -84,11 +86,140 @@ async function requestFormData(method, path, formData) {
   return { status: response.status, json };
 }
 
+async function withMockChatCompletion(handler, callback) {
+  const calls = [];
+  const server = createServer(async (request, response) => {
+    const rawBody = await readIncomingBody(request);
+    let jsonBody = null;
+    try {
+      jsonBody = rawBody ? JSON.parse(rawBody) : null;
+    } catch {
+      jsonBody = { raw: rawBody };
+    }
+
+    const call = {
+      method: request.method,
+      url: request.url,
+      headers: request.headers,
+      body: jsonBody
+    };
+    calls.push(call);
+
+    const result = await handler(call);
+    response.writeHead(result.status ?? 200, { "content-type": "application/json" });
+    response.end(JSON.stringify(result.body ?? {}));
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", resolve);
+  });
+
+  const address = server.address();
+  assert(address && typeof address === "object", "mock server should expose a port");
+  const mockBaseUrl = `http://127.0.0.1:${address.port}`;
+  try {
+    return await callback(mockBaseUrl, calls);
+  } finally {
+    await new Promise((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()));
+    });
+  }
+}
+
+function readIncomingBody(request) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    request.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("error", reject);
+  });
+}
+
 async function run() {
   console.log(`[api-test] base=${baseUrl}`);
 
   const monitorUnauthorized = await request("GET", "/v1/system/monitor");
   assert(monitorUnauthorized.status === 401, `monitor should require auth, got ${monitorUnauthorized.status}`);
+
+  const letterFallback = await request("POST", "/v1/letter/condense", {
+    doubt: "我要不要把这个计划先封存下来",
+    nodes: ["已经想清楚第一步", "还保留一点犹豫"],
+    closing: "先收在这里",
+    ai: {
+      provider: "deepseek",
+      apiKey: "",
+      baseUrl: "http://127.0.0.1:9",
+      model: "mock-letter-model"
+    }
+  });
+  assert(letterFallback.status === 200, `letter fallback failed: ${letterFallback.status}`);
+  assert(letterFallback.json?.source === "fallback", "letter without key should use fallback");
+  assert(typeof letterFallback.json?.title === "string", "letter fallback should include title");
+  assert(Array.isArray(letterFallback.json?.lines) && letterFallback.json.lines.length > 0, "letter fallback should include lines");
+
+  await withMockChatCompletion(
+    async (call) => {
+      assert(call.method === "POST", "mock AI should receive POST");
+      assert(call.url === "/chat/completions", `mock AI path mismatch: ${call.url}`);
+      assert(call.headers.authorization === "Bearer mock-key", "mock AI auth header mismatch");
+      assert(call.body?.model === "mock-letter-model", "mock AI model mismatch");
+      return {
+        body: {
+          choices: [
+            {
+              message: {
+                content: JSON.stringify({
+                  title: "先把犹豫安放好",
+                  lines: ["第一步已经清楚", "犹豫也可以留下", "把它封存在今天"]
+                })
+              }
+            }
+          ]
+        }
+      };
+    },
+    async (mockBaseUrl, calls) => {
+      const letterAi = await request("POST", "/v1/letter/condense", {
+        doubt: "我要不要把这个计划先封存下来",
+        nodes: ["已经想清楚第一步", "还保留一点犹豫"],
+        ai: {
+          provider: "deepseek",
+          apiKey: "mock-key",
+          baseUrl: mockBaseUrl,
+          model: "mock-letter-model"
+        }
+      });
+      assert(letterAi.status === 200, `letter AI failed: ${letterAi.status}`);
+      assert(calls.length === 1, "mock AI should be called once");
+      assert(letterAi.json?.source === "ai", "letter AI should report ai source");
+      assert(letterAi.json?.title === "先把犹豫安放好", "letter AI title mismatch");
+      assert(letterAi.json?.lines?.length === 3, "letter AI lines mismatch");
+    }
+  );
+
+  await withMockChatCompletion(
+    async () => ({
+      body: {
+        choices: [{ message: { content: "not json" } }]
+      }
+    }),
+    async (mockBaseUrl) => {
+      const invalidAi = await request("POST", "/v1/letter/condense", {
+        doubt: "这次输出如果坏了怎么办",
+        nodes: ["不能影响封存"],
+        ai: {
+          provider: "deepseek",
+          apiKey: "mock-key",
+          baseUrl: mockBaseUrl,
+          model: "mock-letter-model"
+        }
+      });
+      assert(invalidAi.status === 200, `invalid AI fallback failed: ${invalidAi.status}`);
+      assert(invalidAi.json?.source === "fallback", "invalid AI output should fall back");
+      assert(Array.isArray(invalidAi.json?.lines) && invalidAi.json.lines.length > 0, "invalid AI fallback should keep lines");
+    }
+  );
 
   const sendCode = await request("POST", "/v1/auth/register/send-code", { email });
   assert(sendCode.status === 200, `send register code failed: ${sendCode.status}`);
