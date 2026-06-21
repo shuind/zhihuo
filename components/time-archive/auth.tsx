@@ -6,6 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { verifyPin } from "@/components/offline-store";
 import { apiFetch } from "@/lib/api-client";
+import { onSubmitEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
 export function PinGate(props: { lockedUntil: number; onVerified: () => void }) {
   const [pin, setPin] = useState("");
@@ -54,7 +55,7 @@ export function PinGate(props: { lockedUntil: number; onVerified: () => void }) 
           onChange={(event) => setPin(event.target.value.replace(/\D+/g, "").slice(0, 12))}
           placeholder="PIN"
           className="mt-4 h-10 w-full rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-          onKeyDown={(event) => event.key === "Enter" && submit()}
+          onKeyDown={onSubmitEnter(submit)}
           disabled={lockedSeconds > 0}
         />
         <Button
@@ -320,7 +321,7 @@ export function AuthPanel(props: { onAuthed: () => void; onClose?: () => void })
             onChange={(event) => setPassword(event.target.value)}
             placeholder={mode === "forgot" ? "新密码（至少8位）" : "密码（至少8位）"}
             className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-            onKeyDown={(event) => event.key === "Enter" && submit()}
+            onKeyDown={onSubmitEnter(submit)}
           />
           {mode !== "login" ? (
             <input
@@ -329,7 +330,7 @@ export function AuthPanel(props: { onAuthed: () => void; onClose?: () => void })
               onChange={(event) => setConfirmPassword(event.target.value)}
               placeholder={mode === "register" ? "重复输入密码" : "重复输入新密码"}
               className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-              onKeyDown={(event) => event.key === "Enter" && submit()}
+              onKeyDown={onSubmitEnter(submit)}
             />
           ) : null}
           {mode !== "login" && !(mode === "register" && REGISTER_CODE_BYPASS_ENABLED) ? (
@@ -341,7 +342,7 @@ export function AuthPanel(props: { onAuthed: () => void; onClose?: () => void })
                 onChange={(event) => setCode(event.target.value.replace(/\D+/g, "").slice(0, 6))}
                 placeholder="邮箱验证码"
                 className="h-10 flex-1 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-                onKeyDown={(event) => event.key === "Enter" && submit()}
+                onKeyDown={onSubmitEnter(submit)}
               />
               <Button
                 type="button"

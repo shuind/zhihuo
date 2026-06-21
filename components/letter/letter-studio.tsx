@@ -2,6 +2,7 @@
 
 import { useMemo, useRef, useState } from "react";
 import { LetterPaper, VARIANT_META, type PaperVariant } from "./letter-paper";
+import { exportLetterPng } from "./export-letter-png";
 import { poetize } from "@/lib/letter-poetize";
 import { describeSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { cn } from "@/lib/utils";
@@ -44,16 +45,7 @@ export function LetterStudio() {
     if (!paperRef.current) return;
     setExporting(true);
     try {
-      const { toPng } = await import("html-to-image");
-      const dataUrl = await toPng(paperRef.current, {
-        pixelRatio: 3,
-        cacheBust: true,
-        backgroundColor: "transparent"
-      });
-      const link = document.createElement("a");
-      link.download = `zhihuo-jian-${Date.now()}.png`;
-      link.href = dataUrl;
-      link.click();
+      await exportLetterPng(paperRef.current, `zhihuo-jian-${Date.now()}.png`);
     } catch (err) {
       console.error("letter export failed", err);
     } finally {

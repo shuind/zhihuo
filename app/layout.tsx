@@ -2,10 +2,7 @@ import type { Metadata, Viewport } from "next";
 
 import { ServiceWorkerRegistrar } from "@/components/service-worker-registrar";
 
-import "@fontsource/noto-serif-sc/chinese-simplified-300.css";
-import "@fontsource/noto-serif-sc/chinese-simplified-400.css";
-import "@fontsource/noto-serif-sc/latin-300.css";
-import "@fontsource/noto-serif-sc/latin-400.css";
+import "./fonts.css";
 import "./globals.css";
 
 export const metadata: Metadata = {

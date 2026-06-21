@@ -443,9 +443,8 @@ export function loadLifeStore(): LifeStore {
   }
 }
 
-export function persistLifeStore(store: LifeStore) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(LIFE_STORAGE_KEY, JSON.stringify(store));
+export function persistLifeStore(_store: LifeStore) {
+  // Legacy no-op: owner-scoped offline snapshots in IndexedDB are the source of truth.
 }
 
 export function loadThinkingStore(): ThinkingStore {
@@ -459,9 +458,8 @@ export function loadThinkingStore(): ThinkingStore {
   }
 }
 
-export function persistThinkingStore(store: ThinkingStore) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(THINKING_STORAGE_KEY, JSON.stringify(store));
+export function persistThinkingStore(_store: ThinkingStore) {
+  // Legacy no-op: owner-scoped offline snapshots in IndexedDB are the source of truth.
 }
 
 function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {

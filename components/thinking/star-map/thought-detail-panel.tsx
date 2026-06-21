@@ -3,6 +3,7 @@
 import { forwardRef, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react"
 import type { ThinkingTrackNodeView, ThinkingTrackView } from "@/components/thinking-layer"
 import { Textarea } from "@/components/ui/textarea"
+import { shouldSubmitOnEnter } from "@/lib/input-events"
 
 interface SelectedRef {
   trackId: string
@@ -145,7 +146,7 @@ export function ThoughtDetailPanel({
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
+                if (shouldSubmitOnEnter(event, { allowShift: true, requireModifier: true })) {
                   event.preventDefault()
                   void submit()
                 }

@@ -7,6 +7,7 @@
     "build": "next build",
     "build:mobile": "node scripts/build-mobile.mjs",
     "build:android:debug": "node scripts/build-android-debug.mjs",
+    "build:font-subset": "node scripts/build-font-subset.mjs",
     "start": "next start",
     "lint": "eslint app components lib scripts middleware.ts next.config.mjs tailwind.config.ts capacitor.config.ts",
     "test:store-regression": "node scripts/test-store-regression.mjs",
@@ -16,11 +17,9 @@
   "dependencies": {
     "@capacitor/android": "^8.4.0",
     "@capacitor/core": "^8.4.0",
-    "@fontsource/noto-serif-sc": "^5.2.9",
     "@radix-ui/react-slot": "^1.1.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "framer-motion": "^11.11.17",
     "html-to-image": "^1.11.13",
     "next": "^15.5.18",
     "nodemailer": "^8.0.10",
@@ -32,6 +31,7 @@
   "devDependencies": {
     "@capacitor/cli": "^8.4.0",
     "@eslint/eslintrc": "3.3.5",
+    "@fontsource/noto-serif-sc": "^5.2.9",
     "@types/node": "^20.16.5",
     "@types/nodemailer": "^8.0.0",
     "@types/pg": "^8.20.0",

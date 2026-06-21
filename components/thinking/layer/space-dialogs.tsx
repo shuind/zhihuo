@@ -1,6 +1,7 @@
 "use client";
 
 import { Button } from "@/components/ui/button";
+import { onSubmitEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
 
 export function RenameSpaceDialog(props: {
@@ -22,7 +23,7 @@ export function RenameSpaceDialog(props: {
           maxLength={220}
           className="mt-3 h-11 w-full rounded-xl border border-black/12 bg-white px-3 text-sm text-slate-800 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
           onChange={(event) => props.onDraftChange(event.target.value)}
-          onKeyDown={(event) => event.key === "Enter" && props.onSave()}
+          onKeyDown={onSubmitEnter(props.onSave)}
         />
         <p className="mt-1 text-xs text-slate-500">修改后会同步到空间列表与详情。</p>
         <p className={cn("mt-1 min-h-[1.2em] text-xs text-slate-500", props.hint ? "opacity-100" : "opacity-0")}>

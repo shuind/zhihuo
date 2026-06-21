@@ -10,7 +10,7 @@ export function TopTab(props: { label: string; active: boolean; onClick: () => v
       size="sm"
       variant="ghost"
       className={cn(
-        "rounded-full border px-3 text-xs tracking-[0.12em] transition-colors",
+        "min-h-10 rounded-full border px-3.5 text-xs tracking-[var(--tracking-meta)] transition-colors md:min-h-8 md:px-3",
         props.subtle
           ? props.active
             ? "border-white/[0.06] bg-white/[0.03] text-[rgba(236,233,226,0.8)]"

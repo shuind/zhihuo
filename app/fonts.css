@@ -1,0 +1,7 @@
+@font-face {
+  font-family: "Zhihuo Serif UI";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 400;
+  src: url("/fonts/zhihuo-serif-ui-400.woff") format("woff");
+}

@@ -7,6 +7,7 @@ import { LetterSprite } from "./letter-sprite";
 import { MoonGlyph } from "./moon-glyph";
 import { PaperOrnament } from "./paper-ornament";
 import { LetterSeal } from "./letter-seal";
+import { isComposingInput } from "@/lib/input-events";
 import type { MoonPhase } from "@/lib/solar-terms";
 
 export type PaperVariant = "plain" | "vellum" | "ink" | "rice" | "tide" | "clay";
@@ -128,7 +129,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
       <header className="relative z-10 flex items-start justify-between px-8 pt-7">
         <div className="flex items-center gap-2">
           <span
-            className="text-[11px] tracking-[0.3em] uppercase"
+            className="text-[11px] tracking-[0.16em] uppercase"
             style={{ color: p.subtle }}
           >
             {getCorner(variant)}
@@ -136,7 +137,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
           <span className="h-px w-12" style={{ background: p.rule }} />
         </div>
         <div
-          className="flex items-center gap-2 text-[11px] tracking-[0.25em]"
+          className="flex items-center gap-2 text-[11px] tracking-[0.16em]"
           style={{ color: p.subtle }}
         >
           <MoonGlyph phase={moon} size={12} lit={p.moonLit} dark={p.moonDark} />
@@ -146,7 +147,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
 
       <div className="relative z-10 px-8 pt-2">
         <span
-          className="text-[11px] tracking-[0.2em]"
+          className="text-[11px] tracking-[0.08em]"
           style={{ color: p.subtle }}
         >
           {solarTermLabel}
@@ -162,11 +163,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
           className={cn(
             "text-balance leading-[1.45] tracking-[0.02em] outline-none",
             editable && "rounded-sm focus:bg-black/[0.025] focus:ring-1 focus:ring-black/10",
-            isLong
-              ? variant === "vellum" || variant === "tide"
-                ? "text-[20px] italic"
-                : "text-[24px]"
-              : variant === "vellum" || variant === "tide" ? "text-[22px] italic" : "text-[26px]"
+            variant === "vellum" || variant === "tide" ? "text-[22px] italic" : "text-[24px]"
           )}
           style={{
             color: p.titleInk,
@@ -179,7 +176,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
           {title}
         </h1>
 
-        <div className={cn("flex flex-col", isLong ? "mt-8 gap-2.5" : "mt-10 gap-3")}>
+        <div className={cn("flex flex-col", isLong ? "mt-8 gap-3" : "mt-10 gap-3")}>
           {lines.map((line, i) => {
             const isSection = /^方向\s+\d+/.test(line) || line === "未归入方向";
             return (
@@ -194,9 +191,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
                   isSection
                     ? "mt-3 text-[12px] leading-[1.6] tracking-[0.16em]"
                     : "leading-[1.95]",
-                  isLong
-                    ? variant === "vellum" || variant === "tide" ? "text-[14px] italic" : "text-[15px]"
-                    : variant === "vellum" || variant === "tide" ? "text-[15px] italic" : "text-[16px]"
+                  variant === "vellum" || variant === "tide" ? "text-[15px] italic" : "text-[15px]"
                 )}
                 style={{ color: isSection ? p.subtle : p.bodyInk }}
                 onBlur={(event) => {
@@ -262,6 +257,7 @@ function readEditableText(element: HTMLElement) {
 
 function preventEditableBreak(event: React.KeyboardEvent<HTMLElement>) {
   if (event.key !== "Enter") return;
+  if (isComposingInput(event)) return;
   event.preventDefault();
   event.currentTarget.blur();
 }

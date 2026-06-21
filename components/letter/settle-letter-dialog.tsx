@@ -1,8 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AnimatePresence, motion } from "framer-motion";
 import { LetterPaper, type PaperVariant } from "./letter-paper";
+import { exportLetterPng } from "./export-letter-png";
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "./letter-exporter-dialog";
@@ -191,16 +191,7 @@ export function SettleLetterDialog({
 
   const handleSave = async () => {
     if (!paperRef.current) return;
-    const { toPng } = await import("html-to-image");
-    const dataUrl = await toPng(paperRef.current, {
-      pixelRatio: 3,
-      cacheBust: true,
-      backgroundColor: "transparent"
-    });
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `zhihuo-jian-${writtenAt.getTime()}.png`;
-    a.click();
+    await exportLetterPng(paperRef.current, `zhihuo-jian-${writtenAt.getTime()}.png`);
   };
 
   const VARIANTS: { key: PaperVariant; label: string }[] = [
@@ -212,25 +203,17 @@ export function SettleLetterDialog({
     { key: "vellum", label: "羊皮金" }
   ];
 
+  if (!open) return null;
+
   return (
-    <AnimatePresence>
-      {open ? (
-        <motion.div
-          key="settle-dialog"
+        <div
           data-settle-letter-dialog="true"
           data-settle-letter-phase={phase}
-          className="absolute inset-0 z-50 grid place-items-center bg-black/45 backdrop-blur-[2px]"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
+          className="absolute inset-0 z-50 grid place-items-center bg-black/45 backdrop-blur-[2px] animate-[zhDialogFadeIn_220ms_ease-out_1]"
           onClick={phase === "sealed" ? onClose : undefined}
         >
-          <motion.div
-            className="relative grid max-h-[calc(100vh-2rem)] w-[1120px] max-w-[calc(100vw-2rem)] grid-cols-1 gap-6 overflow-y-auto rounded-2xl bg-[#faf7f0] p-6 shadow-[0_24px_64px_rgba(15,23,42,0.3)] md:grid-cols-[minmax(0,1fr)_320px]"
-            initial={{ scale: 0.96, opacity: 0 }}
-            animate={{ scale: 1, opacity: 1 }}
-            exit={{ scale: 0.96, opacity: 0 }}
-            transition={{ duration: 0.35 }}
+          <div
+            className="relative grid max-h-[calc(100vh-2rem)] w-[1120px] max-w-[calc(100vw-2rem)] grid-cols-1 gap-6 overflow-y-auto rounded-2xl bg-[#faf7f0] p-6 shadow-[0_24px_64px_rgba(15,23,42,0.3)] animate-[zhDialogPanelIn_280ms_ease-out_1] md:grid-cols-[minmax(0,1fr)_320px]"
             onClick={(e) => e.stopPropagation()}
           >
             {/* 左：笺预览 */}
@@ -363,10 +346,8 @@ export function SettleLetterDialog({
                 )}
               </div>
             </div>
-          </motion.div>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+          </div>
+        </div>
   );
 }
 

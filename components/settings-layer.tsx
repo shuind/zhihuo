@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState, type HTMLAttributes } from "react";
 
 import type { QueuedMutation } from "@/components/offline-store";
 import type {
@@ -10,10 +10,10 @@ import type {
 } from "@/components/time-archive/sync-diagnostics-types";
 import type { SyncSummary } from "@/components/time-archive/sync-status";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
+import { cn } from "@/lib/utils";
 import {
   AI_PROVIDER_OPTIONS,
   DEFAULT_AI_PROVIDER,
@@ -35,7 +35,31 @@ const TIMEZONE_OPTIONS = [
   { value: "Europe/London", label: "伦敦时间 (UTC+00:00/+01:00)" }
 ];
 
-export function SettingsLayer(props: {
+function Card({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("rounded-[var(--radius)] border bg-card text-card-foreground shadow", className)} {...props} />;
+}
+
+function CardHeader({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("flex flex-col space-y-1.5 p-6", className)} {...props} />;
+}
+
+function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) {
+  return <h3 className={cn("font-semibold leading-none tracking-[var(--tracking-body)]", className)} {...props} />;
+}
+
+function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+  return <p className={cn("text-sm text-muted-foreground", className)} {...props} />;
+}
+
+function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("p-6 pt-0", className)} {...props} />;
+}
+
+function CardFooter({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
+  return <div className={cn("flex items-center p-6 pt-0", className)} {...props} />;
+}
+
+function SettingsLayerComponent(props: {
   timezone: string;
   setTimezone: (timezone: string) => void;
   activeThinkingSpaces: Array<{ id: string; title: string }>;
@@ -1120,3 +1144,5 @@ export function SettingsLayer(props: {
     </div>
   );
 }
+
+export const SettingsLayer = memo(SettingsLayerComponent);

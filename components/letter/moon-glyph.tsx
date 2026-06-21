@@ -62,7 +62,7 @@ export function MoonGlyph({ phase, size = 14, className, lit = "currentColor", d
       </defs>
       <circle cx={cx} cy={cy} r={r} fill={lit} />
       <g clipPath={`url(#moon-clip-${phase.shape})`}>{shadow}</g>
-      <circle cx={cx} cy={cy} r={r} fill="none" stroke={strokeColor} strokeWidth="0.6" opacity="0.5" />
+      <circle cx={cx} cy={cy} r={r} fill="none" stroke={strokeColor} strokeWidth="0.7" opacity="0.65" />
     </svg>
   );
 }

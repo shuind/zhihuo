@@ -1,6 +1,5 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
 import NextImage from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState, type TouchEvent as ReactTouchEvent } from "react";
 
@@ -19,7 +18,7 @@ import {
   saveAutoSealPreferences,
   type AutoSealPreferences
 } from "@/components/time-archive/auto-seal-preferences";
-import { blobToBase64, readImageDimensions, sha256Hex, sha256HexForBlob } from "@/components/time-archive/browser-utils";
+import { blobToBase64, compressImageForUpload, readImageDimensions, sha256Hex, sha256HexForBlob } from "@/components/time-archive/browser-utils";
 import { MobileBottomTab, TopTab } from "@/components/time-archive/navigation";
 import { areOfflineMetaEqual } from "@/components/time-archive/offline-snapshot-meta";
 import {
@@ -136,8 +135,8 @@ import {
   classifyDimension,
   createId,
   createStars,
-  persistLifeStore,
-  persistThinkingStore,
+  loadLifeStore,
+  loadThinkingStore,
   pickDefaultSpaceId,
   normalizeThinkingStore,
   sanitizeTimeZone
@@ -159,7 +158,102 @@ type BindingDialogState = {
 const RESTORE_OVER_LIMIT_NOTICE = "当前已有 7 个活跃空间，请先封存或删除一个活跃空间，再恢复这段思考";
 const OFFLINE_RETRY_BASE_MS = 1200;
 const CLOUD_SYNC_CHECK_INTERVAL_MS = 30 * 1000;
+const CLOUD_SYNC_IDLE_INTERVAL_MS = 120 * 1000;
+const OFFLINE_HEALTH_PROBE_BASE_MS = 15 * 1000;
+const OFFLINE_HEALTH_PROBE_MAX_MS = 60 * 1000;
 const AUTO_SEAL_AFTER_MS = 14 * 24 * 60 * 60 * 1000;
+
+type LegacyMediaAssetWithInlineContent = Partial<ThinkingMediaAsset> & {
+  base64?: unknown;
+  contentBase64?: unknown;
+  content_base64?: unknown;
+  dataUrl?: unknown;
+  data_url?: unknown;
+  remoteUrl?: unknown;
+  remote_url?: unknown;
+  src?: unknown;
+  url?: unknown;
+};
+
+function decodeBase64ToBlob(value: string, fallbackMimeType: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const dataUrlMatch = trimmed.match(/^data:([^;,]+)?(?:;[^,]*)?;base64,(.*)$/);
+  const mimeType = dataUrlMatch?.[1]?.trim() || fallbackMimeType || "application/octet-stream";
+  const base64 = dataUrlMatch ? dataUrlMatch[2] : trimmed;
+  try {
+    const binary = window.atob(base64);
+    const chunks: BlobPart[] = [];
+    for (let offset = 0; offset < binary.length; offset += 8192) {
+      const slice = binary.slice(offset, offset + 8192);
+      const bytes = new Uint8Array(slice.length);
+      for (let index = 0; index < slice.length; index += 1) {
+        bytes[index] = slice.charCodeAt(index);
+      }
+      chunks.push(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    }
+    return new Blob(chunks, { type: mimeType });
+  } catch {
+    return null;
+  }
+}
+
+function extractLegacyMediaBlob(asset: LegacyMediaAssetWithInlineContent) {
+  const inlineValue =
+    typeof asset.contentBase64 === "string"
+      ? asset.contentBase64
+      : typeof asset.content_base64 === "string"
+        ? asset.content_base64
+        : typeof asset.base64 === "string"
+          ? asset.base64
+          : typeof asset.dataUrl === "string"
+            ? asset.dataUrl
+            : typeof asset.data_url === "string"
+              ? asset.data_url
+              : typeof asset.url === "string" && asset.url.startsWith("data:")
+                ? asset.url
+                : typeof asset.src === "string" && asset.src.startsWith("data:")
+                  ? asset.src
+                  : "";
+  if (!inlineValue.trim()) return null;
+  return decodeBase64ToBlob(inlineValue, typeof asset.mimeType === "string" ? asset.mimeType : "application/octet-stream");
+}
+
+function getLegacyRemoteUrl(asset: LegacyMediaAssetWithInlineContent) {
+  const candidates = [asset.remoteUrl, asset.remote_url, asset.url, asset.src];
+  for (const value of candidates) {
+    if (typeof value === "string" && value.trim() && !value.startsWith("data:") && !value.startsWith("blob:")) return value;
+  }
+  return null;
+}
+
+function pickLegacyString(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) return value;
+  }
+  return null;
+}
+
+function pickLegacyNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (typeof value === "number" && Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function pickLegacyIso(...values: unknown[]) {
+  const raw = pickLegacyString(...values);
+  if (!raw) return null;
+  const time = new Date(raw).getTime();
+  return Number.isFinite(time) ? new Date(time).toISOString() : null;
+}
+
+function getLegacyMediaAssets(rawThinkingStore: unknown) {
+  if (!rawThinkingStore || typeof rawThinkingStore !== "object" || Array.isArray(rawThinkingStore)) return [];
+  const raw = rawThinkingStore as { mediaAssets?: unknown; media_assets?: unknown };
+  const mediaAssets = Array.isArray(raw.mediaAssets) ? raw.mediaAssets : Array.isArray(raw.media_assets) ? raw.media_assets : [];
+  return mediaAssets.filter((item): item is LegacyMediaAssetWithInlineContent => Boolean(item && typeof item === "object"));
+}
 
 export function TimeArchive() {
   const [tab, setTab] = useState<LayerTab>("life");
@@ -227,11 +321,11 @@ export function TimeArchive() {
   const activeSpaceIdRef = useRef<string | null>(null);
   const latestRevisionRef = useRef<number | null>(null);
   const isOnlineRef = useRef(isOnline);
-  const mediaObjectUrlsRef = useRef<string[]>([]);
+  const mediaObjectUrlsRef = useRef<Map<string, string>>(new Map());
   const pullRefreshStartYRef = useRef<number | null>(null);
   const pullRefreshActiveRef = useRef(false);
   const pullRefreshTriggeredRef = useRef(false);
-  const [stars] = useState(() => createStars(36));
+  const [stars] = useState(() => createStars(28));
 
   const activeThinkingSpaceOptions = useMemo(
     () =>
@@ -241,6 +335,15 @@ export function TimeArchive() {
         .map((space) => ({ id: space.id, title: space.rootQuestionText })),
     [thinkingStore.spaces]
   );
+
+  const visibleScratchItems = useMemo(
+    () => thinkingStore.scratch.filter((item) => !item.derivedSpaceId && !item.fedTimeDoubtId),
+    [thinkingStore.scratch]
+  );
+
+  const handleThinkingReentryHandled = useCallback(() => {
+    setThinkingJumpTarget(null);
+  }, []);
 
   const showNotice = useCallback((message: string, duration = 1800) => {
     if (noticeTimerRef.current) {
@@ -252,6 +355,19 @@ export function TimeArchive() {
       setNotice("");
       noticeTimerRef.current = null;
     }, duration);
+  }, []);
+
+  useEffect(() => {
+    if (typeof document === "undefined") return;
+    const syncVisibilityClass = () => {
+      document.body.classList.toggle("is-hidden", document.visibilityState !== "visible");
+    };
+    syncVisibilityClass();
+    document.addEventListener("visibilitychange", syncVisibilityClass);
+    return () => {
+      document.removeEventListener("visibilitychange", syncVisibilityClass);
+      document.body.classList.remove("is-hidden");
+    };
   }, []);
 
   const markUnauthorizedSyncError = useCallback(() => {
@@ -370,6 +486,10 @@ export function TimeArchive() {
     offlineRuntimeState === "switching_account";
   const hasTrackedLocalChanges = offlineMeta?.syncState.hasLocalChanges === true;
   const hasUnqueuedLocalChanges = hasTrackedLocalChanges && pendingMutationCount === 0;
+  const offlineMediaPendingCount = useMemo(
+    () => offlineMediaAssets.filter((asset) => asset.status === "pending").length,
+    [offlineMediaAssets]
+  );
   const syncModeLabel = useMemo(
     () =>
       getSyncModeLabel({
@@ -487,7 +607,7 @@ export function TimeArchive() {
           pending_mutations: pendingMutationCount,
           visible_pending_changes: pendingMutationCount > 0 ? pendingMutationCount : hasTrackedLocalChanges ? 1 : 0,
           unqueued_local_changes: hasUnqueuedLocalChanges,
-          offline_media_pending: offlineMediaAssets.filter((asset) => asset.status === "pending").length,
+          offline_media_pending: offlineMediaPendingCount,
           dead_letters: deadLetterMutations.length,
           unmerged_items: serverRepairItems.map((item) => ({
             id: item.id,
@@ -539,7 +659,7 @@ export function TimeArchive() {
       latestSyncBackup,
       nextSyncRetryAt,
       offlineMeta,
-      offlineMediaAssets,
+      offlineMediaPendingCount,
       offlineRuntimeState,
       pendingMutationCount,
       deadLetterMutations.length,
@@ -547,6 +667,73 @@ export function TimeArchive() {
       syncModeLabel,
       syncPhaseLabel,
       syncPhase,
+      syncWarning
+    ]
+  );
+
+  const latestSyncBackupSummary = useMemo(
+    () =>
+      latestSyncBackup
+        ? {
+            id: latestSyncBackup.id,
+            createdAt: latestSyncBackup.createdAt,
+            reason: latestSyncBackup.reason,
+            mutationCount: latestSyncBackup.mutations.length,
+            mediaCount: latestSyncBackup.mediaAssets.length
+          }
+        : null,
+    [latestSyncBackup]
+  );
+
+  const backupPreviewSummary = useMemo(
+    () =>
+      backupPreview
+        ? {
+            id: backupPreview.backup.id,
+            createdAt: backupPreview.backup.createdAt,
+            reason: backupPreview.backup.reason,
+            mutationCount: backupPreview.backup.mutations.length,
+            mediaCount: backupPreview.backup.mediaAssets.length
+          }
+        : null,
+    [backupPreview]
+  );
+
+  const settingsSyncStatus = useMemo(
+    () => ({
+      syncSummary,
+      modeLabel: syncModeLabel,
+      phase: syncPhaseLabel,
+      localRevision: offlineMeta?.revision ?? null,
+      cloudRevision,
+      cloudServerTime,
+      lastCloudCheckedAt,
+      pendingMutationCount,
+      hasLocalChanges: hasTrackedLocalChanges,
+      hasUnqueuedLocalChanges,
+      offlineMediaPendingCount,
+      lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
+      nextRetryAt: nextSyncRetryAt,
+      warning: syncWarning,
+      latestBackup: latestSyncBackupSummary,
+      lastRepairSummary
+    }),
+    [
+      cloudRevision,
+      cloudServerTime,
+      hasTrackedLocalChanges,
+      hasUnqueuedLocalChanges,
+      lastCloudCheckedAt,
+      lastRepairSummary,
+      latestSyncBackupSummary,
+      nextSyncRetryAt,
+      offlineMediaPendingCount,
+      offlineMeta?.revision,
+      offlineMeta?.syncState.lastSyncedAt,
+      pendingMutationCount,
+      syncModeLabel,
+      syncPhaseLabel,
+      syncSummary,
       syncWarning
     ]
   );
@@ -743,20 +930,19 @@ export function TimeArchive() {
   }, [activeOwnerKey, hydrated, refreshOfflineMediaAssets]);
 
   useEffect(() => {
-    for (const url of mediaObjectUrlsRef.current) {
-      if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-    }
     const nextSources: Record<string, string> = {};
-    const nextObjectUrls: string[] = [];
+    const retainedObjectUrlIds = new Set<string>();
     const seenAssetIds = new Set<string>();
     const mediaAssets = Array.isArray(thinkingStore.mediaAssets) ? thinkingStore.mediaAssets : [];
     for (const asset of offlineMediaAssets) {
       if (asset.deletedAt) continue;
       seenAssetIds.add(asset.id);
       if (asset.blob) {
-        const url = URL.createObjectURL(asset.blob);
+        const existingUrl = mediaObjectUrlsRef.current.get(asset.id);
+        const url = existingUrl ?? URL.createObjectURL(asset.blob);
+        if (!existingUrl) mediaObjectUrlsRef.current.set(asset.id, url);
         nextSources[asset.id] = url;
-        nextObjectUrls.push(url);
+        retainedObjectUrlIds.add(asset.id);
         continue;
       }
       nextSources[asset.id] = asset.remoteUrl ?? buildApiUrl(`/v1/thinking/media/${asset.id}`);
@@ -765,14 +951,21 @@ export function TimeArchive() {
       if (asset.deletedAt || seenAssetIds.has(asset.id)) continue;
       nextSources[asset.id] = buildApiUrl(`/v1/thinking/media/${asset.id}`);
     }
-    mediaObjectUrlsRef.current = nextObjectUrls;
+    for (const [assetId, url] of mediaObjectUrlsRef.current) {
+      if (retainedObjectUrlIds.has(assetId)) continue;
+      URL.revokeObjectURL(url);
+      mediaObjectUrlsRef.current.delete(assetId);
+    }
     setMediaAssetSources(nextSources);
-    return () => {
-      for (const url of nextObjectUrls) {
-        if (url.startsWith("blob:")) URL.revokeObjectURL(url);
-      }
-    };
   }, [offlineMediaAssets, thinkingStore.mediaAssets]);
+
+  useEffect(() => {
+    const urls = mediaObjectUrlsRef.current;
+    return () => {
+      for (const url of urls.values()) URL.revokeObjectURL(url);
+      urls.clear();
+    };
+  }, []);
 
   const syncRevisionFromServer = useCallback(
     async (userId?: string | null) => {
@@ -969,6 +1162,111 @@ export function TimeArchive() {
     []
   );
 
+  const migrateLegacyLocalStorageMedia = useCallback(
+    async (ownerKey: OfflineOwnerKey, rawThinkingStore: unknown, normalizedStore: ThinkingStore) => {
+      const normalizedById = new Map(normalizedStore.mediaAssets.map((asset) => [asset.id, asset]));
+      const rawMediaAssets = getLegacyMediaAssets(rawThinkingStore);
+      if (!rawMediaAssets.length) return;
+      await Promise.all(
+        rawMediaAssets.map(async (rawAsset) => {
+          const id = pickLegacyString(rawAsset.id);
+          if (!id) return;
+          const normalized = normalizedById.get(id);
+          const blob = extractLegacyMediaBlob(rawAsset);
+          const remoteUrl = getLegacyRemoteUrl(rawAsset);
+          if (!blob && !remoteUrl) return;
+          const uploadedAt = normalized?.uploadedAt ?? pickLegacyIso(rawAsset.uploadedAt, (rawAsset as { uploaded_at?: unknown }).uploaded_at);
+          const deletedAt = normalized?.deletedAt ?? pickLegacyIso(rawAsset.deletedAt, (rawAsset as { deleted_at?: unknown }).deleted_at);
+          const createdAt =
+            normalized?.createdAt ??
+            pickLegacyIso(rawAsset.createdAt, (rawAsset as { created_at?: unknown }).created_at) ??
+            new Date().toISOString();
+          const mimeType =
+            normalized?.mimeType ??
+            pickLegacyString(rawAsset.mimeType, (rawAsset as { mime_type?: unknown }).mime_type, blob?.type) ??
+            "application/octet-stream";
+          await saveOfflineMediaAsset({
+            id,
+            ownerKey,
+            fileName:
+              normalized?.fileName ??
+              pickLegacyString(rawAsset.fileName, (rawAsset as { file_name?: unknown }).file_name) ??
+              "image",
+            mimeType,
+            byteSize:
+              normalized?.byteSize ??
+              pickLegacyNumber(rawAsset.byteSize, (rawAsset as { byte_size?: unknown }).byte_size, blob?.size) ??
+              0,
+            sha256: normalized?.sha256 ?? pickLegacyString(rawAsset.sha256) ?? "",
+            width: normalized?.width ?? pickLegacyNumber(rawAsset.width),
+            height: normalized?.height ?? pickLegacyNumber(rawAsset.height),
+            status: uploadedAt || remoteUrl ? "uploaded" : "pending",
+            blob,
+            remoteUrl,
+            createdAt,
+            updatedAt: uploadedAt ?? createdAt,
+            uploadedAt,
+            deletedAt,
+            lastError: null
+          });
+        })
+      );
+    },
+    []
+  );
+
+  const loadLegacyLocalStorageSnapshot = useCallback(
+    async (ownerKey: OfflineOwnerKey, fallbackMeta: OfflineSnapshotMeta) => {
+      if (typeof window === "undefined") return null;
+      const legacyLifeRaw = window.localStorage.getItem(LIFE_STORAGE_KEY);
+      const legacyThinkingRaw = window.localStorage.getItem(THINKING_STORAGE_KEY);
+      if (!legacyLifeRaw && !legacyThinkingRaw) return null;
+
+      const legacyLifeStore = loadLifeStore();
+      const legacyThinkingStore = loadThinkingStore();
+      if (!hasMeaningfulLocalData(legacyLifeStore, legacyThinkingStore)) {
+        window.localStorage.removeItem(LIFE_STORAGE_KEY);
+        window.localStorage.removeItem(THINKING_STORAGE_KEY);
+        return null;
+      }
+
+      let rawThinkingStore: unknown = null;
+      if (legacyThinkingRaw) {
+        try {
+          rawThinkingStore = JSON.parse(legacyThinkingRaw) as unknown;
+        } catch {
+          rawThinkingStore = null;
+        }
+      }
+
+      const savedAt = new Date().toISOString();
+      const legacySnapshot: OfflineSnapshot = {
+        lifeStore: legacyLifeStore,
+        thinkingStore: legacyThinkingStore,
+        activeSpaceId: pickDefaultSpaceId(legacyThinkingStore.spaces),
+        thinkingViews: {},
+        savedAt,
+        meta: {
+          ...fallbackMeta,
+          syncState: {
+            ...fallbackMeta.syncState,
+            hasLocalChanges: true
+          }
+        }
+      };
+
+      await saveOfflineSnapshotByOwner(ownerKey, legacySnapshot, { force: true });
+      await migrateLegacyLocalStorageMedia(ownerKey, rawThinkingStore, legacyThinkingStore);
+      const persisted = await loadOfflineSnapshotByOwner(ownerKey);
+      if (persisted) {
+        window.localStorage.removeItem(LIFE_STORAGE_KEY);
+        window.localStorage.removeItem(THINKING_STORAGE_KEY);
+      }
+      return legacySnapshot;
+    },
+    [migrateLegacyLocalStorageMedia]
+  );
+
   const loadOwnerSnapshot = useCallback(
     async (ownerKey: OfflineOwnerKey, fallbackMeta: OfflineSnapshotMeta) => {
       const snapshot = await loadOfflineSnapshotByOwner(ownerKey);
@@ -979,10 +1277,15 @@ export function TimeArchive() {
         });
         return snapshot;
       }
+      const legacySnapshot = await loadLegacyLocalStorageSnapshot(ownerKey, fallbackMeta);
+      if (legacySnapshot) {
+        applySnapshotToState(legacySnapshot);
+        return legacySnapshot;
+      }
       resetArchiveState(fallbackMeta);
       return null;
     },
-    [applySnapshotToState, resetArchiveState]
+    [applySnapshotToState, loadLegacyLocalStorageSnapshot, resetArchiveState]
   );
 
   const buildLocalExportPayload = useCallback(
@@ -1508,8 +1811,6 @@ export function TimeArchive() {
           meta: nextMeta
         };
         applySnapshotToState(nextSnapshot);
-        persistLifeStore(nextLifeStore);
-        persistThinkingStore(nextThinkingStore);
         if (targetOwnerKey) {
           await saveOfflineSnapshotByOwner(targetOwnerKey, nextSnapshot, { force: true });
         }
@@ -3079,36 +3380,80 @@ export function TimeArchive() {
   useEffect(() => {
     if (!hydrated || !authReady || !sessionUser || !currentUserOwnerKey || !isOnline) return;
     if (offlineRuntimeState !== "user_sync_ready") return;
+    let stopped = false;
+    let timer: number | null = null;
+    const hasLocalWork = pendingMutationCount > 0 || offlineMeta?.syncState.hasLocalChanges === true;
+    const clearTimer = () => {
+      if (timer === null) return;
+      window.clearTimeout(timer);
+      timer = null;
+    };
+    const schedule = (delay: number) => {
+      clearTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(run, delay);
+    };
     const run = () => {
-      void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current });
+      if (stopped || document.visibilityState !== "visible") return;
+      void runQueuedMutationSync(currentUserOwnerKey, { includeDeferred: true, preferredSpaceId: activeSpaceIdRef.current }).finally(() => {
+        schedule(hasLocalWork ? CLOUD_SYNC_CHECK_INTERVAL_MS : CLOUD_SYNC_IDLE_INTERVAL_MS);
+      });
     };
     const onVisibilityChange = () => {
-      if (document.visibilityState === "visible") run();
+      if (document.visibilityState === "visible") {
+        schedule(0);
+        return;
+      }
+      clearTimer();
     };
-    run();
-    window.addEventListener("online", run);
-    window.addEventListener("focus", run);
+    schedule(0);
+    window.addEventListener("online", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
     document.addEventListener("visibilitychange", onVisibilityChange);
-    const timer = window.setInterval(() => {
-      run();
-    }, CLOUD_SYNC_CHECK_INTERVAL_MS);
     return () => {
-      window.removeEventListener("online", run);
-      window.removeEventListener("focus", run);
+      stopped = true;
+      window.removeEventListener("online", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
       document.removeEventListener("visibilitychange", onVisibilityChange);
-      window.clearInterval(timer);
+      clearTimer();
     };
-  }, [authReady, currentUserOwnerKey, hydrated, isOnline, offlineRuntimeState, runQueuedMutationSync, sessionUser]);
+  }, [
+    authReady,
+    currentUserOwnerKey,
+    hydrated,
+    isOnline,
+    offlineMeta?.syncState.hasLocalChanges,
+    offlineRuntimeState,
+    pendingMutationCount,
+    runQueuedMutationSync,
+    sessionUser
+  ]);
 
   useEffect(() => {
     if (typeof window === "undefined" || !hydrated || isOnline) return;
+    let stopped = false;
+    let timer: number | null = null;
+    let nextDelay = OFFLINE_HEALTH_PROBE_BASE_MS;
+    const schedule = (delay: number) => {
+      if (timer !== null) window.clearTimeout(timer);
+      if (stopped) return;
+      timer = window.setTimeout(probe, delay);
+    };
     const probe = () => {
-      void apiFetch("/v1/health", { method: "GET", cache: "no-store" }).catch(() => null);
+      if (stopped) return;
+      void apiFetch("/v1/health", { method: "GET", cache: "no-store" })
+        .then(() => {
+          nextDelay = OFFLINE_HEALTH_PROBE_BASE_MS;
+        })
+        .catch(() => {
+          nextDelay = Math.min(nextDelay * 2, OFFLINE_HEALTH_PROBE_MAX_MS);
+        })
+        .finally(() => schedule(nextDelay));
     };
     probe();
-    const timer = window.setInterval(probe, 15000);
     return () => {
-      window.clearInterval(timer);
+      stopped = true;
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [hydrated, isOnline]);
 
@@ -3151,14 +3496,51 @@ export function TimeArchive() {
     }
     void refreshCloudSyncState(sessionUser.userId);
     void refreshServerRepairItems();
-    const timer = window.setInterval(() => {
-      void refreshCloudSyncState(sessionUser.userId);
-      void refreshServerRepairItems();
-    }, CLOUD_SYNC_CHECK_INTERVAL_MS);
-    return () => {
-      window.clearInterval(timer);
+    let stopped = false;
+    let timer: number | null = null;
+    const hasLocalWork = pendingMutationCount > 0 || offlineMeta?.syncState.hasLocalChanges === true;
+    const clearTimer = () => {
+      if (timer === null) return;
+      window.clearTimeout(timer);
+      timer = null;
     };
-  }, [authReady, cloudSyncReady, isOnline, refreshCloudSyncState, refreshServerRepairItems, sessionUser]);
+    const schedule = (delay: number) => {
+      clearTimer();
+      if (stopped || document.visibilityState !== "visible") return;
+      timer = window.setTimeout(run, delay);
+    };
+    const run = () => {
+      if (stopped || document.visibilityState !== "visible") return;
+      void Promise.all([refreshCloudSyncState(sessionUser.userId), refreshServerRepairItems()]).finally(() => {
+        schedule(hasLocalWork ? CLOUD_SYNC_CHECK_INTERVAL_MS : CLOUD_SYNC_IDLE_INTERVAL_MS);
+      });
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "visible") {
+        schedule(0);
+        return;
+      }
+      clearTimer();
+    };
+    schedule(CLOUD_SYNC_CHECK_INTERVAL_MS);
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("focus", onVisibilityChange);
+    return () => {
+      stopped = true;
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("focus", onVisibilityChange);
+      clearTimer();
+    };
+  }, [
+    authReady,
+    cloudSyncReady,
+    isOnline,
+    offlineMeta?.syncState.hasLocalChanges,
+    pendingMutationCount,
+    refreshCloudSyncState,
+    refreshServerRepairItems,
+    sessionUser
+  ]);
 
   useEffect(() => {
     if (!authReady || !cloudSyncReady || !sessionUser || !isOnline) return;
@@ -3190,16 +3572,6 @@ export function TimeArchive() {
     sessionUser,
     syncPhase
   ]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    persistLifeStore(lifeStore);
-  }, [hydrated, lifeStore]);
-
-  useEffect(() => {
-    if (!hydrated) return;
-    persistThinkingStore(thinkingStore);
-  }, [hydrated, thinkingStore]);
 
   useEffect(() => {
     if (!hydrated || !offlineMeta || !activeOwnerKey) return;
@@ -5149,13 +5521,14 @@ export function TimeArchive() {
       const ownerKey = activeOwnerKey;
       if (!ownerKey) return false;
 
+      const uploadFile = await compressImageForUpload(file);
       const assetId = createId();
-      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(uploadFile), sha256HexForBlob(uploadFile)]);
       const draftAsset: ThinkingMediaAsset = {
         id: assetId,
-        fileName: file.name || "image",
-        mimeType: file.type || "application/octet-stream",
-        byteSize: file.size,
+        fileName: uploadFile.name || file.name || "image",
+        mimeType: uploadFile.type || file.type || "application/octet-stream",
+        byteSize: uploadFile.size,
         sha256,
         width: dimensions.width,
         height: dimensions.height,
@@ -5175,7 +5548,7 @@ export function TimeArchive() {
         width: draftAsset.width,
         height: draftAsset.height,
         status: "pending",
-        blob: file,
+        blob: uploadFile,
         remoteUrl: null,
         createdAt: draftAsset.createdAt,
         updatedAt: new Date().toISOString(),
@@ -5704,13 +6077,14 @@ export function TimeArchive() {
       const currentView = getLocalSpaceView(spaceId);
       if (!currentView) return false;
 
+      const uploadFile = await compressImageForUpload(file);
       const assetId = createId();
-      const [dimensions, sha256] = await Promise.all([readImageDimensions(file), sha256HexForBlob(file)]);
+      const [dimensions, sha256] = await Promise.all([readImageDimensions(uploadFile), sha256HexForBlob(uploadFile)]);
       const draftAsset: ThinkingMediaAsset = {
         id: assetId,
-        fileName: file.name || "image",
-        mimeType: file.type || "application/octet-stream",
-        byteSize: file.size,
+        fileName: uploadFile.name || file.name || "image",
+        mimeType: uploadFile.type || file.type || "application/octet-stream",
+        byteSize: uploadFile.size,
         sha256,
         width: dimensions.width,
         height: dimensions.height,
@@ -5735,7 +6109,7 @@ export function TimeArchive() {
         width: draftAsset.width,
         height: draftAsset.height,
         status: "pending",
-        blob: file,
+        blob: uploadFile,
         remoteUrl: null,
         createdAt: draftAsset.createdAt,
         updatedAt: new Date().toISOString(),
@@ -6757,15 +7131,11 @@ export function TimeArchive() {
       ) : null}
 
       <main className={cn("h-full", mainFlushTop ? "pt-0" : "pt-[62px]")}>
-        <AnimatePresence mode="wait">
+        <>
           {tab === "life" ? (
-            <motion.section
+            <section
               key="life"
-              className="h-full"
-              initial={{ opacity: 0.24 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0.2 }}
-              transition={{ duration: 0.62 }}
+              className="h-full animate-[zhTabFadeIn_320ms_ease-out_1]"
             >
               <LifeLayer
                 store={lifeStore}
@@ -6781,16 +7151,12 @@ export function TimeArchive() {
                 onDeleteDoubt={deleteLifeDoubtWithDerived}
                 showNotice={showNotice}
               />
-            </motion.section>
+            </section>
           ) : null}
           {tab === "thinking" ? (
-            <motion.section
+            <section
               key="thinking"
-              className="h-full"
-              initial={{ opacity: 0.24 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0.2 }}
-              transition={{ duration: 0.52 }}
+              className="h-full animate-[zhTabFadeIn_320ms_ease-out_1]"
             >
               <ThinkingLayer
                 store={thinkingStore}
@@ -6822,7 +7188,7 @@ export function TimeArchive() {
                 onDeleteSpace={handleThinkingDeleteSpace}
                 onRenameSpace={handleThinkingRenameSpace}
                 onExportSpace={handleThinkingExport}
-                scratchItems={thinkingStore.scratch.filter((item) => !item.derivedSpaceId && !item.fedTimeDoubtId)}
+                scratchItems={visibleScratchItems}
                 onCreateScratch={handleCreateThinkingScratch}
                 onFeedScratchToTime={handleFeedThinkingScratchToTime}
                 onDeleteScratch={handleDeleteThinkingScratch}
@@ -6831,7 +7197,7 @@ export function TimeArchive() {
                 onFocusModeChange={setThinkingFocusMode}
                 onViewModeChange={setThinkingViewMode}
                 reentryTarget={thinkingJumpTarget}
-                onReentryHandled={() => setThinkingJumpTarget(null)}
+                onReentryHandled={handleThinkingReentryHandled}
                 mediaAssetSources={mediaAssetSources}
                 showThinkingDimensions={thinkingStore.showThinkingDimensions === true}
                 autoSealPrompt={autoSealPrompt}
@@ -6841,16 +7207,12 @@ export function TimeArchive() {
                 onAutoSealDisable={disableAutoSealPrompts}
                 showNotice={showNotice}
               />
-            </motion.section>
+            </section>
           ) : null}
           {tab === "settings" ? (
-            <motion.section
+            <section
               key="settings"
-              className="h-full"
-              initial={{ opacity: 0.24 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0.2 }}
-              transition={{ duration: 0.52 }}
+              className="h-full animate-[zhTabFadeIn_320ms_ease-out_1]"
             >
               <SettingsLayer
                 timezone={thinkingStore.timezone}
@@ -6872,32 +7234,7 @@ export function TimeArchive() {
                 onChangePin={handleChangePin}
                 onForgotPin={handleForgotPin}
                 onOpenAuth={openAuthDialog}
-                syncStatus={{
-                  syncSummary,
-                  modeLabel: syncModeLabel,
-                  phase: syncPhaseLabel,
-                  localRevision: offlineMeta?.revision ?? null,
-                  cloudRevision,
-                  cloudServerTime,
-                  lastCloudCheckedAt,
-                  pendingMutationCount,
-                  hasLocalChanges: hasTrackedLocalChanges,
-                  hasUnqueuedLocalChanges,
-                  offlineMediaPendingCount: offlineMediaAssets.filter((asset) => asset.status === "pending").length,
-                  lastSyncedAt: offlineMeta?.syncState.lastSyncedAt ?? null,
-                  nextRetryAt: nextSyncRetryAt,
-                  warning: syncWarning,
-                  latestBackup: latestSyncBackup
-                    ? {
-                        id: latestSyncBackup.id,
-                        createdAt: latestSyncBackup.createdAt,
-                        reason: latestSyncBackup.reason,
-                        mutationCount: latestSyncBackup.mutations.length,
-                        mediaCount: latestSyncBackup.mediaAssets.length
-                      }
-                    : null,
-                  lastRepairSummary
-                }}
+                syncStatus={settingsSyncStatus}
                 syncDiagnosticsReport={syncDiagnosticsReport}
                 syncRepairing={
                   syncPhase === "repairing" ||
@@ -6917,17 +7254,7 @@ export function TimeArchive() {
                 onDismissDeadLetter={dismissDeadLetterMutation}
                 unmergedItems={serverRepairItems}
                 onIgnoreUnmergedItem={ignoreServerRepairItem}
-                backupPreview={
-                  backupPreview
-                    ? {
-                        id: backupPreview.backup.id,
-                        createdAt: backupPreview.backup.createdAt,
-                        reason: backupPreview.backup.reason,
-                        mutationCount: backupPreview.backup.mutations.length,
-                        mediaCount: backupPreview.backup.mediaAssets.length
-                      }
-                    : null
-                }
+                backupPreview={backupPreviewSummary}
                 setFixedTopSpacesEnabled={(enabled) =>
                   setThinkingStore((prev) => {
                     const activeSpaces = [...prev.spaces].filter((space) => space.status === "active").sort(sortSpacesByLatestActivity);
@@ -6954,9 +7281,9 @@ export function TimeArchive() {
                 onLogout={logout}
                 showNotice={showNotice}
               />
-            </motion.section>
+            </section>
           ) : null}
-        </AnimatePresence>
+        </>
       </main>
 
       {showMobileMainBottomNav ? (

@@ -3,6 +3,7 @@
 import {
   useCallback,
   useEffect,
+  memo,
   useMemo,
   useRef,
   useState,
@@ -14,6 +15,7 @@ import { createPortal } from "react-dom";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { onSubmitEnter, shouldSubmitOnEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
 
 import {
@@ -149,7 +151,7 @@ function buildNodeCopyText(node: ThinkingTrackNodeView, answerDraft?: string) {
     .join("\n\n");
 }
 
-export function ThinkingLayer(props: {
+function ThinkingLayerComponent(props: {
   store: ThinkingStore;
   setStore: Dispatch<SetStateAction<ThinkingStore>>;
   timezone: string;
@@ -455,6 +457,10 @@ export function ThinkingLayer(props: {
   const mediaAssetSources = useMemo(() => props.mediaAssetSources ?? {}, [props.mediaAssetSources]);
   const selectedBackgroundSrc =
     activeSpaceView?.backgroundSelectedAssetId ? mediaAssetSources[activeSpaceView.backgroundSelectedAssetId] ?? null : null;
+  const activeSpaceIdProp = props.activeSpaceId;
+  const onReentryHandled = props.onReentryHandled;
+  const onViewModeChange = props.onViewModeChange;
+  const reentryTarget = props.reentryTarget;
   const activeSpaceGallery = useMemo(
     () =>
       (activeSpaceView?.backgroundAssetIds ?? []).map((assetId: string) => ({
@@ -504,31 +510,32 @@ export function ThinkingLayer(props: {
   }, [props.activeSpaceId]);
 
   useEffect(() => {
-    if (!props.activeSpaceId) {
+    if (!activeSpaceIdProp) {
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
+      onViewModeChange?.("spaces");
       return;
     }
-    if (thinkingViewMode === "detail" && detailSpaceId !== props.activeSpaceId) {
-      setDetailSpaceId(props.activeSpaceId);
+    if (thinkingViewMode === "detail" && detailSpaceId !== activeSpaceIdProp) {
+      setDetailSpaceId(activeSpaceIdProp);
     }
-  }, [detailSpaceId, props.activeSpaceId, thinkingViewMode]);
+  }, [activeSpaceIdProp, detailSpaceId, onViewModeChange, thinkingViewMode]);
 
   useEffect(() => {
-    const target = props.reentryTarget;
-    if (!target) return;
-    const targetExists = spaces.some((space) => space.id === target.spaceId);
+    if (!reentryTarget) return;
+    const targetExists = spaces.some((space) => space.id === reentryTarget.spaceId);
     if (!targetExists) {
-      props.onReentryHandled();
+      onReentryHandled();
       return;
     }
     setThinkingViewMode("detail");
-    setDetailSpaceId(target.spaceId);
-  }, [props, spaces]);
+    setDetailSpaceId(reentryTarget.spaceId);
+    onViewModeChange?.("detail");
+  }, [onReentryHandled, onViewModeChange, reentryTarget, spaces]);
 
   useEffect(() => {
-    props.onViewModeChange?.(detailOpen ? "detail" : "spaces");
-  }, [detailOpen, props]);
+    onViewModeChange?.(detailOpen ? "detail" : "spaces");
+  }, [detailOpen, onViewModeChange]);
 
   useEffect(() => {
     if (!spaceFinderOpen) return;
@@ -705,6 +712,7 @@ export function ThinkingLayer(props: {
       props.setActiveSpaceId(spaceId);
       setDetailSpaceId(spaceId);
       setThinkingViewMode("detail");
+      props.onViewModeChange?.("detail");
       setSpaceFinderOpen(false);
       setSpaceFinderQuery("");
     },
@@ -714,11 +722,12 @@ export function ThinkingLayer(props: {
   const backToSpaces = useCallback(() => {
     setThinkingViewMode("spaces");
     setDetailSpaceId(null);
+    props.onViewModeChange?.("spaces");
     setMoreOpen(false);
     setSpaceFinderOpen(false);
     setSpaceFinderQuery("");
     setFocusMenuNodeId(null);
-  }, []);
+  }, [props]);
 
   const centerNodeInTrack = useCallback((nodeId: string, behavior: ScrollBehavior = "auto") => {
     const container = trackScrollRef.current;
@@ -945,8 +954,9 @@ export function ThinkingLayer(props: {
         props.setActiveSpaceId(result.spaceId);
         setDetailSpaceId(result.spaceId);
         setThinkingViewMode("detail");
-      setSpaceFinderOpen(false);
-      setSpaceFinderQuery("");
+        props.onViewModeChange?.("detail");
+        setSpaceFinderOpen(false);
+        setSpaceFinderQuery("");
         if (result.createdAsStatement && result.questionSuggestion) {
           props.showNotice(`也可以这样继续追问：${result.questionSuggestion}`);
         }
@@ -987,6 +997,7 @@ export function ThinkingLayer(props: {
       props.setActiveSpaceId(result.spaceId);
       setDetailSpaceId(result.spaceId);
       setThinkingViewMode("detail");
+      props.onViewModeChange?.("detail");
       setSpaceFinderOpen(false);
       setSpaceFinderQuery("");
     },
@@ -1169,6 +1180,7 @@ export function ThinkingLayer(props: {
       setMoreOpen(false);
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
+      props.onViewModeChange?.("spaces");
       props.showNotice("已封存");
     }
     setWriteToTimeSealed(false);
@@ -1197,6 +1209,7 @@ export function ThinkingLayer(props: {
       setMoreOpen(false);
       setThinkingViewMode("spaces");
       setDetailSpaceId(null);
+      props.onViewModeChange?.("spaces");
       props.showNotice("空间已删除");
     })();
   }, [activeSpace, props]);
@@ -2034,7 +2047,7 @@ export function ThinkingLayer(props: {
                                         onChange={(event) => setEditingQuestionDraft(event.target.value)}
                                         onBlur={() => void saveNodeQuestion(node, editingQuestionDraft)}
                                         onKeyDown={(event) => {
-                                          if (event.key === "Enter" && !event.shiftKey) {
+                                          if (shouldSubmitOnEnter(event)) {
                                             event.preventDefault();
                                             void saveNodeQuestion(node, editingQuestionDraft);
                                           }
@@ -2104,7 +2117,7 @@ export function ThinkingLayer(props: {
                                       }
                                       onBlur={() => void persistNodeAnswer(node, draftValue)}
                                       onKeyDown={(event) => {
-                                        if (event.key === "Enter" && !event.shiftKey) {
+                                        if (shouldSubmitOnEnter(event)) {
                                           event.preventDefault();
                                           void persistNodeAnswer(node, draftValue);
                                         }
@@ -2213,7 +2226,7 @@ export function ThinkingLayer(props: {
                       className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/80 disabled:text-slate-500 focus-visible:ring-0"
                       onChange={(event) => setQuestionInput(event.target.value)}
                       onKeyDown={(event) => {
-                        if (event.key !== "Enter" || event.shiftKey) return;
+                        if (!shouldSubmitOnEnter(event)) return;
                         event.preventDefault();
                         if (!composerCanSubmit) {
                           setInputHint("先写下一点现在冒出来的东西");
@@ -2287,11 +2300,7 @@ export function ThinkingLayer(props: {
                     className="min-h-[2.45rem] max-h-[160px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/85 focus-visible:ring-0"
                     placeholder="随手记下一句…"
                     onChange={(event) => setScratchInput(event.target.value)}
-                    onKeyDown={(event) => {
-                      if (event.key !== "Enter" || event.shiftKey) return;
-                      event.preventDefault();
-                      void createScratch();
-                    }}
+                    onKeyDown={onSubmitEnter(createScratch)}
                   />
                   <button
                     type="button"
@@ -2359,12 +2368,7 @@ export function ThinkingLayer(props: {
                 disabled={!writeEnabled}
                 className="min-h-[2.55rem] max-h-[120px] rounded-2xl border border-black/12 bg-white px-4 py-2 text-sm leading-[1.65] text-slate-900 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
                 onChange={(event) => setNewSpaceInput(event.target.value)}
-                onKeyDown={(event) => {
-                  if (event.key === "Enter" && !event.shiftKey) {
-                    event.preventDefault();
-                    createSpace();
-                  }
-                }}
+                onKeyDown={onSubmitEnter(createSpace)}
               />
               <Button
                 type="button"
@@ -2402,8 +2406,9 @@ export function ThinkingLayer(props: {
                           props.setActiveSpaceId(result.spaceId);
                           setDetailSpaceId(result.spaceId);
                           setThinkingViewMode("detail");
-      setSpaceFinderOpen(false);
-      setSpaceFinderQuery("");
+                          props.onViewModeChange?.("detail");
+                          setSpaceFinderOpen(false);
+                          setSpaceFinderQuery("");
                           if (result.createdAsStatement && result.questionSuggestion) {
                             props.showNotice(`也可以这样继续追问：${result.questionSuggestion}`);
                           }
@@ -2802,3 +2807,5 @@ export function ThinkingLayer(props: {
     </div>
   );
 }
+
+export const ThinkingLayer = memo(ThinkingLayerComponent);

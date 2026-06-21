@@ -4,9 +4,12 @@ import { join } from "node:path";
 
 const isWindows = process.platform === "win32";
 const pnpm = isWindows ? "pnpm.cmd" : "pnpm";
+const appDir = join(process.cwd(), "app");
 const apiRoutesDir = join(process.cwd(), "app", "v1");
 const tempRoot = join(process.cwd(), ".mobile-build");
 const tempApiRoutesDir = join(tempRoot, "v1");
+const tempAppRoutesDir = join(tempRoot, "app-routes");
+const excludedMobileAppRoutes = ["apk", "ops-monitor"];
 
 function run(command, args, options = {}) {
   console.log(`[mobile] ${command} ${args.join(" ")}`);
@@ -31,6 +34,15 @@ try {
     cpSync(apiRoutesDir, tempApiRoutesDir, { recursive: true });
     rmSync(apiRoutesDir, { recursive: true, force: true });
   }
+  for (const route of excludedMobileAppRoutes) {
+    const sourceDir = join(appDir, route);
+    if (!existsSync(sourceDir)) continue;
+    const tempDir = join(tempAppRoutesDir, route);
+    mkdirSync(tempAppRoutesDir, { recursive: true });
+    rmSync(tempDir, { recursive: true, force: true });
+    cpSync(sourceDir, tempDir, { recursive: true });
+    rmSync(sourceDir, { recursive: true, force: true });
+  }
 
   run(pnpm, ["exec", "next", "build"], {
     env: {
@@ -42,6 +54,13 @@ try {
   if (!existsSync(apiRoutesDir) && existsSync(tempApiRoutesDir)) {
     cpSync(tempApiRoutesDir, apiRoutesDir, { recursive: true });
     rmSync(tempApiRoutesDir, { recursive: true, force: true });
+  }
+  for (const route of excludedMobileAppRoutes) {
+    const sourceDir = join(appDir, route);
+    const tempDir = join(tempAppRoutesDir, route);
+    if (existsSync(sourceDir) || !existsSync(tempDir)) continue;
+    cpSync(tempDir, sourceDir, { recursive: true });
+    rmSync(tempDir, { recursive: true, force: true });
   }
 }
 

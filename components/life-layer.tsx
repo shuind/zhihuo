@@ -1,7 +1,6 @@
 "use client";
 
-import { AnimatePresence, motion } from "framer-motion";
-import { useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type Dispatch, type MutableRefObject, type SetStateAction } from "react";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
@@ -20,10 +19,12 @@ import {
   getDateKeyInTimeZone
 } from "@/components/zhihuo-model";
 import { LetterPaper, type PaperVariant } from "@/components/letter/letter-paper";
+import { exportLetterPng } from "@/components/letter/export-letter-png";
 import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/solar-terms";
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "@/components/letter/letter-exporter-dialog";
 import { loadLetterSealText, loadLetterVariant } from "@/lib/letter-variant-store";
+import { onSubmitEnter } from "@/lib/input-events";
 
 type DateGroup = {
   key: string;
@@ -31,11 +32,10 @@ type DateGroup = {
   items: LifeDoubt[];
 };
 
-const EASE_GENTLE: [number, number, number, number] = [0.2, 0.72, 0.22, 1];
 const REFLECTION_CONTINUE_WINDOW_MS = 10 * 60 * 1000;
 const FIRST_DOUBT_EXAMPLE = "为什么我总在真正开始前犹豫？";
 
-export function LifeLayer(props: {
+function LifeLayerComponent(props: {
   store: LifeStore;
   setStore: Dispatch<SetStateAction<LifeStore>>;
   timezone: string;
@@ -211,7 +211,7 @@ export function LifeLayer(props: {
     ritualTimerRef.current = window.setTimeout(() => {
       setRitualVisible(false);
       ritualTimerRef.current = null;
-    }, 1400);
+    }, 900);
   }, [dismissFirstDoubtGuide, inputValue, props]);
 
   const handleSelect = useCallback(
@@ -259,22 +259,24 @@ export function LifeLayer(props: {
       </div>
 
       <div className="relative z-10 flex h-full min-h-0">
-        <motion.div
+        <div
           className="flex min-h-0 flex-1 flex-col"
-          animate={{ width: !isMobile && selectedDoubt ? "60%" : "100%" }}
-          transition={{ duration: 0.64, ease: EASE_GENTLE }}
+          style={{
+            width: !isMobile && selectedDoubt ? "60%" : "100%",
+            transition: "width 340ms cubic-bezier(0.2, 0.72, 0.22, 1)"
+          }}
         >
           <header className="sticky top-0 z-10 overflow-hidden" data-life-hero="true">
             <div aria-hidden="true" className="pointer-events-none absolute inset-x-0 top-0 h-[17.5rem] life-hero-glow" />
             <div className="mx-auto w-full max-w-2xl px-8 lg:px-12">
-              <div className="flex items-end justify-between pb-8 pt-16">
+              <div className="flex items-end justify-between pb-6 pt-10 md:pt-12">
                 <div className="space-y-2">
                   <h1
-                    className="time-serif text-[1.35rem] font-normal tracking-[0.1em] text-[var(--life-title-amber)] [text-shadow:0_1px_0_rgba(246,239,226,0.02)]"
+                    className="time-serif text-[var(--text-title)] font-normal tracking-[var(--tracking-meta)] text-[var(--life-title-amber)] [text-shadow:0_1px_0_rgba(246,239,226,0.02)]"
                   >
                     {"\u65F6\u95F4\u6863\u6848\u9986"}
                   </h1>
-                  <p className="text-[13px] tracking-[0.08em] text-[var(--life-title-amber-soft)]">
+                  <p className="text-[var(--text-meta)] tracking-[var(--tracking-meta)] text-[var(--life-title-amber-soft)]">
                     {allDoubts.length}
                     {" \u7F15\u601D\u7EEA\u5728\u6B64\u6C89\u6DC0"}
                   </p>
@@ -286,8 +288,8 @@ export function LifeLayer(props: {
                 </div>
               </div>
 
-              <div className="pb-10" data-life-input-mode={showSearchInput ? "search" : "compose"}>
-                <div className="time-input-shell relative max-w-[46rem] transition-all duration-700">
+              <div className="pb-6 md:pb-8" data-life-input-mode={showSearchInput ? "search" : "compose"}>
+                <div className="time-input-shell relative max-w-[46rem] transition-all duration-300">
                   {!showSearchInput ? (
                     <div className="relative">
                       <Textarea
@@ -301,7 +303,7 @@ export function LifeLayer(props: {
                         maxAutoHeight={220}
                         disabled={props.editable === false}
                         className={cn(
-                          "min-h-[2.6rem] max-h-[220px] w-full border-0 bg-transparent px-0 py-0 text-[0.95rem] font-light leading-[1.95] tracking-[0.03em] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-500 focus-visible:ring-0",
+                          "min-h-[2.6rem] max-h-[220px] w-full border-0 bg-transparent px-0 py-0 text-[var(--text-body)] font-light leading-[1.95] tracking-[var(--tracking-body)] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-300 focus-visible:ring-0",
                           fieldFocused
                             ? "placeholder:text-[rgba(150,145,138,0.52)] hover:placeholder:text-[rgba(150,145,138,0.52)]"
                             : "placeholder:text-[rgba(124,129,132,0.4)] hover:placeholder:text-[rgba(124,129,132,0.4)]"
@@ -309,16 +311,12 @@ export function LifeLayer(props: {
                         onChange={(event) => setInputValue(event.target.value)}
                         onFocus={() => setFieldFocused(true)}
                         onBlur={() => setFieldFocused(false)}
-                        onKeyDown={(event) => {
-                          if (event.key !== "Enter" || event.shiftKey) return;
-                          event.preventDefault();
-                          void saveDoubt();
-                        }}
+                        onKeyDown={onSubmitEnter(saveDoubt)}
                       />
-                      <div className="mt-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.14em] text-[var(--time-text-soft)]">
-                        <p className={cn("transition-opacity duration-700", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
+                      <div className="mt-3 flex items-center justify-between gap-4 text-[var(--text-caption)] tracking-[var(--tracking-display)] text-[var(--time-text-soft)]">
+                        <p className={cn("transition-opacity duration-500", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
                         <div className="flex items-center gap-3">
-                          <span className={cn("transition-opacity duration-700", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
+                          <span className={cn("transition-opacity duration-500", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
                           <Button
                             type="button"
                             variant="ghost"
@@ -331,13 +329,9 @@ export function LifeLayer(props: {
                         </div>
                       </div>
                       {showFirstDoubtGuide ? (
-                        <motion.div
+                        <div
                           data-first-doubt-guide="true"
-                          className="mt-5 rounded-2xl border border-white/[0.055] bg-white/[0.025] px-4 py-4 text-[var(--time-text)] shadow-[0_18px_48px_rgba(0,0,0,0.16)] backdrop-blur"
-                          initial={{ opacity: 0, y: 8 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: 8 }}
-                          transition={{ duration: 0.42, ease: EASE_GENTLE }}
+                          className="mt-5 rounded-2xl border border-white/[0.055] bg-white/[0.025] px-4 py-4 text-[var(--time-text)] shadow-[0_18px_48px_rgba(0,0,0,0.16)] backdrop-blur animate-[zhDialogPanelIn_280ms_ease-out_1]"
                         >
                           <div className="flex flex-wrap items-start justify-between gap-3">
                             <div className="min-w-0 flex-1 space-y-2">
@@ -360,7 +354,7 @@ export function LifeLayer(props: {
                               知道了
                             </button>
                           </div>
-                        </motion.div>
+                        </div>
                       ) : null}
                     </div>
                   ) : (
@@ -419,10 +413,9 @@ export function LifeLayer(props: {
               )}
             </div>
           </main>
-        </motion.div>
+        </div>
 
-        <AnimatePresence initial={false}>
-          {!isMobile && selectedDoubt ? (
+        {!isMobile && selectedDoubt ? (
             <DetailPanel
               key="detail-panel"
               doubt={selectedDoubt}
@@ -434,11 +427,9 @@ export function LifeLayer(props: {
               onSaveNote={(value, options) => void saveLifeNote(selectedDoubt.id, value, options)}
             />
           ) : null}
-        </AnimatePresence>
       </div>
 
-      <AnimatePresence>
-        {isMobile && selectedDoubt && mobileDetailOpen ? (
+      {isMobile && selectedDoubt && mobileDetailOpen ? (
           <MobileDetailDrawer
             key="mobile-detail-drawer"
             doubt={selectedDoubt}
@@ -451,10 +442,8 @@ export function LifeLayer(props: {
             onSaveNote={(value, options) => void saveLifeNote(selectedDoubt.id, value, options)}
           />
         ) : null}
-      </AnimatePresence>
 
-      <AnimatePresence>
-        {deleteId ? (
+      {deleteId ? (
           <ConfirmDialog
             title={"\u6C38\u4E45\u5220\u9664\uFF1F"}
             description={"\u5220\u9664\u540E\u4E0D\u53EF\u6062\u590D\uFF0C\u76F8\u5173\u6D3E\u751F\u5185\u5BB9\u4E5F\u4F1A\u4E00\u5E76\u6E05\u7406\u3002"}
@@ -470,9 +459,8 @@ export function LifeLayer(props: {
             }}
           />
         ) : null}
-      </AnimatePresence>
 
-      <AnimatePresence>{!props.ready ? <LifeOpeningOverlay phase={props.openingPhase} stars={props.stars} /> : null}</AnimatePresence>
+      {!props.ready ? <LifeOpeningOverlay phase={props.openingPhase} stars={props.stars} /> : null}
     </div>
   );
 }
@@ -541,21 +529,19 @@ function TimeEntryCard(props: {
   const driftOffset = props.mode === "home-desktop" ? 0 : driftOffsets[props.itemIndex % driftOffsets.length];
 
   return (
-    <motion.article
-      layout
+    <article
       className="group life-river-item relative"
       data-life-mode={props.mode}
       data-life-adjacent={props.isAdjacent ? "true" : "false"}
       data-life-selected={props.isSelected ? "true" : "false"}
       style={{ marginLeft: `${driftOffset}px` }}
     >
-      <motion.div
-        className="absolute left-[2px] top-1/2 h-0 w-px -translate-y-1/2 rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(196,203,206,0.2),rgba(255,255,255,0))]"
-        animate={{
+      <div
+        className="absolute left-[2px] top-1/2 w-px -translate-y-1/2 rounded-full bg-[linear-gradient(180deg,rgba(255,255,255,0),rgba(196,203,206,0.2),rgba(255,255,255,0))] transition-[height,opacity] duration-300 ease-out"
+        style={{
           height: props.isSelected ? (props.mode === "home-desktop" ? "42%" : "34%") : props.isAdjacent ? "14%" : "0%",
           opacity: props.isSelected ? (props.mode === "home-desktop" ? 0.3 : 0.17) : props.isAdjacent ? 0.07 : 0,
         }}
-        transition={{ duration: 0.64, ease: EASE_GENTLE }}
       />
 
       <button
@@ -564,7 +550,7 @@ function TimeEntryCard(props: {
         }}
         type="button"
         className={cn(
-          "life-pearl-card -mx-2 w-full rounded-[1.25rem] px-3 py-5 text-left transition-all duration-700 cursor-default",
+          "life-pearl-card -mx-2 w-full rounded-[1.25rem] px-3 py-5 text-left transition-all duration-300 cursor-default",
           props.isAdjacent && "is-adjacent",
           props.isSelected && "is-selected"
         )}
@@ -580,7 +566,7 @@ function TimeEntryCard(props: {
           <div className="min-w-0 flex-1">
             <p
               className={cn(
-                "text-[var(--time-text)] text-[1.02rem] font-light leading-[1.92] tracking-[0.015em] transition-colors duration-700",
+                "text-[var(--time-text)] text-[var(--text-body)] font-light leading-[1.92] tracking-[var(--tracking-body)] transition-colors duration-300",
                 props.mode === "home-desktop" && "text-[rgba(168,174,176,0.7)]",
                 props.mode === "home-desktop" && "group-hover:text-[rgba(202,208,210,0.9)]",
                 props.mode === "split" && !props.isSelected && "text-[rgba(162,168,172,0.74)]",
@@ -600,13 +586,13 @@ function TimeEntryCard(props: {
             ) : null}
 
             <div className="mt-3 flex items-center gap-4 text-[12px] tracking-[0.04em] text-[var(--time-text-soft)]">
-              <time className="life-time-meta transition-colors duration-700">{formatRelativeTime(props.doubt.createdAt)}</time>
+              <time className="life-time-meta transition-colors duration-300">{formatRelativeTime(props.doubt.createdAt)}</time>
               {props.noteText ? <span>{"\u6709\u56DE\u770B"}</span> : null}
             </div>
           </div>
         </div>
       </button>
-    </motion.article>
+    </article>
   );
 }
 
@@ -620,16 +606,12 @@ function DetailPanel(props: {
   onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
 }) {
   return (
-    <motion.aside
-      className="time-detail-shell relative z-40 hidden h-full min-h-0 w-[40%] min-w-[560px] max-w-[760px] flex-col overflow-hidden lg:flex"
+    <aside
+      className="time-detail-shell relative z-40 hidden h-full min-h-0 w-[40%] min-w-[560px] max-w-[760px] flex-col overflow-hidden animate-[zhTabFadeIn_320ms_ease-out_1] lg:flex"
       data-life-detail="desktop"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.56, ease: EASE_GENTLE }}
     >
       <DetailBody {...props} />
-    </motion.aside>
+    </aside>
   );
 }
 
@@ -644,27 +626,19 @@ function MobileDetailDrawer(props: {
   onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
 }) {
   return (
-    <motion.section
-      className="absolute inset-0 z-40 bg-black/40 lg:hidden"
+    <section
+      className="absolute inset-0 z-40 bg-black/40 animate-[zhDialogFadeIn_220ms_ease-out_1] lg:hidden"
       data-life-detail="mobile"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.52, ease: EASE_GENTLE }}
       onClick={props.onClose}
     >
-      <motion.div
-        className="time-sheet absolute bottom-0 left-0 right-0 flex h-[82vh] max-h-[82vh] flex-col overflow-hidden rounded-t-[2rem] border border-b-0 border-white/8 pb-6 shadow-[0_-24px_80px_rgba(0,0,0,0.44)]"
-        initial={{ y: "100%" }}
-        animate={{ y: 0 }}
-        exit={{ y: "100%" }}
-        transition={{ duration: 0.62, ease: EASE_GENTLE }}
+      <div
+        className="time-sheet absolute bottom-0 left-0 right-0 flex h-[82vh] max-h-[82vh] flex-col overflow-hidden rounded-t-[2rem] border border-b-0 border-white/8 pb-6 shadow-[0_-24px_80px_rgba(0,0,0,0.44)] animate-[zhSheetIn_320ms_ease-out_1]"
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mx-auto mt-3 h-1.5 w-16 rounded-full bg-white/10" />
         <DetailBody {...props} compact />
-      </motion.div>
-    </motion.section>
+      </div>
+    </section>
   );
 }
 
@@ -756,16 +730,7 @@ function DetailBody(props: {
 
   const handleSaveLetter = useCallback(async () => {
     if (!letterPaperRef.current) return;
-    const { toPng } = await import("html-to-image");
-    const dataUrl = await toPng(letterPaperRef.current, {
-      pixelRatio: 3,
-      cacheBust: true,
-      backgroundColor: "transparent"
-    });
-    const a = document.createElement("a");
-    a.href = dataUrl;
-    a.download = `zhihuo-jian-${writtenAt.getTime()}.png`;
-    a.click();
+    await exportLetterPng(letterPaperRef.current, `zhihuo-jian-${writtenAt.getTime()}.png`);
   }, [writtenAt]);
 
   const commitNote = useCallback(() => {
@@ -817,20 +782,15 @@ function DetailBody(props: {
               {"\u68C0\u7D22"}
             </button>
           ) : null}
-          <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-700 hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
+          <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-300 hover:text-[var(--time-text-strong)]" onClick={props.onClose}>
             {"\u5173\u95ED"}
           </button>
         </div>
       </div>
 
-      <AnimatePresence mode="wait" initial={false}>
-        <motion.div
+      <div
           key={props.doubt.id}
-          className={cn("time-detail-scroll min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-4", props.compact && "px-6 pb-6 pt-3 md:px-8")}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.48, ease: EASE_GENTLE }}
+          className={cn("time-detail-scroll min-h-0 flex-1 overflow-y-auto px-8 pb-8 pt-4 animate-[zhTabFadeIn_320ms_ease-out_1]", props.compact && "px-6 pb-6 pt-3 md:px-8")}
         >
           <div className="space-y-8 pb-4">
             <section className="space-y-5">
@@ -896,14 +856,9 @@ function DetailBody(props: {
                       <span>{`回望过 ${reflectionCount} 次`}</span>
                       <span>{reflectionHistoryOpen ? "收起回声" : "展开回声"}</span>
                     </button>
-                    <AnimatePresence initial={false}>
-                      {reflectionHistoryOpen ? (
-                        <motion.div
-                          className="mt-4 space-y-4 border-l border-white/[0.045] pl-4"
-                          initial={{ opacity: 0, y: -4 }}
-                          animate={{ opacity: 1, y: 0 }}
-                          exit={{ opacity: 0, y: -4 }}
-                          transition={{ duration: 0.28, ease: EASE_GENTLE }}
+                    {reflectionHistoryOpen ? (
+                        <div
+                          className="mt-4 space-y-4 border-l border-white/[0.045] pl-4 animate-[zhDialogPanelIn_240ms_ease-out_1]"
                         >
                           {reflectionNotes.map((note, index) => (
                             <div key={note.id} className="relative">
@@ -915,37 +870,30 @@ function DetailBody(props: {
                               <p className="mt-1.5 text-[13px] leading-[1.78] text-[rgba(176,184,190,0.68)]">{note.noteText}</p>
                             </div>
                           ))}
-                        </motion.div>
+                        </div>
                       ) : null}
-                    </AnimatePresence>
                   </div>
                 ) : null}
               </div>
             </section>
 
           </div>
-        </motion.div>
-      </AnimatePresence>
+        </div>
 
       <div className={cn("border-t border-white/[0.025] px-8 py-5", props.compact && "px-6 md:px-8")}>
         <div className="flex items-center justify-center gap-8">
-          <button type="button" className="text-sm tracking-[0.08em] text-[rgba(192,199,204,0.72)] transition-colors duration-700 hover:text-[rgba(220,226,229,0.9)]" onClick={handlePrimaryAction}>
+          <button type="button" className="text-sm tracking-[var(--tracking-meta)] text-[rgba(192,199,204,0.72)] transition-colors duration-300 hover:text-[rgba(220,226,229,0.9)]" onClick={handlePrimaryAction}>
             {"\u5E26\u5165\u601D\u8003"}
           </button>
-          <button type="button" className="text-sm tracking-[0.08em] text-[rgba(140,148,153,0.48)] transition-colors duration-700 hover:text-[rgba(174,182,187,0.7)]" onClick={props.onDelete}>
+          <button type="button" className="text-sm tracking-[var(--tracking-meta)] text-[rgba(140,148,153,0.48)] transition-colors duration-300 hover:text-[rgba(174,182,187,0.7)]" onClick={props.onDelete}>
             {"\u5220\u9664"}
           </button>
         </div>
       </div>
 
-      <AnimatePresence initial={false}>
-        {letterPreviewOpen && hasSettledLetter ? (
-          <motion.div
-            className="absolute inset-0 z-50 flex min-h-0 flex-col bg-[rgba(5,7,10,0.985)]"
-            initial={{ opacity: 0, y: 10 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: 10 }}
-            transition={{ duration: 0.44, ease: EASE_GENTLE }}
+      {letterPreviewOpen && hasSettledLetter ? (
+          <div
+            className="absolute inset-0 z-50 flex min-h-0 flex-col bg-[rgba(5,7,10,0.985)] animate-[zhDialogPanelIn_280ms_ease-out_1]"
           >
             <div className={cn("flex items-center justify-between px-8 pb-5 pt-[5.75rem]", props.compact && "px-6 pb-4 pt-5 md:px-8")}>
               <div className="space-y-1">
@@ -956,7 +904,7 @@ function DetailBody(props: {
                 <button type="button" className="text-[11px] tracking-[0.1em] text-[var(--time-text-soft)] transition-colors duration-500 hover:text-[var(--time-text)]" onClick={handleSaveLetter}>
                   {"\u4FDD\u5B58"}
                 </button>
-                <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-700 hover:text-[var(--time-text-strong)]" onClick={() => setLetterPreviewOpen(false)}>
+                <button type="button" className="-m-2 p-2 text-[var(--time-text)]/78 transition-colors duration-300 hover:text-[var(--time-text-strong)]" onClick={() => setLetterPreviewOpen(false)}>
                   收起
                 </button>
               </div>
@@ -989,21 +937,18 @@ function DetailBody(props: {
                 </div>
               </div>
             </div>
-          </motion.div>
+          </div>
         ) : null}
-      </AnimatePresence>
     </div>
   );
 }
 
+export const LifeLayer = memo(LifeLayerComponent);
+
 function ConfirmDialog(props: { title: string; description: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {
   return (
-    <motion.section
-      className="absolute inset-0 z-40 grid place-items-center bg-black/56 p-4"
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.44, ease: EASE_GENTLE }}
+    <section
+      className="absolute inset-0 z-40 grid place-items-center bg-black/56 p-4 animate-[zhDialogFadeIn_220ms_ease-out_1]"
     >
       <div className="w-full max-w-md rounded-[1.8rem] border border-white/[0.08] bg-[rgba(8,10,12,0.94)] px-6 py-6 shadow-[0_24px_64px_rgba(0,0,0,0.22)]">
         <div className="space-y-3">
@@ -1019,26 +964,23 @@ function ConfirmDialog(props: { title: string; description: string; confirmLabel
           </Button>
         </div>
       </div>
-    </motion.section>
+    </section>
   );
 }
 
 function LifeOpeningOverlay(props: { phase: OpeningPhase; stars: StarDot[] }) {
   const { phase } = props;
   return (
-    <motion.div
+    <div
       className="absolute inset-0 z-20 bg-[radial-gradient(120%_100%_at_50%_24%,rgba(84,103,109,0.22),rgba(2,2,3,1)_64%)]"
-      initial={{ opacity: 1 }}
-      animate={{ opacity: phase === "ready" ? 0 : 1 }}
-      exit={{ opacity: 0 }}
-      transition={{ duration: 0.6, ease: EASE_GENTLE }}
+      style={{ opacity: phase === "ready" ? 0 : 1, transition: "opacity 500ms ease" }}
     >
       <div className="absolute inset-0 grid place-items-center">
-        <p className={cn("time-serif text-lg tracking-[0.28em] text-white/74 transition-opacity duration-700", phase === "text" ? "opacity-100" : "opacity-0")}>
+        <p className={cn("time-serif text-lg tracking-[0.16em] text-white/74 transition-opacity duration-500", phase === "text" ? "opacity-100" : "opacity-0")}>
           {"\u65F6\u95F4\u6B63\u5728\u663E\u5F71"}
         </p>
       </div>
-    </motion.div>
+    </div>
   );
 }
 

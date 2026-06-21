@@ -27,6 +27,7 @@ yarn-error.log*
 /tmp-*.log
 /.tmp
 /data
+/runtime-data
 
 # typescript
 *.tsbuildinfo
