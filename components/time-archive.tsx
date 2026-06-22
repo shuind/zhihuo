@@ -41,7 +41,6 @@ import {
   type SyncSummary,
   type SyncPhase
 } from "@/components/time-archive/sync-status";
-import { SyncStatusPill } from "@/components/time-archive/sync-status-pill";
 import {
   mapApiLifeDoubt,
   mapApiLifeNote,
@@ -7107,7 +7106,6 @@ export function TimeArchive() {
       >
         {isLifeTab ? (
           <div className="mx-auto flex w-full max-w-[1680px] items-center justify-end gap-2">
-            <SyncStatusPill summary={syncSummary} surface="dark" onClick={() => setTab("settings")} />
             <nav className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-white/[0.05] bg-black/25 px-1.5 py-1 backdrop-blur">
               <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle />
               <TopTab label="想一想" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle />
@@ -7118,7 +7116,6 @@ export function TimeArchive() {
           <div className="mx-auto flex w-full max-w-7xl items-center justify-between">
             <div className={cn("inline-flex items-center gap-2 text-sm tracking-[0.24em]", isThinkingTab || isSettingsTab ? "text-slate-700" : "text-slate-300/80")}><NextImage src="/zhihuo_logo_icon.svg" alt="Zhihuo logo" width={16} height={16} className="h-4 w-4 rounded-sm object-contain opacity-90" /><span>知惑 Zhihuo</span></div>
             <nav className="pointer-events-auto flex items-center gap-2">
-              <SyncStatusPill summary={syncSummary} surface={isThinkingTab || isSettingsTab ? "light" : "dark"} onClick={() => setTab("settings")} />
               <div className={cn("items-center gap-2", isThinkingTab || isSettingsTab ? "hidden md:flex" : "flex")}>
                 <TopTab label="时间" active={isLifeTab} onClick={() => setTab("life")} daytime={false} subtle={false} />
                 <TopTab label="想一想" active={isThinkingTab} onClick={() => setTab("thinking")} daytime subtle={false} />
