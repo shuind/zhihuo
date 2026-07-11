@@ -4,74 +4,9 @@ import NextImage from "next/image";
 import { useCallback, useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button";
-import { verifyPin } from "@/components/offline-store";
 import { apiFetch } from "@/lib/api-client";
 import { onSubmitEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
-export function PinGate(props: { lockedUntil: number; onVerified: () => void }) {
-  const [pin, setPin] = useState("");
-  const [submitting, setSubmitting] = useState(false);
-  const [error, setError] = useState("");
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    if (props.lockedUntil <= Date.now()) return;
-    const timer = window.setInterval(() => setTick((value) => value + 1), 1000);
-    return () => window.clearInterval(timer);
-  }, [props.lockedUntil]);
-
-  void tick;
-
-  const lockedSeconds = Math.max(0, Math.ceil((props.lockedUntil - Date.now()) / 1000));
-
-  const submit = useCallback(() => {
-    if (submitting) return;
-    setSubmitting(true);
-    setError("");
-    void (async () => {
-      try {
-        const result = await verifyPin(pin);
-        if (!result.ok) {
-          setError(result.error ?? "PIN 校验失败");
-          return;
-        }
-        setPin("");
-        props.onVerified();
-      } finally {
-        setSubmitting(false);
-      }
-    })();
-  }, [pin, props, submitting]);
-
-  return (
-    <div className="grid h-screen place-items-center bg-slate-950 px-4">
-      <div className="w-full max-w-sm rounded-2xl border border-slate-300/15 bg-slate-900/70 p-6 shadow-[0_20px_60px_rgba(0,0,0,0.45)]">
-        <p className="text-sm tracking-[0.22em] text-slate-300/85">本地锁屏</p>
-        <p className="mt-2 text-xs text-slate-400/75">请输入 PIN 以解锁离线内容。</p>
-        <input
-          type="password"
-          inputMode="numeric"
-          value={pin}
-          onChange={(event) => setPin(event.target.value.replace(/\D+/g, "").slice(0, 12))}
-          placeholder="PIN"
-          className="mt-4 h-10 w-full rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
-          onKeyDown={onSubmitEnter(submit)}
-          disabled={lockedSeconds > 0}
-        />
-        <Button
-          type="button"
-          disabled={submitting || lockedSeconds > 0}
-          className="mt-4 w-full rounded-full border border-slate-300/30 bg-slate-900/70 text-slate-100 hover:bg-slate-800/90"
-          onClick={submit}
-        >
-          {lockedSeconds > 0 ? `请等待 ${lockedSeconds}s` : submitting ? "解锁中..." : "解锁"}
-        </Button>
-        <p className={cn("mt-3 min-h-[1.2em] text-xs text-red-300/85", error ? "opacity-100" : "opacity-0")}>{error}</p>
-      </div>
-    </div>
-  );
-}
-
 export function AuthDialog(props: { onClose: () => void; onAuthed: () => void }) {
   return (
     <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">

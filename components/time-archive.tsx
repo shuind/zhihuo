@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 
 import { LifeLayer } from "@/components/life-layer";
 import { SettingsLayer } from "@/components/settings-layer";
-import { AuthDialog, BindingDialog, PinGate } from "@/components/time-archive/auth";
+import { AuthDialog, BindingDialog } from "@/components/time-archive/auth";
 import { useAuthGate, type SessionUser } from "@/components/time-archive/use-auth-gate";
 import {
   AUTO_SEAL_SNOOZE_MS,
@@ -87,7 +87,6 @@ import {
   clearOfflineOwnerState,
   clearOfflineMutationsByOwner,
   clearOfflineSnapshotByOwner,
-  clearOfflineState,
   createOfflineSyncBackup,
   createOfflineSnapshotMeta,
   enqueueOfflineMutation,
@@ -380,17 +379,8 @@ export function TimeArchive() {
     setSessionUser,
     cloudSessionEnabled,
     setCloudSessionEnabled,
-    pinReady,
-    pinEnabled,
-    pinLockedUntil,
-    pinUnlocked,
     authDialogOpen,
     handleUnauthorized,
-    handlePinVerified,
-    handleEnablePin,
-    handleDisablePin,
-    handleChangePin,
-    resetPinAfterForgot,
     openAuthDialog,
     closeAuthDialog
   } = useAuthGate({
@@ -3203,12 +3193,12 @@ export function TimeArchive() {
   );
 
   useEffect(() => {
-    if (!runtimeReady || !pinReady || (pinEnabled && !pinUnlocked) || !cloudSessionEnabled) return;
+    if (!runtimeReady || !cloudSessionEnabled) return;
     void syncAuth();
-  }, [cloudSessionEnabled, pinEnabled, pinReady, pinUnlocked, runtimeReady, syncAuth]);
+  }, [cloudSessionEnabled, runtimeReady, syncAuth]);
 
   useEffect(() => {
-    if (hydrated || !runtimeReady || !pinReady || (pinEnabled && !pinUnlocked)) return;
+    if (hydrated || !runtimeReady) return;
     let cancelled = false;
     void (async () => {
       const localProfileId = getOrCreateLocalProfileId();
@@ -3248,7 +3238,7 @@ export function TimeArchive() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, loadOwnerSnapshot, pinEnabled, pinReady, pinUnlocked, resetArchiveState, runtimeReady, setSessionUser]);
+  }, [hydrated, loadOwnerSnapshot, resetArchiveState, runtimeReady, setSessionUser]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -6549,7 +6539,7 @@ export function TimeArchive() {
   );
 
   useEffect(() => {
-    if (!hydrated || !pinReady || (pinEnabled && !pinUnlocked)) return;
+    if (!hydrated) return;
     const nowMs = Date.now();
     if (editingLocked || autoSealPreferences.disabled) {
       setAutoSealPrompt(null);
@@ -6588,9 +6578,6 @@ export function TimeArchive() {
     autoSealPreferences,
     editingLocked,
     hydrated,
-    pinEnabled,
-    pinReady,
-    pinUnlocked,
     thinkingStore,
     thinkingStore.fixedTopSpaceIds,
     thinkingStore.fixedTopSpacesEnabled,
@@ -6885,21 +6872,6 @@ export function TimeArchive() {
     showNotice("本地缓存已清理");
   }, [activeOwnerKey, cloudSyncEnabled, isOnline, sessionUser, showNotice, updateOfflineMeta]);
 
-  const handleForgotPin = useCallback(async () => {
-    await clearOfflineState();
-    clearLastUserMarker();
-    resetPinAfterForgot();
-    setOfflineSnapshotExists(false);
-    setSessionUser(null);
-    setThinkingView(null);
-    setActiveSpaceId(null);
-    const localProfileId = localProfileIdRef.current || getOrCreateLocalProfileId();
-    setActiveOwnerKey(getGuestOwnerKey(localProfileId));
-    setOfflineRuntimeState("guest_ready");
-    setOfflineMeta(createOfflineSnapshotMeta(localProfileId));
-    setDeadLetterMutations([]);
-  }, [resetPinAfterForgot, setSessionUser]);
-
   const dismissDeadLetterMutation = useCallback(
     async (mutationId: string) => {
       await removeOfflineMutation(mutationId);
@@ -7020,18 +6992,6 @@ export function TimeArchive() {
       }
     })();
   }, [refreshCurrentAccountFromCloud, resetPullRefreshLater, showNotice]);
-
-  if (!pinReady) {
-    return (
-      <div className="grid h-screen place-items-center bg-slate-950 text-slate-200">
-        <p className="text-sm tracking-[0.12em] text-slate-300/80">加载中...</p>
-      </div>
-    );
-  }
-
-  if (pinEnabled && !pinUnlocked) {
-    return <PinGate lockedUntil={pinLockedUntil} onVerified={handlePinVerified} />;
-  }
 
   if (
     !hydrated ||
@@ -7224,12 +7184,6 @@ export function TimeArchive() {
                 sessionEmail={sessionUser?.email ?? null}
                 cloudSyncEnabled={cloudSyncEnabled}
                 cloudSyncReady={cloudSyncReady}
-                pinEnabled={pinEnabled}
-                pinLockedUntil={pinLockedUntil}
-                onEnablePin={handleEnablePin}
-                onDisablePin={handleDisablePin}
-                onChangePin={handleChangePin}
-                onForgotPin={handleForgotPin}
                 onOpenAuth={openAuthDialog}
                 syncStatus={settingsSyncStatus}
                 syncDiagnosticsReport={syncDiagnosticsReport}
