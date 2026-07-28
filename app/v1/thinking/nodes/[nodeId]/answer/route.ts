@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { runPgTransaction, updateDbScoped } from "@/lib/server/db";
+import { runUserPgTransaction, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateNodeAnswer } from "@/lib/server/store";
@@ -18,7 +18,7 @@ export const POST = withApiRoute(
     const normalizedAnswer = typeof body?.answer_text === "string" ? body.answer_text.trim() || null : null;
     const responseUpdatedAt = clientUpdatedAt ?? nowIso();
 
-    const pgResult = await runPgTransaction("thinking.nodes.answer.sql", async (client) => {
+    const pgResult = await runUserPgTransaction(userId, "thinking.nodes.answer.sql", async (client) => {
       const hasAnswerColumn = await client.query<{ exists: number }>(
         `SELECT 1 as exists
          FROM information_schema.columns
@@ -72,7 +72,7 @@ export const POST = withApiRoute(
     let found = false;
     let readonly = false;
     let answerText: string | null = null;
-    await updateDbScoped(["thinking_spaces", "thinking_nodes"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_nodes"], (db) => {
       const result = updateNodeAnswer(db, userId, params.nodeId, normalizedAnswer);
       if (result.kind === "not_found") return;
       found = true;

@@ -27,11 +27,24 @@ async function tryApiLogin(page) {
 }
 
 function hasMojibake(text) {
+  // 编码丢失后留下的成串问号占位，以及 UTF-8 被按 GBK 解码后的其他常见首字
+  if (/\?{3,}/.test(text)) return true;
+  if (/锟|鍏堟|鏂版|鎬濊|绌洪|閿欒|鎿嶄/.test(text)) return true;
   return /�|锛|銆\?|鏄|鍚庢|閭|璇疯|缂哄|杞ㄩ/.test(text);
 }
 
 async function assertNoMojibake(page, scope) {
-  const text = await page.locator("body").innerText();
+  // placeholder / title / aria-label 不进 innerText，历史上乱码正是从这里漏出去的
+  const text = await page.evaluate(() => {
+    const parts = [document.body.innerText];
+    for (const element of document.querySelectorAll("*")) {
+      for (const attr of ["placeholder", "title", "aria-label", "alt"]) {
+        const value = element.getAttribute(attr);
+        if (value) parts.push(value);
+      }
+    }
+    return parts.join("\n");
+  });
   assert(!hasMojibake(text), `${scope} 出现疑似乱码`);
 }
 

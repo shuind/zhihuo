@@ -1,10 +1,11 @@
 "use client";
 
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { LetterPaper, VARIANT_META, type PaperVariant } from "./letter-paper";
 import { exportLetterPng } from "./export-letter-png";
 import { poetize } from "@/lib/letter-poetize";
 import { describeSolarTerm, getMoonPhase } from "@/lib/solar-terms";
+import { loadLetterAuthorName } from "@/lib/letter-settings";
 import { cn } from "@/lib/utils";
 
 const SAMPLE = {
@@ -25,10 +26,14 @@ export function LetterStudio() {
   const [doubt, setDoubt] = useState(SAMPLE.doubt);
   const [nodes, setNodes] = useState(SAMPLE.nodes);
   const [closing, setClosing] = useState(SAMPLE.closing);
-  const [author, setAuthor] = useState("shuind");
+  const [author, setAuthor] = useState("");
   const [ornamentSealText, setOrnamentSealText] = useState("知");
   const [exporting, setExporting] = useState(false);
   const paperRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setAuthor(loadLetterAuthorName());
+  }, []);
 
   const now = useMemo(() => new Date(), []);
   const dateLabel = `${now.getFullYear()} / ${now.getMonth() + 1} / ${now.getDate()}`;

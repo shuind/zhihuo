@@ -1,8 +1,10 @@
 import { createServer } from "node:http";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
 
 const baseUrl = (process.env.TEST_BASE_URL || "http://127.0.0.1:3000").replace(/\/$/, "");
 const password = "StrongPass123!";
-const email = `zhihuo-e2e-${Date.now()}@example.com`;
+const email = process.env.TEST_API_EMAIL || "zhihuo-api-ci-admin@example.com";
 
 const ciMode = process.env.CI === "true";
 const baseHost = new URL(baseUrl).hostname;
@@ -37,8 +39,8 @@ function cookieHeader() {
   return [...jar.entries()].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
-async function request(method, path, body) {
-  const headers = {};
+async function request(method, path, body, extraHeaders = {}) {
+  const headers = { ...extraHeaders };
   if (body !== undefined) headers["content-type"] = "application/json";
   const cookie = cookieHeader();
   if (cookie) headers.cookie = cookie;
@@ -106,7 +108,7 @@ async function withMockChatCompletion(handler, callback) {
     calls.push(call);
 
     const result = await handler(call);
-    response.writeHead(result.status ?? 200, { "content-type": "application/json" });
+    response.writeHead(result.status ?? 200, { "content-type": "application/json", ...(result.headers ?? {}) });
     response.end(JSON.stringify(result.body ?? {}));
   });
 
@@ -141,6 +143,40 @@ async function run() {
 
   const monitorUnauthorized = await request("GET", "/v1/system/monitor");
   assert(monitorUnauthorized.status === 401, `monitor should require auth, got ${monitorUnauthorized.status}`);
+
+  const letterUnauthorized = await request("POST", "/v1/letter/condense", {
+    doubt: "匿名请求不应使用服务端 AI",
+    nodes: ["未登录"]
+  });
+  assert(letterUnauthorized.status === 401, `letter should require auth, got ${letterUnauthorized.status}`);
+
+  const sendCode = await request("POST", "/v1/auth/register/send-code", { email });
+  assert(sendCode.status === 200, `send register code failed: ${sendCode.status}`);
+  const code = sendCode.json?.debug_code;
+  assert(typeof code === "string" && /^\d{6}$/.test(code), "send register code should return 6-digit debug_code in CI");
+
+  const register = await request("POST", "/v1/auth/register", { email, password, code });
+  assert(register.status === 200, `register failed: ${register.status}`);
+
+  const me = await request("GET", "/v1/auth/me");
+  assert(me.status === 200, `me failed: ${me.status}`);
+  assert(typeof me.json?.user_id === "string", "me missing user_id");
+
+  const rejectedOrigin = await request(
+    "POST",
+    "/v1/doubts",
+    { raw_text: "cross site write", layer: "life" },
+    { origin: "https://evil.example", "sec-fetch-site": "cross-site" }
+  );
+  assert(rejectedOrigin.status === 403, `cross-site write should be rejected, got ${rejectedOrigin.status}`);
+
+  const unsafeAiEndpoint = await request("POST", "/v1/letter/condense", {
+    doubt: "不能请求内网",
+    nodes: ["阻止 SSRF"],
+    allowRemoteProcessing: true,
+    ai: { provider: "openai-compatible", apiKey: "mock-key", baseUrl: "https://127.0.0.1", model: "mock" }
+  });
+  assert(unsafeAiEndpoint.status === 400, `private AI endpoint should be rejected, got ${unsafeAiEndpoint.status}`);
 
   const letterFallback = await request("POST", "/v1/letter/condense", {
     doubt: "我要不要把这个计划先封存下来",
@@ -183,6 +219,7 @@ async function run() {
       const letterAi = await request("POST", "/v1/letter/condense", {
         doubt: "我要不要把这个计划先封存下来",
         nodes: ["已经想清楚第一步", "还保留一点犹豫"],
+        allowRemoteProcessing: true,
         ai: {
           provider: "deepseek",
           apiKey: "mock-key",
@@ -200,6 +237,28 @@ async function run() {
 
   await withMockChatCompletion(
     async () => ({
+      status: 307,
+      headers: { location: "https://127.0.0.1/internal" }
+    }),
+    async (mockBaseUrl, calls) => {
+      const redirectedAi = await request("POST", "/v1/letter/condense", {
+        doubt: "重定向不能把密钥带进内网",
+        nodes: ["逐次检查 AI 地址"],
+        allowRemoteProcessing: true,
+        ai: {
+          provider: "deepseek",
+          apiKey: "mock-key",
+          baseUrl: mockBaseUrl,
+          model: "mock-letter-model"
+        }
+      });
+      assert(redirectedAi.status === 400, `unsafe AI redirect should fail with 400, got ${redirectedAi.status}`);
+      assert(calls.length === 1, "unsafe AI redirect should stop before the second request");
+    }
+  );
+
+  await withMockChatCompletion(
+    async () => ({
       body: {
         choices: [{ message: { content: "not json" } }]
       }
@@ -208,6 +267,7 @@ async function run() {
       const invalidAi = await request("POST", "/v1/letter/condense", {
         doubt: "这次输出如果坏了怎么办",
         nodes: ["不能影响封存"],
+        allowRemoteProcessing: true,
         ai: {
           provider: "deepseek",
           apiKey: "mock-key",
@@ -220,18 +280,6 @@ async function run() {
       assert(Array.isArray(invalidAi.json?.lines) && invalidAi.json.lines.length > 0, "invalid AI fallback should keep lines");
     }
   );
-
-  const sendCode = await request("POST", "/v1/auth/register/send-code", { email });
-  assert(sendCode.status === 200, `send register code failed: ${sendCode.status}`);
-  const code = sendCode.json?.debug_code;
-  assert(typeof code === "string" && /^\d{6}$/.test(code), "send register code should return 6-digit debug_code in CI");
-
-  const register = await request("POST", "/v1/auth/register", { email, password, code });
-  assert(register.status === 200, `register failed: ${register.status}`);
-
-  const me = await request("GET", "/v1/auth/me");
-  assert(me.status === 200, `me failed: ${me.status}`);
-  assert(typeof me.json?.user_id === "string", "me missing user_id");
 
   const syncState = await request("GET", "/v1/sync/state");
   assert(syncState.status === 200, `sync state failed: ${syncState.status}`);
@@ -367,13 +415,26 @@ async function run() {
 
   const imageAssetId = `asset-${Date.now()}`;
   const uploadFormData = new FormData();
-  uploadFormData.append("file", new Blob(["fake-image-bytes"], { type: "image/png" }), "bg.png");
+  const onePixelPng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII=",
+    "base64"
+  );
+  uploadFormData.append("file", new Blob([onePixelPng], { type: "image/png" }), "bg.png");
   uploadFormData.append("asset_id", imageAssetId);
   uploadFormData.append("file_name", "bg.png");
   uploadFormData.append("mime_type", "image/png");
   const uploadBackgroundAsset = await requestFormData("POST", "/v1/thinking/media/upload", uploadFormData);
   assert(uploadBackgroundAsset.status === 200, `background media upload failed: ${uploadBackgroundAsset.status}`);
   assert(uploadBackgroundAsset.json?.asset_id === imageAssetId, "background media upload should round-trip asset_id");
+  assert(uploadBackgroundAsset.json?.width === 1 && uploadBackgroundAsset.json?.height === 1, "media dimensions should be detected server-side");
+  const mediaUserDirectory = join(process.cwd(), "data", "thinking-media", me.json.user_id);
+  const uploadedMediaPath = join(mediaUserDirectory, imageAssetId);
+  assert(existsSync(uploadedMediaPath), "uploaded media should exist on disk");
+
+  const invalidImageForm = new FormData();
+  invalidImageForm.append("file", new Blob(["not-an-image"], { type: "image/png" }), "fake.png");
+  const invalidImage = await requestFormData("POST", "/v1/thinking/media/upload", invalidImageForm);
+  assert(invalidImage.status === 415, `invalid image should fail with 415, got ${invalidImage.status}`);
 
   const persistBackgroundAsset = await request("POST", `/v1/thinking/spaces/${spaceId}/background`, {
     background_asset_ids: [imageAssetId],
@@ -654,12 +715,52 @@ async function run() {
   assert(validate.status === 200, `import validate failed: ${validate.status}`);
   assert(validate.json?.ok === true, "import validate should be ok");
 
+  const exportedThinking = fullExport.json?.payload?.thinking;
+  assert(Array.isArray(exportedThinking?.scratch), "full export should include thinking scratch");
+  assert(Array.isArray(exportedThinking?.node_links), "full export should include thinking node links");
+
+  const importRoundTrip = await request("POST", "/v1/system/import", {
+    payload: fullExport.json?.payload,
+    checksum: fullExport.json?.checksum,
+    mode: "replace"
+  });
+  assert(importRoundTrip.status === 200, `export -> import round trip failed: ${importRoundTrip.status}`);
+
+  const exportAfterRoundTrip = await request("GET", "/v1/system/export");
+  assert(exportAfterRoundTrip.status === 200, `post-import export failed: ${exportAfterRoundTrip.status}`);
+  const roundTrippedThinking = exportAfterRoundTrip.json?.payload?.thinking;
+  const stableRows = (rows, idKey = "id") =>
+    [...(Array.isArray(rows) ? rows : [])].sort((a, b) => String(a?.[idKey] ?? "").localeCompare(String(b?.[idKey] ?? "")));
+  assert(
+    JSON.stringify(stableRows(roundTrippedThinking?.scratch)) === JSON.stringify(stableRows(exportedThinking?.scratch)),
+    "export -> import should preserve scratch rows"
+  );
+  assert(
+    JSON.stringify(stableRows(roundTrippedThinking?.node_links)) === JSON.stringify(stableRows(exportedThinking?.node_links)),
+    "export -> import should preserve node links"
+  );
+  const metaTrustFields = (rows) =>
+    stableRows(rows, "space_id").map((item) => ({
+      space_id: item.space_id,
+      milestone_node_ids: item.milestone_node_ids ?? [],
+      track_direction_hints: item.track_direction_hints ?? {},
+      star_map_scene_signature: item.star_map_scene_signature ?? null,
+      star_map_curated_scene: item.star_map_curated_scene ?? null,
+      star_map_star_placements: item.star_map_star_placements ?? {}
+    }));
+  assert(
+    JSON.stringify(metaTrustFields(roundTrippedThinking?.space_meta)) ===
+      JSON.stringify(metaTrustFields(exportedThinking?.space_meta)),
+    "export -> import should preserve milestone, direction hint, and star-map metadata"
+  );
+
   const deleteAll = await request("POST", "/v1/system/delete-all", {
     confirm_text: "DELETE ALL",
     reason: "api regression cleanup"
   });
   assert(deleteAll.status === 200, `delete all failed: ${deleteAll.status}`);
   assert(deleteAll.json?.ok === true, "delete all should be ok");
+  assert(!existsSync(mediaUserDirectory), "delete all should physically remove the user's media directory");
 
   const meAfterDelete = await request("GET", "/v1/auth/me");
   assert(meAfterDelete.status === 401, `me should be unauthorized after delete-all, got ${meAfterDelete.status}`);

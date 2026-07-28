@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb } from "@/lib/server/db";
+import { readUserDb } from "@/lib/server/db";
 import { getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { getUserLastSequence, getUserRevision, listUserSyncRepairItems } from "@/lib/server/store";
@@ -8,7 +8,7 @@ import { getUserLastSequence, getUserRevision, listUserSyncRepairItems } from "@
 export const GET = withApiRoute("sync.state.get", async (request: NextRequest) => {
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
-  const db = await readDb();
+  const db = await readUserDb(userId, ["user_sync_state", "sync_repair_items"]);
   const serverTime = new Date().toISOString();
   const repairCount = listUserSyncRepairItems(db, userId).length;
   return okJson({

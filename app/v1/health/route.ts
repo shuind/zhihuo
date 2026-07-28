@@ -1,13 +1,13 @@
 import { NextRequest } from "next/server";
 
 import { getAuthSecretStatus } from "@/lib/server/auth";
-import { readDb } from "@/lib/server/db";
+import { pingDb } from "@/lib/server/db";
 import { errorJson, okJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 
 export const GET = withApiRoute("system.health", async (_request: NextRequest) => {
   try {
-    await readDb();
+    await pingDb();
     const auth = getAuthSecretStatus();
     return okJson({
       ok: true,

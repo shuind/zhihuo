@@ -68,7 +68,11 @@ export function applyNodeMutation(
         repairItem: createRepair(db, userId, item, "target_track_required", "node")
       };
     }
-    const moved = moveNode(db, userId, nodeId, targetTrackId);
+    const targetOrderIndex =
+      typeof payload.target_order_index === "number" && Number.isFinite(payload.target_order_index)
+        ? payload.target_order_index
+        : undefined;
+    const moved = moveNode(db, userId, nodeId, targetTrackId, targetOrderIndex);
     if (!moved) {
       return {
         kind: "repair",

@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { moveNode } from "@/lib/server/store";
@@ -12,6 +12,7 @@ export const POST = withApiRoute(
     const body = await parseJsonBody<{
       target_track_id?: string;
       target_parent_id?: string;
+      target_order_index?: number;
       client_mutation_id?: string;
       client_updated_at?: string;
     }>(request);
@@ -26,8 +27,14 @@ export const POST = withApiRoute(
     let found = false;
     let readonly = false;
     let node: unknown = null;
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
-      const result = moveNode(db, userId, params.nodeId, targetTrackId);
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
+      const result = moveNode(
+        db,
+        userId,
+        params.nodeId,
+        targetTrackId,
+        typeof body?.target_order_index === "number" ? body.target_order_index : undefined
+      );
       if (!result) return;
       found = true;
       readonly = result.readonly;

@@ -1,5 +1,5 @@
 import type { ThinkingTrackView } from "@/components/thinking-layer"
-import { loadAiApiSettings } from "@/lib/ai-settings"
+import { loadAiApiSettings, loadAiRemoteProcessingConsent } from "@/lib/ai-settings"
 import type { Scene } from "../stage/scene-types"
 
 export interface CurateInput {
@@ -26,6 +26,9 @@ export async function curateScene(input: CurateInput): Promise<CurateResult> {
   )
 
   if (!thoughts.length) return { ok: false, error: "empty" }
+  if (!loadAiRemoteProcessingConsent()) {
+    return { ok: false, error: "请先在设置中允许按次使用第三方 AI" }
+  }
 
   try {
     const ai = loadAiApiSettings()
@@ -36,6 +39,7 @@ export async function curateScene(input: CurateInput): Promise<CurateResult> {
         rootQuestion: input.rootQuestionText,
         thoughts,
         ai,
+        allowRemoteProcessing: true,
       }),
     })
 

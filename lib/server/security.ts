@@ -16,6 +16,7 @@ type UserExportData = {
     spaces: DbState["thinking_spaces"];
     nodes: DbState["thinking_nodes"];
     inbox: DbState["thinking_inbox"];
+    scratch: DbState["thinking_scratch"];
     space_meta: DbState["thinking_space_meta"];
     node_links: DbState["thinking_node_links"];
     media_assets: Array<{
@@ -30,7 +31,8 @@ type UserExportData = {
       created_at: string;
       uploaded_at: string | null;
       deleted_at: string | null;
-      content_base64: string;
+      content_base64: string | null;
+      missing_content?: boolean;
     }>;
   };
   audit: DbState["audit_logs"];
@@ -64,10 +66,15 @@ function formatFriendlyDateTime(value: string | null | undefined) {
   return `${y}.${m}.${d} ${hh}:${mm}`;
 }
 
-export async function buildUserExport(db: DbState, userId: string, userEmail: string): Promise<{ payload: UserExportData; checksum: string }> {
+export async function buildUserExport(
+  db: DbState,
+  userId: string,
+  userEmail: string
+): Promise<{ payload: UserExportData; checksum: string; warnings: string[] }> {
   const spaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
   const doubtIds = new Set(db.doubts.filter((doubt) => doubt.user_id === userId).map((doubt) => doubt.id));
   const mediaAssets = db.thinking_media_assets.filter((asset) => asset.user_id === userId && !asset.deleted_at);
+  const warnings: string[] = [];
 
   const payload: UserExportData = {
     version: "2026-03-03",
@@ -82,30 +89,43 @@ export async function buildUserExport(db: DbState, userId: string, userEmail: st
       spaces: db.thinking_spaces.filter((space) => space.user_id === userId),
       nodes: db.thinking_nodes.filter((node) => spaceIds.has(node.space_id)),
       inbox: db.thinking_inbox.filter((item) => spaceIds.has(item.space_id)),
+      scratch: db.thinking_scratch.filter((item) => item.user_id === userId),
       space_meta: db.thinking_space_meta.filter((meta) => spaceIds.has(meta.space_id)),
       node_links: db.thinking_node_links.filter((link) => spaceIds.has(link.space_id)),
       media_assets: await Promise.all(
-        mediaAssets.map(async (asset) => ({
-          id: asset.id,
-          user_id: asset.user_id,
-          file_name: asset.file_name,
-          mime_type: asset.mime_type,
-          byte_size: asset.byte_size,
-          sha256: asset.sha256,
-          width: asset.width,
-          height: asset.height,
-          created_at: asset.created_at,
-          uploaded_at: asset.uploaded_at,
-          deleted_at: asset.deleted_at,
-          content_base64: (await readThinkingMediaAssetFile(userId, asset.id)).toString("base64")
-        }))
+        mediaAssets.map(async (asset) => {
+          let contentBase64: string | null = null;
+          let missingContent = false;
+          try {
+            contentBase64 = (await readThinkingMediaAssetFile(userId, asset.id)).toString("base64");
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException)?.code !== "ENOENT") throw error;
+            missingContent = true;
+            warnings.push(`media_missing:${asset.id}`);
+          }
+          return {
+            id: asset.id,
+            user_id: asset.user_id,
+            file_name: asset.file_name,
+            mime_type: asset.mime_type,
+            byte_size: asset.byte_size,
+            sha256: asset.sha256,
+            width: asset.width,
+            height: asset.height,
+            created_at: asset.created_at,
+            uploaded_at: asset.uploaded_at,
+            deleted_at: asset.deleted_at,
+            content_base64: contentBase64,
+            ...(missingContent ? { missing_content: true } : {})
+          };
+        })
       )
     },
     audit: db.audit_logs.filter((item) => item.user_id === userId)
   };
 
   const checksum = sha256Hex(stableStringify(payload));
-  return { payload, checksum };
+  return { payload, checksum, warnings };
 }
 
 export function verifyUserExportIntegrity(payload: unknown, checksum: unknown) {

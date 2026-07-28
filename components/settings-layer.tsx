@@ -1,6 +1,6 @@
 ﻿"use client";
 
-import { memo, useEffect, useMemo, useState, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type ButtonHTMLAttributes, type HTMLAttributes, type ReactNode } from "react";
 
 import type { QueuedMutation } from "@/components/offline-store";
 import type {
@@ -13,21 +13,29 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 import { copyText } from "@/components/zhihuo-model";
+import { onSubmitEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
 import {
   AI_PROVIDER_OPTIONS,
   DEFAULT_AI_PROVIDER,
   DEFAULT_DEEPSEEK_BASE_URL,
   DEFAULT_DEEPSEEK_MODEL,
-  DEFAULT_OPENAI_COMPATIBLE_MODEL,
   clearAiApiSettings,
   getAiProviderDefaults,
   loadAiApiSettings,
+  loadAiRemoteProcessingConsent,
   saveAiApiSettings,
+  saveAiRemoteProcessingConsent,
   type AiProvider
 } from "@/lib/ai-settings";
+import {
+  MAX_LETTER_AUTHOR_LENGTH,
+  loadLetterAuthorName,
+  normalizeLetterAuthorName,
+  saveLetterAuthorName
+} from "@/lib/letter-settings";
 
-const TIMEZONE_OPTIONS = [
+const FEATURED_TIMEZONE_OPTIONS = [
   { value: "Asia/Shanghai", label: "中国标准时间 (UTC+08:00)" },
   { value: "Asia/Tokyo", label: "日本标准时间 (UTC+09:00)" },
   { value: "America/Los_Angeles", label: "太平洋时间 (UTC-08:00/-07:00)" },
@@ -54,8 +62,8 @@ function CardTitle({ className, ...props }: HTMLAttributes<HTMLHeadingElement>) 
   return <h3 className={cn("font-semibold leading-none tracking-[var(--tracking-body)]", className)} {...props} />;
 }
 
-function CardDescription(_props: HTMLAttributes<HTMLParagraphElement>) {
-  return null;
+function CardDescription({ className, ...props }: HTMLAttributes<HTMLParagraphElement>) {
+  return <p className={cn("text-[var(--text-meta)] leading-6 text-slate-600", className)} {...props} />;
 }
 
 function CardContent({ className, ...props }: HTMLAttributes<HTMLDivElement>) {
@@ -83,13 +91,14 @@ function SectionBlock(props: { id: string; title: string; description: string; c
   return (
     <section id={props.id} className="scroll-mt-28 lg:scroll-mt-5" aria-labelledby={`${props.id}-title`}>
       <div className="mb-4 flex items-start gap-3 px-1">
-        <span aria-hidden="true" className="mt-0.5 text-xs tabular-nums tracking-[var(--tracking-meta)] text-slate-400">
+        <span aria-hidden="true" className="mt-0.5 text-xs tabular-nums tracking-[var(--tracking-meta)] text-slate-600">
           {String(sectionIndex).padStart(2, "0")}
         </span>
         <div className="min-w-0">
           <h2 id={`${props.id}-title`} className="text-[var(--text-title)] font-medium tracking-[var(--tracking-body)] text-slate-900">
             {props.title}
           </h2>
+          <p className="mt-1 text-[var(--text-meta)] leading-6 text-slate-600">{props.description}</p>
         </div>
       </div>
       <div className="grid gap-3">{props.children}</div>
@@ -106,6 +115,7 @@ function FieldShell(props: { label: string; description?: string; className?: st
       )}
     >
       <span className="text-sm font-medium text-slate-700">{props.label}</span>
+      {props.description ? <span className="text-xs leading-5 text-slate-600">{props.description}</span> : null}
       {props.children}
     </label>
   );
@@ -121,7 +131,7 @@ function PillButton({
     <button
       type="button"
       className={cn(
-        "min-h-10 rounded-full border px-3.5 py-2 text-xs transition-[color,background-color,border-color,transform] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/35 disabled:pointer-events-none disabled:opacity-45 sm:min-h-9 sm:py-1.5",
+        "min-h-11 rounded-full border px-3.5 py-2 text-xs transition-[color,background-color,border-color,transform] active:scale-[0.98] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/35 disabled:pointer-events-none disabled:opacity-45 sm:min-h-9 sm:py-1.5",
         active
           ? "border-slate-800 bg-slate-900 text-white"
           : danger
@@ -144,12 +154,19 @@ function SettingsLayerComponent(props: {
   setFixedTopSpaceIds: (ids: string[]) => void;
   showThinkingDimensions: boolean;
   setShowThinkingDimensions: (enabled: boolean) => void;
+  nightPaperEnabled: boolean;
+  setNightPaperEnabled: (enabled: boolean) => void;
   autoSealRemindersDisabled: boolean;
   setAutoSealRemindersDisabled: (disabled: boolean) => void;
   sessionEmail: string | null;
   cloudSyncEnabled: boolean;
   cloudSyncReady: boolean;
   onSystemExport: (options: { includeLife: boolean; includeThinking: boolean }) => Promise<string | null>;
+  onSystemBackup: () => Promise<string | null>;
+  onSystemImport: (
+    envelope: { payload: unknown; checksum: string },
+    mode: "validate" | "replace"
+  ) => Promise<{ ok: boolean; message: string }>;
   onOpenAuth: () => void;
   onClearAll: () => void;
   onLogout: () => void;
@@ -192,6 +209,11 @@ function SettingsLayerComponent(props: {
   const [includeThinking, setIncludeThinking] = useState(true);
   const [exportText, setExportText] = useState("");
   const [loadingExport, setLoadingExport] = useState(false);
+  const [loadingBackup, setLoadingBackup] = useState(false);
+  const [importCandidate, setImportCandidate] = useState<{ payload: unknown; checksum: string; fileName: string } | null>(null);
+  const [importStatus, setImportStatus] = useState("");
+  const [importBusy, setImportBusy] = useState(false);
+  const [confirmImport, setConfirmImport] = useState(false);
   const [aiProvider, setAiProvider] = useState<AiProvider>(DEFAULT_AI_PROVIDER);
   const [aiApiKey, setAiApiKey] = useState("");
   const [aiBaseUrl, setAiBaseUrl] = useState(DEFAULT_DEEPSEEK_BASE_URL);
@@ -199,13 +221,32 @@ function SettingsLayerComponent(props: {
   const [confirmBackupOverwrite, setConfirmBackupOverwrite] = useState(false);
   const [aiModel, setAiModel] = useState(DEFAULT_DEEPSEEK_MODEL);
   const [aiKeyVisible, setAiKeyVisible] = useState(false);
+  const [aiRemoteConsent, setAiRemoteConsent] = useState(false);
+  const [letterAuthorName, setLetterAuthorName] = useState("");
   const [advancedSyncOpen, setAdvancedSyncOpen] = useState(false);
-
+  const [timezoneDraft, setTimezoneDraft] = useState(props.timezone);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
 
   const timezoneOptions = useMemo(() => {
-    if (TIMEZONE_OPTIONS.some((item) => item.value === props.timezone)) return TIMEZONE_OPTIONS;
-    return [{ value: props.timezone, label: `${props.timezone} (当前)` }, ...TIMEZONE_OPTIONS];
+    const supportedValuesOf = (
+      Intl as typeof Intl & { supportedValuesOf?: (key: "timeZone") => string[] }
+    ).supportedValuesOf;
+    const allTimezones = supportedValuesOf?.("timeZone") ?? FEATURED_TIMEZONE_OPTIONS.map((item) => item.value);
+    return Array.from(new Set([props.timezone, ...FEATURED_TIMEZONE_OPTIONS.map((item) => item.value), ...allTimezones]));
   }, [props.timezone]);
+
+  useEffect(() => setTimezoneDraft(props.timezone), [props.timezone]);
+
+  const commitTimezone = () => {
+    try {
+      new Intl.DateTimeFormat("zh-CN", { timeZone: timezoneDraft }).format();
+      props.setTimezone(timezoneDraft);
+      props.showNotice("时区已更新");
+    } catch {
+      setTimezoneDraft(props.timezone);
+      props.showNotice("请输入有效的 IANA 时区，例如 Asia/Shanghai");
+    }
+  };
 
   const pinnedSet = useMemo(() => new Set(props.fixedTopSpaceIds), [props.fixedTopSpaceIds]);
 
@@ -253,7 +294,20 @@ function SettingsLayerComponent(props: {
     setAiApiKey(settings.apiKey);
     setAiBaseUrl(settings.baseUrl);
     setAiModel(settings.model);
+    setAiRemoteConsent(loadAiRemoteProcessingConsent());
+    setLetterAuthorName(loadLetterAuthorName());
   }, []);
+
+  const commitLetterAuthorName = () => {
+    const next = normalizeLetterAuthorName(letterAuthorName);
+    if (next === loadLetterAuthorName()) {
+      setLetterAuthorName(next);
+      return;
+    }
+    saveLetterAuthorName(next);
+    setLetterAuthorName(next);
+    props.showNotice(next ? "信笺落款已更新" : "信笺已改为不署名");
+  };
 
   useEffect(() => {
     if (!props.backupPreview) setConfirmBackupOverwrite(false);
@@ -266,6 +320,7 @@ function SettingsLayerComponent(props: {
       baseUrl: aiBaseUrl,
       model: aiModel
     });
+    saveAiRemoteProcessingConsent(aiRemoteConsent);
     props.showNotice("AI API 设置已保存");
   };
 
@@ -275,6 +330,8 @@ function SettingsLayerComponent(props: {
     setAiApiKey("");
     setAiBaseUrl(DEFAULT_DEEPSEEK_BASE_URL);
     setAiModel(DEFAULT_DEEPSEEK_MODEL);
+    setAiRemoteConsent(false);
+    saveAiRemoteProcessingConsent(false);
     props.showNotice("AI API 设置已清空");
   };
 
@@ -295,6 +352,64 @@ function SettingsLayerComponent(props: {
       const text = await props.onSystemExport({ includeLife, includeThinking });
       setExportText(text ?? "");
       setLoadingExport(false);
+    })();
+  };
+
+  const downloadFullBackup = () => {
+    if (loadingBackup) return;
+    setLoadingBackup(true);
+    void (async () => {
+      const text = await props.onSystemBackup();
+      setLoadingBackup(false);
+      if (!text) {
+        props.showNotice("完整备份生成失败，请确认已登录");
+        return;
+      }
+      downloadTextFile(text, `zhihuo-backup-${new Date().toISOString().slice(0, 10)}.json`, "application/json");
+      props.showNotice("完整备份已下载");
+    })();
+  };
+
+  const selectImportFile = (file: File | null) => {
+    setImportCandidate(null);
+    setConfirmImport(false);
+    if (!file) return;
+    setImportBusy(true);
+    setImportStatus("正在校验备份…");
+    void (async () => {
+      try {
+        const parsed = JSON.parse(await file.text()) as { payload?: unknown; checksum?: unknown };
+        if (!parsed || typeof parsed !== "object" || typeof parsed.checksum !== "string" || !parsed.payload) {
+          throw new Error("文件不是知惑完整备份");
+        }
+        const envelope = { payload: parsed.payload, checksum: parsed.checksum };
+        const result = await props.onSystemImport(envelope, "validate");
+        if (!result.ok) throw new Error(result.message);
+        setImportCandidate({ ...envelope, fileName: file.name });
+        setImportStatus(`校验通过：${file.name}`);
+      } catch (error) {
+        setImportStatus(error instanceof Error ? error.message : "备份校验失败");
+      } finally {
+        setImportBusy(false);
+        if (importInputRef.current) importInputRef.current.value = "";
+      }
+    })();
+  };
+
+  const replaceWithImport = () => {
+    if (!importCandidate || !confirmImport || importBusy) return;
+    setImportBusy(true);
+    setImportStatus("正在创建本机保护备份并导入…");
+    void (async () => {
+      const result = await props.onSystemImport(
+        { payload: importCandidate.payload, checksum: importCandidate.checksum },
+        "replace"
+      );
+      setImportBusy(false);
+      setImportStatus(result.message);
+      if (!result.ok) return;
+      setImportCandidate(null);
+      setConfirmImport(false);
     })();
   };
 
@@ -363,7 +478,7 @@ function SettingsLayerComponent(props: {
       <div className="mx-auto grid w-full max-w-6xl gap-5 lg:grid-cols-[180px_minmax(0,1fr)]">
         <aside className="hidden lg:block">
           <nav aria-label="设置分区" className="sticky top-4 rounded-[var(--radius)] border border-slate-400/20 bg-[rgba(250,248,244,0.78)] p-2 text-slate-700 shadow-sm backdrop-blur-sm">
-            <p className="px-3 py-2 text-xs font-medium tracking-[var(--tracking-display)] text-slate-500">设置</p>
+            <p className="px-3 py-2 text-xs font-medium tracking-[var(--tracking-display)] text-slate-600">设置</p>
             <div className="grid gap-1">
               {SETTINGS_SECTIONS.map((section) => (
                 <a key={section.id} href={`#${section.id}`} className="rounded-[var(--radius)] px-3 py-2 text-sm transition-colors hover:bg-white/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/30">
@@ -376,7 +491,7 @@ function SettingsLayerComponent(props: {
 
         <div className="grid min-w-0 gap-8">
           <header className="px-1 pb-1 pt-2">
-            <p className="text-xs tracking-[var(--tracking-display)] text-slate-500">PREFERENCES</p>
+            <p className="text-xs tracking-[var(--tracking-display)] text-slate-600">PREFERENCES</p>
             <h1 className="mt-2 text-[var(--text-display)] font-medium tracking-[var(--tracking-body)] text-slate-900">设置</h1>
           </header>
 
@@ -388,7 +503,7 @@ function SettingsLayerComponent(props: {
               <a
                 key={section.id}
                 href={`#${section.id}`}
-                className="inline-flex min-h-10 shrink-0 items-center rounded-full border border-slate-400/25 bg-white/65 px-4 text-xs tracking-[var(--tracking-meta)] text-slate-700 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/35"
+                className="inline-flex min-h-11 shrink-0 items-center rounded-full border border-slate-400/25 bg-white/65 px-4 text-xs tracking-[var(--tracking-meta)] text-slate-700 transition-colors hover:bg-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-400/35"
               >
                 {section.label}
               </a>
@@ -403,11 +518,11 @@ function SettingsLayerComponent(props: {
             </CardHeader>
             <CardContent className="grid gap-3 px-4 pb-4 pt-0 sm:grid-cols-2 md:px-5 md:pb-5">
               <div className="rounded-[var(--radius)] border border-slate-300/70 bg-white/70 px-3 py-3">
-                <p className="text-[var(--text-caption)] tracking-[var(--tracking-meta)] text-slate-400">账号</p>
+                <p className="text-[var(--text-caption)] tracking-[var(--tracking-meta)] text-slate-600">账号</p>
                 <p className="mt-1 truncate text-sm font-medium text-slate-900">{props.sessionEmail ?? "本地离线"}</p>
               </div>
               <div className="rounded-[var(--radius)] border border-slate-300/70 bg-white/70 px-3 py-3">
-                <p className="text-[var(--text-caption)] tracking-[var(--tracking-meta)] text-slate-400">同步</p>
+                <p className="text-[var(--text-caption)] tracking-[var(--tracking-meta)] text-slate-600">同步</p>
                 <div className="mt-1 flex items-center gap-2">
                   <span aria-hidden="true" className={`h-2.5 w-2.5 rounded-full ${syncDotClass}`} />
                   <p className="text-sm font-medium text-slate-900">{props.syncStatus.syncSummary.label}</p>
@@ -424,20 +539,38 @@ function SettingsLayerComponent(props: {
               </CardHeader>
               <CardContent className="px-4 pb-4 pt-0">
                 <FieldShell label="时区">
-                  <select
-                    value={props.timezone}
-                    className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
-                    onChange={(event) => {
-                      props.setTimezone(event.target.value);
-                      props.showNotice("时区已更新");
-                    }}
-                  >
-                    {timezoneOptions.map((item) => (
-                      <option key={item.value} value={item.value}>
-                        {item.label}
-                      </option>
-                    ))}
-                  </select>
+                  <input
+                    value={timezoneDraft}
+                    list="zhihuo-timezones"
+                    placeholder="搜索城市或输入 IANA 时区"
+                    className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
+                    onChange={(event) => setTimezoneDraft(event.target.value)}
+                    onBlur={commitTimezone}
+                    onKeyDown={onSubmitEnter(commitTimezone)}
+                  />
+                  <datalist id="zhihuo-timezones">
+                    {timezoneOptions.map((timezone) => <option key={timezone} value={timezone} />)}
+                  </datalist>
+                </FieldShell>
+              </CardContent>
+            </SettingCard>
+
+            <SettingCard>
+              <CardHeader className="p-4">
+                <CardTitle>信笺落款</CardTitle>
+                <CardDescription>封存信笺右下角的署名，只保存在本机。留空则不署名。</CardDescription>
+              </CardHeader>
+              <CardContent className="px-4 pb-4 pt-0">
+                <FieldShell label="落款" description={`最多 ${MAX_LETTER_AUTHOR_LENGTH} 个字`}>
+                  <input
+                    value={letterAuthorName}
+                    maxLength={MAX_LETTER_AUTHOR_LENGTH}
+                    placeholder="留空则不署名"
+                    className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
+                    onChange={(event) => setLetterAuthorName(event.target.value)}
+                    onBlur={commitLetterAuthorName}
+                    onKeyDown={onSubmitEnter(commitLetterAuthorName)}
+                  />
                 </FieldShell>
               </CardContent>
             </SettingCard>
@@ -460,7 +593,22 @@ function SettingsLayerComponent(props: {
                   />
                   <span>
                     <span className="block">显示思考维度</span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">默认隐藏；打开后只在节点辅助信息里显示。</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-600">默认隐藏；打开后只在节点辅助信息里显示。</span>
+                  </span>
+                </label>
+                <label className="flex items-start gap-3 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm text-slate-700">
+                  <input
+                    type="checkbox"
+                    checked={props.nightPaperEnabled}
+                    onChange={(event) => {
+                      props.setNightPaperEnabled(event.target.checked);
+                      props.showNotice(event.target.checked ? "夜间纸色已开启" : "夜间纸色已关闭");
+                    }}
+                    className="mt-0.5 h-4 w-4 accent-slate-800"
+                  />
+                  <span>
+                    <span className="block">夜间纸色</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-600">降低“想一想”的纸面亮度，正文对比度保持不变。</span>
                   </span>
                 </label>
                 <label className="flex items-start gap-3 rounded-lg border border-slate-300 bg-white px-3 py-3 text-sm text-slate-700">
@@ -475,7 +623,7 @@ function SettingsLayerComponent(props: {
                   />
                   <span>
                     <span className="block">自动封存提醒</span>
-                    <span className="mt-1 block text-xs leading-5 text-slate-500">安静两周后先提醒，不再自动替你封存。</span>
+                    <span className="mt-1 block text-xs leading-5 text-slate-600">安静两周后先提醒，不再自动替你封存。</span>
                   </span>
                 </label>
               </CardContent>
@@ -497,7 +645,7 @@ function SettingsLayerComponent(props: {
                   固定显示三个空间
                 </label>
                 <div className="space-y-2 rounded-lg border border-slate-300 bg-white p-3">
-                  <p className="text-xs text-slate-500">仅可选择活跃空间（最多 3 个，按选中顺序显示）</p>
+                  <p className="text-xs text-slate-600">仅可选择活跃空间（最多 3 个，按选中顺序显示）</p>
                   <div className="flex flex-wrap gap-2">
                     {props.activeThinkingSpaces.length ? (
                       props.activeThinkingSpaces.map((space) => {
@@ -523,7 +671,7 @@ function SettingsLayerComponent(props: {
                         );
                       })
                     ) : (
-                      <p className="text-xs text-slate-500">暂无活跃空间</p>
+                      <p className="text-xs text-slate-600">暂无活跃空间</p>
                     )}
                   </div>
                 </div>
@@ -543,7 +691,7 @@ function SettingsLayerComponent(props: {
                     <select
                       value={aiProvider}
                       onChange={(event) => changeAiProvider(event.target.value as AiProvider)}
-                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                      className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
                     >
                       {AI_PROVIDER_OPTIONS.map((option) => (
                         <option key={option.value} value={option.value}>
@@ -561,13 +709,13 @@ function SettingsLayerComponent(props: {
                         spellCheck={false}
                         placeholder="sk-..."
                         onChange={(event) => setAiApiKey(event.target.value)}
-                        className="h-10 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                        className="h-11 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
                       />
                       <Button
                         type="button"
                         size="sm"
                         variant="ghost"
-                        className="h-10 shrink-0 rounded-md border border-slate-300 bg-white px-3 text-slate-700"
+                        className="h-11 shrink-0 rounded-md border border-slate-300 bg-white px-3 text-slate-700 sm:h-10"
                         onClick={() => setAiKeyVisible((visible) => !visible)}
                       >
                         {aiKeyVisible ? "隐藏" : "显示"}
@@ -576,18 +724,11 @@ function SettingsLayerComponent(props: {
                   </FieldShell>
                   <FieldShell label="模型" className="border-0 p-0">
                     <input
-                      list="ai-model-suggestions"
                       value={aiModel}
                       onChange={(event) => setAiModel(event.target.value)}
-                      placeholder={getAiProviderDefaults(aiProvider).model}
-                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                      placeholder={`例如 ${getAiProviderDefaults(aiProvider).model}`}
+                      className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
                     />
-                    <datalist id="ai-model-suggestions">
-                      <option value="deepseek-v4-flash">deepseek-v4-flash（默认）</option>
-                      <option value="deepseek-v4-pro">deepseek-v4-pro</option>
-                      <option value="deepseek-chat">deepseek-chat（兼容别名）</option>
-                      <option value={DEFAULT_OPENAI_COMPATIBLE_MODEL}>{DEFAULT_OPENAI_COMPATIBLE_MODEL}</option>
-                    </datalist>
                   </FieldShell>
                   <FieldShell label="Base URL" className="border-0 p-0">
                     <input
@@ -595,10 +736,23 @@ function SettingsLayerComponent(props: {
                       value={aiBaseUrl}
                       onChange={(event) => setAiBaseUrl(event.target.value)}
                       placeholder={getAiProviderDefaults(aiProvider).baseUrl}
-                      className="h-10 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50"
+                      className="h-11 rounded-md border border-slate-300 bg-white px-3 text-sm text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-slate-400/50 sm:h-10"
                     />
                   </FieldShell>
-                  <p className="text-xs leading-5 text-slate-500">AI 会接收当前空间的根问题与思考节点。未填写 Key 时，会尝试使用服务端环境变量。</p>
+                  <label className="flex items-start gap-3 rounded-md border border-amber-300/70 bg-amber-50 px-3 py-3 text-sm text-slate-700">
+                    <input
+                      type="checkbox"
+                      checked={aiRemoteConsent}
+                      onChange={(event) => setAiRemoteConsent(event.target.checked)}
+                      className="mt-0.5 h-4 w-4 shrink-0 accent-slate-900"
+                    />
+                    <span>
+                      <span className="block font-medium">允许按次使用第三方 AI</span>
+                      <span className="mt-1 block text-xs leading-5 text-slate-600">
+                        仅当你在具体功能中再次选择“本次使用 AI”时，当前疑问、思考节点和札记才会发送给所选模型服务商处理。关闭后始终使用本机凝练。
+                      </span>
+                    </span>
+                  </label>
                 </div>
               </CardContent>
               <CardFooter className="flex-wrap gap-2 px-4 pb-4 pt-0">
@@ -627,6 +781,71 @@ function SettingsLayerComponent(props: {
           </SectionBlock>
 
           <SectionBlock id="settings-data" title="数据" description="导出本地内容，或执行不可恢复的清空操作。">
+            <SettingCard>
+              <CardHeader className="p-4">
+                <CardTitle>可恢复备份</CardTitle>
+                <CardDescription>完整 JSON 备份包含时间层、思考空间、随记、星图关系和图片，可在其他设备校验后恢复。</CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-3 px-4 pb-4 pt-0">
+                <input
+                  ref={importInputRef}
+                  type="file"
+                  accept="application/json,.json"
+                  className="sr-only"
+                  onChange={(event) => selectImportFile(event.target.files?.[0] ?? null)}
+                />
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+                    disabled={loadingBackup}
+                    onClick={downloadFullBackup}
+                  >
+                    {loadingBackup ? "生成中…" : "下载完整备份"}
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="ghost"
+                    className="rounded-full border border-slate-400/40 bg-white text-slate-700"
+                    disabled={importBusy}
+                    onClick={() => importInputRef.current?.click()}
+                  >
+                    选择备份导入
+                  </Button>
+                </div>
+                {importStatus ? (
+                  <p role="status" className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs leading-5 text-slate-700">
+                    {importStatus}
+                  </p>
+                ) : null}
+                {importCandidate ? (
+                  <div className="space-y-3 rounded-lg border border-amber-300 bg-amber-50 p-3">
+                    <label className="flex items-start gap-2 text-sm text-amber-950">
+                      <input
+                        type="checkbox"
+                        checked={confirmImport}
+                        onChange={(event) => setConfirmImport(event.target.checked)}
+                        className="mt-0.5 h-4 w-4 accent-amber-900"
+                      />
+                      <span>我确认用此备份替换当前账号数据。系统会先创建本机保护备份，导入失败不会清理现有工作副本。</span>
+                    </label>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="rounded-full bg-amber-950 text-white hover:bg-amber-900"
+                      disabled={!confirmImport || importBusy}
+                      onClick={replaceWithImport}
+                    >
+                      {importBusy ? "导入中…" : "确认恢复此备份"}
+                    </Button>
+                  </div>
+                ) : null}
+              </CardContent>
+            </SettingCard>
+
             <SettingCard>
               <CardHeader className="p-4">
                 <CardTitle>全量导出</CardTitle>
@@ -732,10 +951,10 @@ function SettingsLayerComponent(props: {
                       <span className={`h-2.5 w-2.5 rounded-full ${syncDotClass}`} />
                       <div>
                         <p className="text-sm font-medium text-slate-900">{props.syncStatus.syncSummary.label}</p>
-                        <p className="mt-1 text-xs leading-5 text-slate-500">{props.syncStatus.modeLabel}</p>
+                        <p className="mt-1 text-xs leading-5 text-slate-600">{props.syncStatus.modeLabel}</p>
                       </div>
                     </div>
-                    <div className="text-left text-xs leading-5 text-slate-500 sm:text-right">
+                    <div className="text-left text-xs leading-5 text-slate-600 sm:text-right">
                       <p>上次同步：{lastSyncText}</p>
                     </div>
                   </div>
@@ -770,55 +989,55 @@ function SettingsLayerComponent(props: {
                   <CardContent className="space-y-3 px-4 pb-4 pt-0">
                     <div className="grid gap-3 rounded-xl border border-slate-300 bg-white p-4 text-sm text-slate-700 md:grid-cols-2">
                       <div>
-                        <p className="text-xs text-slate-500">当前同步模式</p>
+                        <p className="text-xs text-slate-600">当前同步模式</p>
                         <p className="mt-1">{props.syncStatus.modeLabel}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">同步阶段</p>
+                        <p className="text-xs text-slate-600">同步阶段</p>
                         <p className="mt-1">{props.syncStatus.phase}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">本地 revision</p>
+                        <p className="text-xs text-slate-600">本地 revision</p>
                         <p className="mt-1">{props.syncStatus.localRevision ?? "未记录"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">云端 revision</p>
+                        <p className="text-xs text-slate-600">云端 revision</p>
                         <p className="mt-1">{props.syncStatus.cloudRevision ?? "未获取"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">待同步改动</p>
+                        <p className="text-xs text-slate-600">待同步改动</p>
                         <p className="mt-1">{props.syncStatus.pendingMutationCount > 0 ? props.syncStatus.pendingMutationCount : props.syncStatus.hasLocalChanges ? "有本地改动" : 0}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">同步异常</p>
+                        <p className="text-xs text-slate-600">同步异常</p>
                         <p className="mt-1">{props.deadLetterMutations.length}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">历史未合入</p>
+                        <p className="text-xs text-slate-600">历史未合入</p>
                         <p className="mt-1">{props.unmergedItems.length}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">最后成功同步</p>
+                        <p className="text-xs text-slate-600">最后成功同步</p>
                         <p className="mt-1">{props.syncStatus.lastSyncedAt ? new Date(props.syncStatus.lastSyncedAt).toLocaleString("zh-CN") : "暂无"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">上次检查云端</p>
+                        <p className="text-xs text-slate-600">上次检查云端</p>
                         <p className="mt-1">{props.syncStatus.lastCloudCheckedAt ? new Date(props.syncStatus.lastCloudCheckedAt).toLocaleString("zh-CN") : "暂无"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">云端时间</p>
+                        <p className="text-xs text-slate-600">云端时间</p>
                         <p className="mt-1">{props.syncStatus.cloudServerTime ? new Date(props.syncStatus.cloudServerTime).toLocaleString("zh-CN") : "暂无"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">未上传媒体</p>
+                        <p className="text-xs text-slate-600">未上传媒体</p>
                         <p className="mt-1">{props.syncStatus.offlineMediaPendingCount}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">下次自动重试</p>
+                        <p className="text-xs text-slate-600">下次自动重试</p>
                         <p className="mt-1">{typeof props.syncStatus.nextRetryAt === "number" && Number.isFinite(props.syncStatus.nextRetryAt) ? new Date(props.syncStatus.nextRetryAt).toLocaleString("zh-CN") : "无需重试"}</p>
                       </div>
                       <div>
-                        <p className="text-xs text-slate-500">最近本地备份</p>
+                        <p className="text-xs text-slate-600">最近本地备份</p>
                         <p className="mt-1">{props.syncStatus.latestBackup ? new Date(props.syncStatus.latestBackup.createdAt).toLocaleString("zh-CN") : "暂无"}</p>
                       </div>
                     </div>
@@ -963,3 +1182,12 @@ function SettingsLayerComponent(props: {
 }
 
 export const SettingsLayer = memo(SettingsLayerComponent);
+
+function downloadTextFile(text: string, filename: string, mimeType: string) {
+  const url = URL.createObjectURL(new Blob([text], { type: `${mimeType};charset=utf-8` }));
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  anchor.click();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}

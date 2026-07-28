@@ -65,6 +65,8 @@ export type UserExportPayload = {
       parkingTrackId?: string | null;
       pendingTrackId?: string | null;
       emptyTrackIds?: string[];
+      milestoneNodeIds?: string[];
+      trackDirectionHints?: Record<string, string | null>;
       starMapSceneSignature?: string | null;
       starMapCuratedScene?: unknown;
       starMapCuratedAt?: string | null;
@@ -72,7 +74,15 @@ export type UserExportPayload = {
       starMapPlacementsSignature?: string | null;
       starMapPlacementsUpdatedAt?: string | null;
     }>;
-    inbox: Record<string, Array<{ id: string; rawText: string; createdAt: string }>>;
+    node_links?: Array<{
+      id: string;
+      spaceId: string;
+      sourceNodeId: string;
+      targetNodeId: string;
+      linkType: "related";
+      score: number;
+      createdAt: string;
+    }>;
     scratch?: Array<{
       id: string;
       userId: string;
@@ -120,8 +130,7 @@ export function hasMeaningfulLocalData(lifeStore: LifeStore, thinkingStore: Thin
     thinkingStore.spaces.length > 0 ||
     thinkingStore.nodes.length > 0 ||
     thinkingStore.mediaAssets.length > 0 ||
-    thinkingStore.scratch.length > 0 ||
-    Object.values(thinkingStore.inbox).some((items) => items.length > 0)
+    thinkingStore.scratch.length > 0
   );
 }
 
@@ -166,25 +175,12 @@ export function canonicalizeExportPayload(payload: UserExportPayload) {
   const rawNodes = Array.isArray(payload.thinking.nodes) ? (payload.thinking.nodes as Array<Record<string, unknown>>) : [];
   const rawMeta = Array.isArray(payload.thinking.space_meta) ? (payload.thinking.space_meta as Array<Record<string, unknown>>) : [];
   const rawScratch = Array.isArray(payload.thinking.scratch) ? (payload.thinking.scratch as Array<Record<string, unknown>>) : [];
+  const rawNodeLinks = Array.isArray(payload.thinking.node_links)
+    ? (payload.thinking.node_links as Array<Record<string, unknown>>)
+    : [];
   const rawMediaAssets = Array.isArray(payload.thinking.media_assets)
     ? (payload.thinking.media_assets as Array<Record<string, unknown>>)
     : [];
-  const rawInbox = payload.thinking.inbox as unknown;
-  const normalizedInboxEntries = Array.isArray(rawInbox)
-    ? (rawInbox as Array<Record<string, unknown>>).reduce<Record<string, Array<Record<string, unknown>>>>((acc, item) => {
-        const spaceId = typeof item.space_id === "string" ? item.space_id : typeof item.spaceId === "string" ? item.spaceId : "";
-        if (!spaceId) return acc;
-        if (!acc[spaceId]) acc[spaceId] = [];
-        acc[spaceId].push(item);
-        return acc;
-      }, {})
-    : Object.fromEntries(
-        Object.entries((rawInbox ?? {}) as Record<string, unknown>).map(([spaceId, items]) => [
-          spaceId,
-          Array.isArray(items) ? (items as Array<Record<string, unknown>>) : []
-        ])
-      );
-
   return {
     life: {
       doubts: [...payload.life.doubts]
@@ -348,6 +344,13 @@ export function canonicalizeExportPayload(payload: UserExportPayload) {
                 ? item.pending_track_id
                 : null,
           emptyTrackIds: [...(((item.emptyTrackIds ?? item.empty_track_ids ?? []) as string[]) ?? [])].sort(),
+          milestoneNodeIds: [...(((item.milestoneNodeIds ?? item.milestone_node_ids ?? []) as string[]) ?? [])].sort(),
+          trackDirectionHints:
+            item.trackDirectionHints && typeof item.trackDirectionHints === "object"
+              ? item.trackDirectionHints
+              : item.track_direction_hints && typeof item.track_direction_hints === "object"
+                ? item.track_direction_hints
+                : {},
           starMapSceneSignature:
             typeof item.starMapSceneSignature === "string"
               ? item.starMapSceneSignature
@@ -376,6 +379,32 @@ export function canonicalizeExportPayload(payload: UserExportPayload) {
                 : null
         }))
         .sort((a, b) => a.spaceId.localeCompare(b.spaceId)),
+      node_links: rawNodeLinks
+        .map((item) => ({
+          id: item.id,
+          spaceId: typeof item.spaceId === "string" ? item.spaceId : typeof item.space_id === "string" ? item.space_id : "",
+          sourceNodeId:
+            typeof item.sourceNodeId === "string"
+              ? item.sourceNodeId
+              : typeof item.source_node_id === "string"
+                ? item.source_node_id
+                : "",
+          targetNodeId:
+            typeof item.targetNodeId === "string"
+              ? item.targetNodeId
+              : typeof item.target_node_id === "string"
+                ? item.target_node_id
+                : "",
+          linkType:
+            typeof item.linkType === "string"
+              ? item.linkType
+              : typeof item.link_type === "string"
+                ? item.link_type
+                : "related",
+          score: typeof item.score === "number" ? item.score : 0,
+          createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
+        }))
+        .sort((a, b) => String(a.id).localeCompare(String(b.id))),
       media_assets: rawMediaAssets
         .map((item) => ({
           id: item.id,
@@ -412,20 +441,6 @@ export function canonicalizeExportPayload(payload: UserExportPayload) {
                 : ""
         }))
         .sort((a, b) => String(a.id).localeCompare(String(b.id))),
-      inbox: Object.fromEntries(
-        Object.entries(normalizedInboxEntries)
-          .sort(([a], [b]) => a.localeCompare(b))
-          .map(([spaceId, items]) => [
-            spaceId,
-            [...items]
-              .map((item) => ({
-                id: item.id,
-                rawText: typeof item.rawText === "string" ? item.rawText : typeof item.raw_text === "string" ? item.raw_text : "",
-                createdAt: typeof item.createdAt === "string" ? item.createdAt : typeof item.created_at === "string" ? item.created_at : ""
-              }))
-              .sort((a, b) => String(a.id).localeCompare(String(b.id)))
-          ])
-      ),
       scratch: rawScratch
         .map((item) => ({
           id: item.id,

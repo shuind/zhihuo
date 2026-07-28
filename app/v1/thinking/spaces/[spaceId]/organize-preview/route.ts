@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb } from "@/lib/server/db";
+import { readUserDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { organizeSpacePreview } from "@/lib/server/store";
@@ -17,7 +17,7 @@ export const POST = withApiRoute(
     let found = false;
     let readonly = false;
     let candidates: Array<{ nodeId: string; preview: string; fromTrackId: string; suggestedTrackId: string; score: number }> = [];
-    const db = await readDb();
+    const db = await readUserDb(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes"]);
     const result = organizeSpacePreview(db, userId, params.spaceId, fromOrderIndex);
     if (result) {
       found = true;

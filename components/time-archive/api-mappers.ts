@@ -398,6 +398,17 @@ export function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking
             parkingTrackId: typeof item.parkingTrackId === "string" ? item.parkingTrackId : null,
             pendingTrackId: typeof item.pendingTrackId === "string" ? item.pendingTrackId : null,
             emptyTrackIds: Array.isArray(item.emptyTrackIds) ? item.emptyTrackIds.filter((value) => typeof value === "string") : [],
+            milestoneNodeIds: Array.isArray(item.milestoneNodeIds)
+              ? item.milestoneNodeIds.filter((value) => typeof value === "string")
+              : [],
+            trackDirectionHints:
+              item.trackDirectionHints && typeof item.trackDirectionHints === "object" && !Array.isArray(item.trackDirectionHints)
+                ? Object.fromEntries(
+                    Object.entries(item.trackDirectionHints).filter(
+                      ([trackId, hint]) => typeof trackId === "string" && (typeof hint === "string" || hint === null)
+                    )
+                  )
+                : {},
             starMapSceneSignature: typeof item.starMapSceneSignature === "string" ? item.starMapSceneSignature : null,
             starMapCuratedScene: normalizeSceneLike(item.starMapCuratedScene),
             starMapCuratedAt: typeof item.starMapCuratedAt === "string" ? item.starMapCuratedAt : null,
@@ -408,24 +419,22 @@ export function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking
               typeof item.starMapPlacementsUpdatedAt === "string" ? item.starMapPlacementsUpdatedAt : null
           }))
       : [],
-    inbox:
-      payload?.inbox && typeof payload.inbox === "object"
-        ? Object.fromEntries(
-            Object.entries(payload.inbox).map(([spaceId, list]) => [
-              spaceId,
-              Array.isArray(list)
-                ? list
-                    .filter((item) => item && typeof item.id === "string")
-                    .map((item) => ({
-                      id: item.id as string,
-                      rawText: typeof item.rawText === "string" ? item.rawText : "",
-                      createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
-                    }))
-                : []
-            ])
-          )
-        : {},
-    scratch: Array.isArray(payload?.scratch)
+    nodeLinks: Array.isArray(payload?.nodeLinks)
+      ? payload.nodeLinks
+          .filter((item) => item && typeof item.id === "string")
+          .map((item) => ({
+            id: item.id as string,
+            spaceId: typeof item.spaceId === "string" ? item.spaceId : "",
+            sourceNodeId: typeof item.sourceNodeId === "string" ? item.sourceNodeId : "",
+            targetNodeId: typeof item.targetNodeId === "string" ? item.targetNodeId : "",
+            linkType: "related" as const,
+            score: Number.isFinite(item.score) ? Number(item.score) : 0,
+            createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString()
+          }))
+          .filter((item) => item.spaceId && item.sourceNodeId && item.targetNodeId)
+      : [],
+    scratch: [
+      ...(Array.isArray(payload?.scratch)
       ? payload.scratch
           .filter((item) => item && typeof item.id === "string")
           .map((item) => ({
@@ -438,7 +447,24 @@ export function mapSyncSnapshotThinking(payload?: SyncSnapshotResponse["thinking
             derivedSpaceId: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
             fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
           }))
-      : [],
+      : []),
+      ...Object.values(payload?.inbox ?? {}).flatMap((list) =>
+        Array.isArray(list)
+          ? list
+              .filter((item) => item && typeof item.id === "string" && typeof item.rawText === "string")
+              .map((item) => ({
+                id: item.id as string,
+                rawText: item.rawText as string,
+                createdAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+                updatedAt: typeof item.createdAt === "string" ? item.createdAt : new Date().toISOString(),
+                archivedAt: null,
+                deletedAt: null,
+                derivedSpaceId: null,
+                fedTimeDoubtId: null
+              }))
+          : []
+      )
+    ],
     mediaAssets: Array.isArray(payload?.mediaAssets)
       ? payload.mediaAssets
           .filter((item) => item && typeof item.id === "string")

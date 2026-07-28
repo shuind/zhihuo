@@ -6,6 +6,7 @@ export type LetterCondenseRequest = {
   nodes?: unknown;
   closing?: unknown;
   ai?: Partial<AiApiSettings>;
+  allowRemoteProcessing?: unknown;
 };
 
 export type LetterCondenseInput = {
@@ -13,6 +14,7 @@ export type LetterCondenseInput = {
   nodes: string[];
   closing?: string;
   ai?: Partial<AiApiSettings>;
+  allowRemoteProcessing: boolean;
 };
 
 export type LetterCondenseDraft = {
@@ -42,12 +44,14 @@ export function normalizeLetterCondenseInput(input: LetterCondenseRequest | null
   const ai = isRecord((record as LetterCondenseRequest).ai)
     ? ((record as LetterCondenseRequest).ai as Partial<AiApiSettings>)
     : undefined;
+  const allowRemoteProcessing = (record as LetterCondenseRequest).allowRemoteProcessing === true;
 
   return {
     doubt,
     nodes,
     closing: closing || undefined,
-    ai
+    ai,
+    allowRemoteProcessing
   };
 }
 

@@ -3,8 +3,7 @@ import { NextRequest } from "next/server";
 import {
   DEFAULT_AI_PROVIDER,
   getAiProviderDefaults,
-  normalizeAiApiSettings,
-  normalizeBaseUrl
+  normalizeAiApiSettings
 } from "@/lib/ai-settings";
 import {
   fallbackCondense,
@@ -15,6 +14,9 @@ import {
   type LetterCondenseResponse
 } from "@/lib/letter-ai";
 import { errorJson, okJson, parseJsonBody } from "@/lib/server/http";
+import { getUserId, unauthorizedJson } from "@/lib/server/http";
+import { fetchAiEndpoint, resolveAiBaseUrl, UnsafeAiEndpointError } from "@/lib/server/ai-endpoint";
+import { readUserDb } from "@/lib/server/db";
 import { logWarn, withApiRoute } from "@/lib/server/observability";
 
 export const maxDuration = 30;
@@ -22,6 +24,10 @@ export const maxDuration = 30;
 export const POST = withApiRoute(
   "letter.condense",
   async (request: NextRequest) => {
+    const userId = getUserId(request);
+    if (!userId) return unauthorizedJson();
+    const userDb = await readUserDb(userId, []);
+    if (!userDb.users.some((user) => user.id === userId && !user.deleted_at)) return unauthorizedJson();
     const body = await parseJsonBody<LetterCondenseRequest>(request);
     if (!body) return errorJson(400, "invalid json");
 
@@ -29,24 +35,46 @@ export const POST = withApiRoute(
     if (!hasLetterCondenseContent(input)) return errorJson(400, "doubt or nodes is required");
 
     const fallback = fallbackCondense(input);
+    if (!input.allowRemoteProcessing) return okJson(fallback);
     const hasRequestAiSettings = Boolean(input.ai);
     const ai = normalizeAiApiSettings(input.ai);
     const envDefaults = getAiProviderDefaults(DEFAULT_AI_PROVIDER);
     const providerDefaults = getAiProviderDefaults(ai.provider);
-    const apiKey = hasRequestAiSettings ? ai.apiKey : process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || "";
+    const apiKey = hasRequestAiSettings
+      ? ai.apiKey
+      : process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || "";
     if (!apiKey) return okJson(fallback);
 
-    const baseUrl = hasRequestAiSettings
-      ? normalizeBaseUrl(ai.baseUrl, providerDefaults.baseUrl)
-      : normalizeBaseUrl(process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL, envDefaults.baseUrl);
-    const model = hasRequestAiSettings ? ai.model : process.env.AI_MODEL || envDefaults.model;
+    let baseUrl: string;
+    try {
+      baseUrl = hasRequestAiSettings
+        ? resolveAiBaseUrl(ai.baseUrl, providerDefaults.baseUrl, "client")
+        : resolveAiBaseUrl(
+            process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || process.env.OPENAI_BASE_URL,
+            envDefaults.baseUrl,
+            "server"
+          );
+    } catch (error) {
+      if (error instanceof UnsafeAiEndpointError) return errorJson(400, "AI endpoint is not allowed");
+      throw error;
+    }
+    const model = hasRequestAiSettings ? ai.model : process.env.AI_MODEL || process.env.OPENAI_MODEL || envDefaults.model;
 
-    const aiResponse = await callChatCompletions({ input, apiKey, baseUrl, model }).catch((error: unknown) => {
+    let aiResponse: Awaited<ReturnType<typeof callChatCompletions>> | null = null;
+    try {
+      aiResponse = await callChatCompletions({
+        input,
+        apiKey,
+        baseUrl,
+        model,
+        endpointSource: hasRequestAiSettings ? "client" : "server"
+      });
+    } catch (error) {
+      if (error instanceof UnsafeAiEndpointError) return errorJson(400, "AI endpoint is not allowed");
       logWarn("letter.condense.ai_network_failed", {
         error: error instanceof Error ? trimText(error.message, 200) : "unknown"
       });
-      return null;
-    });
+    }
 
     if (!aiResponse) return okJson(fallback);
     if (!aiResponse.ok) {
@@ -74,14 +102,16 @@ async function callChatCompletions({
   input,
   apiKey,
   baseUrl,
-  model
+  model,
+  endpointSource
 }: {
   input: ReturnType<typeof normalizeLetterCondenseInput>;
   apiKey: string;
   baseUrl: string;
   model: string;
+  endpointSource: "client" | "server";
 }) {
-  const response = await fetch(`${baseUrl}/chat/completions`, {
+  const response = await fetchAiEndpoint(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${apiKey}`,
@@ -93,7 +123,17 @@ async function callChatCompletions({
         {
           role: "system",
           content:
-            "你是知惑的信笺凝练助手。把用户的疑问和思考过程凝练成安静、克制、可回望的短笺。只返回 JSON，不要 Markdown。JSON 结构必须是 {\"title\":\"...\",\"lines\":[\"...\",\"...\",\"...\"]}。标题不超过 24 个字，正文 3 到 5 行，每行短句。不要编造用户没有表达过的结论。"
+            [
+              "你是知惑的信笺凝练助手。你的任务是忠实压缩，不是替用户解释人生或提供答案。",
+              "只使用用户明确写过的信息；保留尚未解决、矛盾和犹豫，不补充因果，不推测动机，不制造结论。",
+              "使用第一人称或无主语短句，不把用户称为“你”，不使用导师、鸡汤、诊断或命令口吻。",
+              "禁用空泛升华和套话，包括但不限于：答案就在心中、时间会证明、勇敢前行、拥抱变化、成为更好的自己、这是一场旅程。",
+              "标题应来自原始疑问的核心词，不夸张、不诗化过度；正文按思考发生的顺序保留关键转折。",
+              "只返回 JSON，不要 Markdown。结构必须为 {\"title\":\"...\",\"lines\":[\"...\",\"...\",\"...\"]}。",
+              "标题不超过 24 个字；正文 3 到 5 行，每行不超过 28 个字。",
+              "合格示例：输入含“想先试一个月，但担心中途放弃”，可写为“先试一个月 / 仍担心自己中途停下”。",
+              "不合格示例：不要写“答案已经在路上”“相信自己的选择”。"
+            ].join("\n")
         },
         {
           role: "user",
@@ -108,7 +148,7 @@ async function callChatCompletions({
       temperature: 0.72,
       max_tokens: 700
     })
-  });
+  }, endpointSource);
   const raw = (await response.json().catch(() => null)) as unknown;
   return { ok: response.ok, status: response.status, raw };
 }

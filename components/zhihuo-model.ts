@@ -34,7 +34,6 @@ export type LifeStore = {
   doubts: LifeDoubt[];
   notes: LifeNote[];
   meta: {
-    twelvePlaybackSeen: boolean;
     firstDoubtGuideDismissedAt?: string;
   };
 };
@@ -117,6 +116,8 @@ export type ThinkingSpaceMeta = {
   parkingTrackId?: string | null;
   pendingTrackId?: string | null;
   emptyTrackIds?: string[];
+  milestoneNodeIds?: string[];
+  trackDirectionHints?: Record<string, string | null>;
   starMapSceneSignature?: string | null;
   starMapCuratedScene?: Scene | null;
   starMapCuratedAt?: string | null;
@@ -125,9 +126,13 @@ export type ThinkingSpaceMeta = {
   starMapPlacementsUpdatedAt?: string | null;
 };
 
-export type ThinkingInboxItem = {
+export type ThinkingNodeLink = {
   id: string;
-  rawText: string;
+  spaceId: string;
+  sourceNodeId: string;
+  targetNodeId: string;
+  linkType: "related";
+  score: number;
   createdAt: string;
 };
 
@@ -137,7 +142,7 @@ export type ThinkingStore = {
   spaceMeta: ThinkingSpaceMeta[];
   mediaAssets: ThinkingMediaAsset[];
   scratch: ThinkingScratchItem[];
-  inbox: Record<string, ThinkingInboxItem[]>;
+  nodeLinks?: ThinkingNodeLink[];
   assistEnabled: boolean;
   timezone: string;
   fixedTopSpacesEnabled: boolean;
@@ -183,7 +188,7 @@ export const DIMENSION_LABEL: Record<DimensionKey, string> = {
 export const EMPTY_LIFE_STORE: LifeStore = {
   doubts: [],
   notes: [],
-  meta: { twelvePlaybackSeen: false }
+  meta: {}
 };
 
 export const EMPTY_THINKING_STORE: ThinkingStore = {
@@ -192,7 +197,6 @@ export const EMPTY_THINKING_STORE: ThinkingStore = {
   spaceMeta: [],
   mediaAssets: [],
   scratch: [],
-  inbox: {},
   assistEnabled: true,
   timezone: DEFAULT_TIMEZONE,
   fixedTopSpacesEnabled: false,
@@ -327,15 +331,6 @@ export function createStars(count: number) {
   return stars;
 }
 
-export function normalizeQuestionInput(raw: string): { ok: true; text: string; converted: boolean } | { ok: false } {
-  const text = collapseWhitespace(raw);
-  if (!text || text.length < 2) return { ok: false };
-  if (/[?？]$/.test(text)) return { ok: true, text, converted: false };
-  const trimmed = text.replace(/[。.!！？?]+$/g, "");
-  if (!trimmed) return { ok: false };
-  return { ok: true, text: trimmed, converted: false };
-}
-
 export function classifyDimension(text: string): DimensionKey {
   const rules: Record<DimensionKey, RegExp[]> = {
     definition: [/define|what|scope|boundary|meaning|definition|定义|范围|边界|是什么/i],
@@ -355,20 +350,6 @@ export function pickDefaultSpaceId(spaces: ThinkingSpace[]) {
   const active = spaces.find((space) => space.status === "active");
   if (active) return active.id;
   return spaces[0]?.id ?? null;
-}
-
-export function pickPlaybackRoute(sortedAscending: LifeDoubt[]) {
-  const count = clamp(Math.ceil(sortedAscending.length * 0.45), 5, 6);
-  if (sortedAscending.length <= count) return sortedAscending;
-  const picks: LifeDoubt[] = [];
-  const used = new Set<number>();
-  for (let i = 0; i < count; i += 1) {
-    const index = Math.round((i * (sortedAscending.length - 1)) / (count - 1));
-    if (used.has(index)) continue;
-    used.add(index);
-    picks.push(sortedAscending[index]);
-  }
-  return picks;
 }
 
 export function resolveLifeGap(prev: LifeDoubt | null, current: LifeDoubt, denseMode: boolean) {
@@ -404,7 +385,7 @@ export function loadLifeStore(): LifeStore {
     if (!legacy) return EMPTY_LIFE_STORE;
     const parsed = JSON.parse(legacy) as {
       doubts?: Array<{ id?: string; text?: string; createdAt?: string; archivedAt?: string | null; note?: string }>;
-      meta?: { twelvePlaybackSeen?: boolean; firstDoubtGuideDismissedAt?: string };
+      meta?: { firstDoubtGuideDismissedAt?: string };
     };
     const doubts: LifeDoubt[] = [];
     const notes: LifeNote[] = [];
@@ -433,7 +414,6 @@ export function loadLifeStore(): LifeStore {
       doubts,
       notes,
       meta: {
-        twelvePlaybackSeen: Boolean(parsed.meta?.twelvePlaybackSeen),
         firstDoubtGuideDismissedAt:
           typeof parsed.meta?.firstDoubtGuideDismissedAt === "string" ? toIso(parsed.meta.firstDoubtGuideDismissedAt) : undefined
       }
@@ -491,7 +471,6 @@ function normalizeLifeStore(store: Partial<LifeStore>): LifeStore {
     doubts,
     notes,
     meta: {
-      twelvePlaybackSeen: Boolean(store.meta?.twelvePlaybackSeen),
       firstDoubtGuideDismissedAt:
         typeof store.meta?.firstDoubtGuideDismissedAt === "string" ? toIso(store.meta.firstDoubtGuideDismissedAt) : undefined
     }
@@ -551,6 +530,15 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     parkingTrackId: typeof meta.parkingTrackId === "string" ? meta.parkingTrackId : null,
     pendingTrackId: typeof meta.pendingTrackId === "string" ? meta.pendingTrackId : null,
     emptyTrackIds: Array.isArray(meta.emptyTrackIds) ? meta.emptyTrackIds.filter((id) => typeof id === "string") : [],
+    milestoneNodeIds: Array.isArray(meta.milestoneNodeIds) ? meta.milestoneNodeIds.filter((id) => typeof id === "string") : [],
+    trackDirectionHints:
+      meta.trackDirectionHints && typeof meta.trackDirectionHints === "object" && !Array.isArray(meta.trackDirectionHints)
+        ? Object.fromEntries(
+            Object.entries(meta.trackDirectionHints).filter(
+              ([trackId, hint]) => typeof trackId === "string" && (typeof hint === "string" || hint === null)
+            )
+          )
+        : {},
     starMapSceneSignature: typeof meta.starMapSceneSignature === "string" ? meta.starMapSceneSignature : null,
     starMapCuratedScene: normalizeSceneLike(meta.starMapCuratedScene),
     starMapCuratedAt: typeof meta.starMapCuratedAt === "string" ? meta.starMapCuratedAt : null,
@@ -572,15 +560,24 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
       deletedAt: item.deletedAt ? toIso(item.deletedAt) : null
     }))
     .filter((item) => item.id && item.fileName);
-  const inbox: Record<string, ThinkingInboxItem[]> = {};
-  for (const [spaceId, items] of Object.entries(store.inbox ?? {})) {
-    inbox[spaceId] = (items ?? []).map((item) => ({
-      id: typeof item.id === "string" ? item.id : createId(),
-      rawText: typeof item.rawText === "string" ? item.rawText : "",
-      createdAt: toIso(item.createdAt)
-    })).filter((item) => item.rawText);
-  }
-  const scratch: ThinkingScratchItem[] = (store.scratch ?? [])
+  const legacyInbox = (store as Partial<ThinkingStore> & {
+    inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
+  }).inbox;
+  const migratedInboxScratch: ThinkingScratchItem[] = Object.values(legacyInbox ?? {}).flatMap((items) =>
+    (items ?? [])
+      .map((item) => ({
+        id: typeof item.id === "string" ? item.id : createId(),
+        rawText: collapseWhitespace(typeof item.rawText === "string" ? item.rawText : ""),
+        createdAt: toIso(item.createdAt),
+        updatedAt: toIso(item.createdAt),
+        archivedAt: null,
+        deletedAt: null,
+        derivedSpaceId: null,
+        fedTimeDoubtId: null
+      }))
+      .filter((item) => item.rawText)
+  );
+  const scratch: ThinkingScratchItem[] = [...(store.scratch ?? [])
     .map((item) => ({
       id: typeof item.id === "string" ? item.id : createId(),
       rawText: collapseWhitespace(typeof item.rawText === "string" ? item.rawText : ""),
@@ -591,7 +588,19 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
       derivedSpaceId: typeof item.derivedSpaceId === "string" ? item.derivedSpaceId : null,
       fedTimeDoubtId: typeof item.fedTimeDoubtId === "string" ? item.fedTimeDoubtId : null
     }))
-    .filter((item) => item.rawText);
+    .filter((item) => item.rawText), ...migratedInboxScratch]
+    .filter((item, index, items) => items.findIndex((candidate) => candidate.id === item.id) === index);
+  const nodeLinks: ThinkingNodeLink[] = (store.nodeLinks ?? [])
+    .map((link) => ({
+      id: typeof link.id === "string" ? link.id : createId(),
+      spaceId: typeof link.spaceId === "string" ? link.spaceId : "",
+      sourceNodeId: typeof link.sourceNodeId === "string" ? link.sourceNodeId : "",
+      targetNodeId: typeof link.targetNodeId === "string" ? link.targetNodeId : "",
+      linkType: "related" as const,
+      score: typeof link.score === "number" && Number.isFinite(link.score) ? link.score : 0,
+      createdAt: toIso(link.createdAt)
+    }))
+    .filter((link) => link.spaceId && link.sourceNodeId && link.targetNodeId);
   const validSpaceIdSet = new Set(spaces.map((space) => space.id));
   const fixedTopSpaceIds = Array.from(
     new Set(
@@ -607,7 +616,7 @@ export function normalizeThinkingStore(store: Partial<ThinkingStore>): ThinkingS
     spaceMeta,
     mediaAssets,
     scratch,
-    inbox,
+    nodeLinks,
     assistEnabled: store.assistEnabled !== false,
     timezone: sanitizeTimeZone(store.timezone),
     fixedTopSpacesEnabled: store.fixedTopSpacesEnabled === true,

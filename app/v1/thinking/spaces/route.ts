@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { readDb, updateDbScoped } from "@/lib/server/db";
+import { readUserDb, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createThinkingSpace, listThinkingSpaces } from "@/lib/server/store";
@@ -9,7 +9,7 @@ import { collapseWhitespace } from "@/lib/server/utils";
 export const GET = withApiRoute("thinking.spaces.list", async (request: NextRequest) => {
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
-  const db = await readDb();
+  const db = await readUserDb(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"]);
   const payload = listThinkingSpaces(db, userId);
   return okJson(payload);
 });
@@ -40,14 +40,13 @@ export const POST = withApiRoute(
       overLimit: false,
       createdAt: null as string | null,
       spaceId: null as string | null,
-      converted: false,
       normalizedRootQuestionText: null as string | null,
       createdAsStatement: false,
       suggestedQuestions: [] as string[],
       questionSuggestion: null as string | null
     };
 
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta"], (db) => {
       const result = createThinkingSpace(
         db,
         userId,
@@ -68,7 +67,6 @@ export const POST = withApiRoute(
       }
       state.spaceId = result.space.id;
       state.createdAt = result.space.created_at;
-      state.converted = result.converted;
       state.normalizedRootQuestionText = result.space.root_question_text;
       state.createdAsStatement = result.created_as_statement === true;
       state.suggestedQuestions = Array.isArray(result.suggested_questions) ? result.suggested_questions : [];
@@ -82,7 +80,6 @@ export const POST = withApiRoute(
       {
         space_id: state.spaceId,
         updated_at: state.createdAt,
-        converted: state.converted,
         normalized_question_text: state.normalizedRootQuestionText,
         created_as_statement: state.createdAsStatement,
         suggested_questions: state.suggestedQuestions,

@@ -1,4 +1,5 @@
-import { updateDb } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
+import { ALL_USER_SCOPED_TABLES } from "@/lib/server/db/postgres-scope";
 import {
   appendSyncOperationLog,
   findAppliedClientMutation,
@@ -34,7 +35,7 @@ export async function applySyncMutations(userId: string, body: SyncMutationsBody
       }
     | null = null;
 
-  await updateDb((db) => {
+  await updateUserDbScoped(userId, ALL_USER_SCOPED_TABLES, (db) => {
     const normalized = mutations
       .filter((entry): entry is SyncMutation => Boolean(entry && typeof entry === "object"))
       .map((entry, index) => ({

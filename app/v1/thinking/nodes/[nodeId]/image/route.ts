@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { setNodeImageAsset } from "@/lib/server/store";
@@ -18,7 +18,7 @@ export const POST = withApiRoute(
 
     let kind: "ok" | "not_found" | "readonly" | "asset_not_found" = "not_found";
     let imageAssetId: string | null = null;
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "thinking_media_assets"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes", "thinking_media_assets"], (db) => {
       const result = setNodeImageAsset(db, userId, params.nodeId, typeof body?.image_asset_id === "string" ? body.image_asset_id : null);
       kind = result.kind;
       if (result.kind === "ok") imageAssetId = result.node.image_asset_id ?? null;

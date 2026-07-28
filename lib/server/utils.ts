@@ -11,7 +11,6 @@ export const DIMENSIONS: DimensionKey[] = ["definition", "resource", "risk", "va
 type NormalizeQuestionSuccess = {
   ok: true;
   text: string;
-  converted: boolean;
   raw_note: string | null;
   is_question: boolean;
   suggested_questions: string[];
@@ -118,7 +117,6 @@ export function normalizeQuestionInput(raw: string, backgroundText: string | nul
     return {
       ok: true,
       text: normalized,
-      converted: false,
       raw_note: null,
       is_question: true,
       suggested_questions: []
@@ -130,7 +128,6 @@ export function normalizeQuestionInput(raw: string, backgroundText: string | nul
   return {
     ok: true,
     text: fallback,
-    converted: false,
     raw_note: null,
     is_question: false,
     suggested_questions: buildSuggestedQuestions(fallback, backgroundText, 3)

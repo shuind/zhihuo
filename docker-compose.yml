@@ -15,6 +15,7 @@
       - "${APP_PORT:-3000}:3000"
     volumes:
       - zhihuo-runtime-data:/app/runtime-data
+      - zhihuo-user-data:/app/data
     depends_on:
       postgres:
         condition: service_healthy
@@ -55,4 +56,5 @@
 volumes:
   zhihuo-pgdata:
   zhihuo-runtime-data:
+  zhihuo-user-data:
 

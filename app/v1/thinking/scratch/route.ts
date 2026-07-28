@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { readDb, updateDbScoped } from "@/lib/server/db";
+import { readUserDb, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createThinkingScratch, listThinkingScratch } from "@/lib/server/store";
@@ -9,7 +9,7 @@ import { collapseWhitespace } from "@/lib/server/utils";
 export const GET = withApiRoute("thinking.scratch.list", async (request: NextRequest) => {
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
-  const db = await readDb();
+  const db = await readUserDb(userId, ["thinking_scratch"]);
   return okJson({ scratch: listThinkingScratch(db, userId) });
 });
 
@@ -33,7 +33,7 @@ export const POST = withApiRoute(
     if (!rawText) return errorJson(400, "raw_text cannot be empty");
 
     const resultBox: { scratch: ReturnType<typeof createThinkingScratch> } = { scratch: null };
-    await updateDbScoped(["thinking_scratch"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_scratch"], (db) => {
       resultBox.scratch = createThinkingScratch(db, userId, rawText, {
         clientEntityId: typeof body.client_entity_id === "string" ? body.client_entity_id : null,
         clientUpdatedAt

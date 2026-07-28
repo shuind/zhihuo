@@ -24,6 +24,7 @@ import { describeSolarTerm, getCurrentSolarTerm, getMoonPhase } from "@/lib/sola
 import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "@/components/letter/letter-exporter-dialog";
 import { loadLetterSealText, loadLetterVariant } from "@/lib/letter-variant-store";
+import { useLetterAuthorName } from "@/lib/letter-settings";
 import { onSubmitEnter } from "@/lib/input-events";
 
 type DateGroup = {
@@ -34,6 +35,7 @@ type DateGroup = {
 
 const REFLECTION_CONTINUE_WINDOW_MS = 10 * 60 * 1000;
 const FIRST_DOUBT_EXAMPLE = "为什么我总在真正开始前犹豫？";
+const ARCHIVE_PAGE_SIZE = 60;
 
 function LifeLayerComponent(props: {
   store: LifeStore;
@@ -43,7 +45,7 @@ function LifeLayerComponent(props: {
   openingPhase: OpeningPhase;
   stars: StarDot[];
   onImportToThinking: (doubt: LifeDoubt) => void;
-  onCreateDoubt: (rawText: string) => Promise<boolean>;
+  onCreateDoubt: (rawText: string) => Promise<string | null>;
   onSaveDoubtNote: (doubtId: string, noteText: string, options?: LifeNoteSaveOptions) => Promise<boolean>;
   onDeleteDoubt: (doubtId: string) => Promise<boolean>;
   editable?: boolean;
@@ -59,10 +61,15 @@ function LifeLayerComponent(props: {
   const [isMobile, setIsMobile] = useState(false);
   const [deviceReady, setDeviceReady] = useState(false);
   const [fieldFocused, setFieldFocused] = useState(false);
+  const [recentDoubtId, setRecentDoubtId] = useState<string | null>(null);
+  const [archiveView, setArchiveView] = useState<"timeline" | "letters">("timeline");
+  const [visibleArchiveCount, setVisibleArchiveCount] = useState(ARCHIVE_PAGE_SIZE);
+  const letterAuthorName = useLetterAuthorName();
 
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
   const ritualTimerRef = useRef<number | null>(null);
+  const recentDoubtTimerRef = useRef<number | null>(null);
   const rowRefs = useRef<Record<string, HTMLButtonElement | null>>({});
 
   const allDoubts = useMemo(
@@ -100,6 +107,12 @@ function LifeLayerComponent(props: {
   }, [latestNotesMap]);
 
   const selectedDoubt = useMemo(() => allDoubts.find((item) => item.id === selectedDoubtId) ?? null, [allDoubts, selectedDoubtId]);
+  const recentDoubt = useMemo(() => allDoubts.find((item) => item.id === recentDoubtId) ?? null, [allDoubts, recentDoubtId]);
+  const letterDoubts = useMemo(() => allDoubts.filter(hasLetterContent), [allDoubts]);
+  const anniversaryDoubt = useMemo(
+    () => allDoubts.find((item) => isAnniversaryToday(item.createdAt)) ?? null,
+    [allDoubts]
+  );
   const isSplitView = Boolean(selectedDoubt);
   const showSearchInput = !isMobile ? isSplitView : Boolean(selectedDoubt && mobileSearchMode);
   const normalizedSearch = useMemo(() => collapseWhitespace(searchQuery).toLocaleLowerCase(), [searchQuery]);
@@ -109,17 +122,27 @@ function LifeLayerComponent(props: {
     if (!normalizedSearch) return allDoubts;
     return allDoubts.filter((item) => item.rawText.toLocaleLowerCase().includes(normalizedSearch) || item.id === selectedDoubtId);
   }, [allDoubts, normalizedSearch, selectedDoubtId]);
+  const visibleDoubts = useMemo(
+    () => filteredDoubts.slice(0, visibleArchiveCount),
+    [filteredDoubts, visibleArchiveCount]
+  );
+  const visibleLetterDoubts = useMemo(
+    () => letterDoubts.slice(0, visibleArchiveCount),
+    [letterDoubts, visibleArchiveCount]
+  );
 
   const groupedTimeline = useMemo<DateGroup[]>(() => {
     const groups: DateGroup[] = [];
-    for (const item of filteredDoubts) {
+    for (const item of visibleDoubts) {
       const key = getDateKeyInTimeZone(item.createdAt, props.timezone);
       const previous = groups[groups.length - 1];
       if (previous && previous.key === key) previous.items.push(item);
       else groups.push({ key, label: formatGroupLabel(key, props.timezone), items: [item] });
     }
     return groups;
-  }, [filteredDoubts, props.timezone]);
+  }, [props.timezone, visibleDoubts]);
+
+  useEffect(() => setVisibleArchiveCount(ARCHIVE_PAGE_SIZE), [archiveView, normalizedSearch]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -165,6 +188,7 @@ function LifeLayerComponent(props: {
     const timer = ritualTimerRef;
     return () => {
       if (timer.current) window.clearTimeout(timer.current);
+      if (recentDoubtTimerRef.current) window.clearTimeout(recentDoubtTimerRef.current);
     };
   }, []);
 
@@ -202,10 +226,16 @@ function LifeLayerComponent(props: {
     }
     const text = collapseWhitespace(composerRef.current?.value ?? inputValue);
     if (!text) return;
-    const ok = await props.onCreateDoubt(text);
-    if (!ok) return;
+    const doubtId = await props.onCreateDoubt(text);
+    if (!doubtId) return;
     dismissFirstDoubtGuide();
     setInputValue("");
+    setRecentDoubtId(doubtId);
+    if (recentDoubtTimerRef.current) window.clearTimeout(recentDoubtTimerRef.current);
+    recentDoubtTimerRef.current = window.setTimeout(() => {
+      setRecentDoubtId(null);
+      recentDoubtTimerRef.current = null;
+    }, 3000);
     setRitualVisible(true);
     if (ritualTimerRef.current) window.clearTimeout(ritualTimerRef.current);
     ritualTimerRef.current = window.setTimeout(() => {
@@ -278,13 +308,26 @@ function LifeLayerComponent(props: {
                   </h1>
                   <p className="text-[var(--text-meta)] tracking-[var(--tracking-meta)] text-[var(--life-title-amber-soft)]">
                     {allDoubts.length}
-                    {" \u7F15\u601D\u7EEA\u5728\u6B64\u6C89\u6DC0"}
+                    {" \u7F15\u601D\u7EEA\u7559\u5728\u65F6\u95F4"}
                   </p>
                 </div>
-                <div className="flex items-center gap-1.5 opacity-40" aria-hidden="true">
-                  <span className="h-1 w-1 rounded-full bg-[var(--time-accent)]/55" />
-                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--time-accent)]/70" />
-                  <span className="h-1 w-1 rounded-full bg-[var(--time-accent)]/55" />
+                <div className="flex items-center gap-1 rounded-full border border-white/[0.08] bg-white/[0.025] p-1 text-[11px] text-[var(--time-text-soft)]">
+                  <button
+                    type="button"
+                    aria-pressed={archiveView === "timeline"}
+                    className={cn("rounded-full px-3 py-1.5", archiveView === "timeline" && "bg-white/[0.09] text-[var(--time-text)]")}
+                    onClick={() => setArchiveView("timeline")}
+                  >
+                    时间河流
+                  </button>
+                  <button
+                    type="button"
+                    aria-pressed={archiveView === "letters"}
+                    className={cn("rounded-full px-3 py-1.5", archiveView === "letters" && "bg-white/[0.09] text-[var(--time-text)]")}
+                    onClick={() => setArchiveView("letters")}
+                  >
+                    信笺年历
+                  </button>
                 </div>
               </div>
 
@@ -305,8 +348,8 @@ function LifeLayerComponent(props: {
                         className={cn(
                           "min-h-[2.6rem] max-h-[220px] w-full border-0 bg-transparent px-0 py-0 text-[var(--text-body)] font-light leading-[1.95] tracking-[var(--tracking-body)] text-[var(--time-text-strong)] shadow-none ring-0 transition-colors duration-300 focus-visible:ring-0",
                           fieldFocused
-                            ? "placeholder:text-[rgba(150,145,138,0.52)] hover:placeholder:text-[rgba(150,145,138,0.52)]"
-                            : "placeholder:text-[rgba(124,129,132,0.4)] hover:placeholder:text-[rgba(124,129,132,0.4)]"
+                            ? "placeholder:text-[rgba(183,190,193,0.78)] hover:placeholder:text-[rgba(183,190,193,0.78)]"
+                            : "placeholder:text-[rgba(164,173,178,0.68)] hover:placeholder:text-[rgba(174,183,188,0.74)]"
                         )}
                         onChange={(event) => setInputValue(event.target.value)}
                         onFocus={() => setFieldFocused(true)}
@@ -314,13 +357,13 @@ function LifeLayerComponent(props: {
                         onKeyDown={onSubmitEnter(saveDoubt)}
                       />
                       <div className="mt-3 flex items-center justify-between gap-4 text-[var(--text-caption)] tracking-[var(--tracking-display)] text-[var(--time-text-soft)]">
-                        <p className={cn("transition-opacity duration-500", ritualVisible ? "opacity-100" : "opacity-0")}>{"\u5DF2\u5B58\u5165\u65F6\u95F4"}</p>
+                        <p className={cn("transition-opacity duration-500", ritualVisible ? "opacity-100" : "opacity-0")}>已封存此刻</p>
                         <div className="flex items-center gap-3">
-                          <span className={cn("transition-opacity duration-500", inputValue ? "opacity-100" : "opacity-40")}>{inputValue.length}/280</span>
+                          <span className={cn("transition-opacity duration-500", inputValue ? "opacity-100" : "opacity-0")}>{inputValue.length}/280</span>
                           <Button
                             type="button"
                             variant="ghost"
-                            disabled={props.editable === false}
+                            disabled={props.editable === false || !inputValue.trim()}
                             className="time-subtle-button life-compose-button rounded-full px-4 text-[11px] font-light tracking-[0.16em]"
                             onClick={() => void saveDoubt()}
                           >
@@ -366,7 +409,7 @@ function LifeLayerComponent(props: {
                           value={searchQuery}
                           data-life-search="true"
                           placeholder={"\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41..."}
-                          className="h-10 flex-1 border-0 bg-transparent px-0 text-[0.92rem] font-light tracking-[0.05em] text-[rgba(186,192,196,0.73)] outline-none placeholder:text-[rgba(130,136,140,0.46)]"
+                          className="h-11 flex-1 border-0 bg-transparent px-0 text-[var(--text-body)] font-light tracking-[var(--tracking-body)] text-[rgba(186,192,196,0.73)] outline-none placeholder:text-[rgba(130,136,140,0.46)] sm:h-10"
                           onChange={(event) => setSearchQuery(event.target.value)}
                           onFocus={() => setFieldFocused(true)}
                           onBlur={() => setFieldFocused(false)}
@@ -387,12 +430,32 @@ function LifeLayerComponent(props: {
                   )}
                 </div>
               </div>
+              {anniversaryDoubt ? (
+                <button
+                  type="button"
+                  data-anniversary-echo="true"
+                  className="mb-5 w-full rounded-2xl border border-amber-200/15 bg-amber-100/[0.045] px-4 py-3 text-left text-[13px] leading-6 text-[rgba(225,214,192,0.86)] transition-colors hover:bg-amber-100/[0.07]"
+                  onClick={() => handleSelect(anniversaryDoubt.id)}
+                >
+                  <span className="block text-[11px] tracking-[0.12em] text-[rgba(196,164,111,0.72)]">
+                    {anniversaryYears(anniversaryDoubt.createdAt)} 年前的今天
+                  </span>
+                  <span className="mt-1 line-clamp-2 block">那时你在想：“{anniversaryDoubt.rawText}”——现在呢？</span>
+                </button>
+              ) : null}
             </div>
           </header>
 
           <main className="time-list-mask flex-1 overflow-y-auto">
             <div className="mx-auto w-full max-w-2xl px-8 pb-32 lg:px-12" data-life-timeline="true">
-              {filteredDoubts.length === 0 ? (
+              {archiveView === "letters" ? (
+                <LetterCalendarView
+                  doubts={visibleLetterDoubts}
+                  timezone={props.timezone}
+                  authorName={letterAuthorName}
+                  onSelect={handleSelect}
+                />
+              ) : filteredDoubts.length === 0 ? (
                 <EmptyTimelineState hasSearch={Boolean(normalizedSearch)} />
               ) : (
                 <div className="space-y-16">
@@ -411,6 +474,17 @@ function LifeLayerComponent(props: {
                   ))}
                 </div>
               )}
+              {(archiveView === "letters" ? letterDoubts.length : filteredDoubts.length) > visibleArchiveCount ? (
+                <div className="mt-12 flex justify-center">
+                  <button
+                    type="button"
+                    className="min-h-11 rounded-full border border-white/[0.1] bg-white/[0.035] px-6 text-[12px] tracking-[0.08em] text-[var(--time-text-soft)] transition-colors hover:bg-white/[0.07] hover:text-[var(--time-text)]"
+                    onClick={() => setVisibleArchiveCount((count) => count + ARCHIVE_PAGE_SIZE)}
+                  >
+                    加载更早内容
+                  </button>
+                </div>
+              ) : null}
             </div>
           </main>
         </div>
@@ -428,6 +502,27 @@ function LifeLayerComponent(props: {
             />
           ) : null}
       </div>
+      {recentDoubt ? (
+        <div
+          role="status"
+          aria-live="polite"
+          data-post-save-toast="true"
+          className="fixed bottom-20 left-1/2 z-50 flex -translate-x-1/2 items-center gap-4 rounded-full border border-white/[0.1] bg-[rgba(26,31,34,0.94)] px-5 py-3 text-[13px] text-[rgba(221,226,227,0.9)] shadow-[0_18px_55px_rgba(0,0,0,0.3)] backdrop-blur animate-[zhDialogPanelIn_240ms_ease-out_1]"
+        >
+          <span>已封存</span>
+          <button
+            type="button"
+            className="min-h-8 rounded-full border border-white/[0.13] bg-white/[0.08] px-4 text-[12px] text-white transition-colors hover:bg-white/[0.14]"
+            onClick={() => {
+              if (recentDoubtTimerRef.current) window.clearTimeout(recentDoubtTimerRef.current);
+              setRecentDoubtId(null);
+              props.onImportToThinking(recentDoubt);
+            }}
+          >
+            继续想
+          </button>
+        </div>
+      ) : null}
 
       {isMobile && selectedDoubt && mobileDetailOpen ? (
           <MobileDetailDrawer
@@ -472,7 +567,7 @@ function EmptyTimelineState(props: { hasSearch: boolean }) {
         <p className="time-serif text-[28px] text-[var(--time-text)]">
           {props.hasSearch ? "\u6CA1\u6709\u627E\u5230\u76F8\u8FD1\u7684\u95EE\u9898" : "\u4ECA\u591C\u5C1A\u65E0\u843D\u7B14"}
         </p>
-        <p className="text-sm leading-8 text-[var(--time-text-soft)]">
+        <p className="text-sm leading-8 text-[rgba(190,199,203,0.74)]">
           {props.hasSearch
             ? "\u6362\u4E00\u4E2A\u8BCD\uFF0C\u518D\u6CBF\u7740\u8FD9\u6761\u65F6\u95F4\u6CB3\u6D41\u8F7B\u8F7B\u68C0\u7D22\u3002"
             : "\u5199\u4E0B\u4E00\u53E5\u60AC\u800C\u672A\u51B3\u7684\u8BDD\uFF0C\u5B83\u4F1A\u7559\u5728\u8FD9\u91CC\u3002"}
@@ -560,7 +655,7 @@ function TimeEntryCard(props: {
       >
         <div className="relative z-10 flex items-start gap-4">
           <div className="relative flex h-[1.96rem] shrink-0 items-center">
-            <span className={cn("time-status-dot", "time-status-dot--plain")} />
+            <span className={cn("time-status-dot", hasLetterContent(props.doubt) ? "time-status-dot--sealed" : "time-status-dot--plain")} />
           </div>
 
           <div className="min-w-0 flex-1">
@@ -588,12 +683,105 @@ function TimeEntryCard(props: {
             <div className="mt-3 flex items-center gap-4 text-[12px] tracking-[0.04em] text-[var(--time-text-soft)]">
               <time className="life-time-meta transition-colors duration-300">{formatRelativeTime(props.doubt.createdAt)}</time>
               {props.noteText ? <span>{"\u6709\u56DE\u770B"}</span> : null}
+              {hasLetterContent(props.doubt) ? <span className="text-[#a86855]">封存笺</span> : null}
             </div>
           </div>
         </div>
       </button>
     </article>
   );
+}
+
+function LetterCalendarView(props: {
+  doubts: LifeDoubt[];
+  timezone: string;
+  authorName: string;
+  onSelect: (id: string) => void;
+}) {
+  const groups = new Map<string, LifeDoubt[]>();
+  for (const doubt of props.doubts) {
+    const key = getDateKeyInTimeZone(doubt.createdAt, props.timezone).slice(0, 7);
+    const list = groups.get(key);
+    if (list) list.push(doubt);
+    else groups.set(key, [doubt]);
+  }
+
+  if (!props.doubts.length) {
+    return (
+      <div className="grid min-h-[28rem] place-items-center py-12 text-center">
+        <div>
+          <p className="text-2xl text-[var(--time-text)]">尚无封存笺</p>
+          <p className="mt-3 text-sm leading-7 text-[var(--time-text-soft)]">在“想一想”中封存一个空间，信笺会按月份留在这里。</p>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div data-letter-calendar="true" className="space-y-12 pt-2">
+      {[...groups.entries()].map(([monthKey, doubts]) => (
+        <section key={monthKey}>
+          <h2 className="mb-4 text-[12px] tracking-[0.12em] text-[var(--time-text-soft)]">
+            {monthKey.replace("-", " / ")}
+          </h2>
+          <div className="grid grid-cols-2 gap-4 sm:grid-cols-3">
+            {doubts.map((doubt) => {
+              const writtenAt = new Date(doubt.createdAt);
+              const variant = resolvePaperVariant(doubt.letterVariant);
+              return (
+                <button
+                  key={doubt.id}
+                  type="button"
+                  className="group overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.025] text-left shadow-[0_12px_32px_rgba(0,0,0,0.18)] transition-transform hover:-translate-y-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-200/45"
+                  onClick={() => props.onSelect(doubt.id)}
+                >
+                  <LetterPaper
+                    variant={variant}
+                    title={doubt.letterTitle || doubt.rawText}
+                    lines={doubt.letterLines?.length ? doubt.letterLines : [doubt.rawText]}
+                    dateLabel={`${writtenAt.getFullYear()} / ${writtenAt.getMonth() + 1} / ${writtenAt.getDate()}`}
+                    solarTermLabel={describeSolarTerm(writtenAt)}
+                    moon={getMoonPhase(writtenAt)}
+                    authorName={props.authorName}
+                    ornamentSealText={doubt.letterSealText ?? "知"}
+                    sealVisible
+                    sealDateLabel={`${writtenAt.getFullYear()} / ${writtenAt.getMonth() + 1} / ${writtenAt.getDate()}`}
+                    sealSolarTerm={getCurrentSolarTerm(writtenAt).name}
+                    className="pointer-events-none"
+                  />
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ))}
+    </div>
+  );
+}
+
+function hasLetterContent(doubt: LifeDoubt) {
+  return Boolean(doubt.letterTitle || doubt.letterLines?.length);
+}
+
+function resolvePaperVariant(value: string | null | undefined): PaperVariant {
+  return value === "plain" || value === "rice" || value === "clay" || value === "tide" || value === "ink" || value === "vellum"
+    ? value
+    : "plain";
+}
+
+function isAnniversaryToday(iso: string) {
+  const then = new Date(iso);
+  const now = new Date();
+  return (
+    Number.isFinite(then.getTime()) &&
+    now.getFullYear() > then.getFullYear() &&
+    now.getMonth() === then.getMonth() &&
+    now.getDate() === then.getDate()
+  );
+}
+
+function anniversaryYears(iso: string) {
+  return Math.max(1, new Date().getFullYear() - new Date(iso).getFullYear());
 }
 
 function DetailPanel(props: {
@@ -625,14 +813,32 @@ function MobileDetailDrawer(props: {
   onImport: () => void;
   onSaveNote: (value: string, options?: LifeNoteSaveOptions) => void;
 }) {
+  const [viewportHeight, setViewportHeight] = useState<number | null>(null);
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    const update = () => setViewportHeight(viewport?.height ?? window.innerHeight);
+    update();
+    viewport?.addEventListener("resize", update);
+    viewport?.addEventListener("scroll", update);
+    window.addEventListener("resize", update);
+    return () => {
+      viewport?.removeEventListener("resize", update);
+      viewport?.removeEventListener("scroll", update);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
   return (
     <section
+      role="dialog"
+      aria-modal="true"
+      aria-label="时间详情"
       className="absolute inset-0 z-40 bg-black/40 animate-[zhDialogFadeIn_220ms_ease-out_1] lg:hidden"
       data-life-detail="mobile"
       onClick={props.onClose}
     >
       <div
         className="time-sheet absolute bottom-0 left-0 right-0 flex h-[82vh] max-h-[82vh] flex-col overflow-hidden rounded-t-[2rem] border border-b-0 border-white/8 pb-6 shadow-[0_-24px_80px_rgba(0,0,0,0.44)] animate-[zhSheetIn_320ms_ease-out_1]"
+        style={viewportHeight ? { height: Math.max(280, viewportHeight * 0.82), maxHeight: Math.max(280, viewportHeight - 16) } : undefined}
         onClick={(event) => event.stopPropagation()}
       >
         <div className="mx-auto mt-3 h-1.5 w-16 rounded-full bg-white/10" />
@@ -670,6 +876,7 @@ function DetailBody(props: {
   const [letterPreviewOpen, setLetterPreviewOpen] = useState(false);
   const [reflectionHistoryOpen, setReflectionHistoryOpen] = useState(false);
   const [noteDraft, setNoteDraft] = useState(currentNoteText);
+  const letterAuthorName = useLetterAuthorName();
 
   useEffect(() => {
     setLetterPreviewOpen(false);
@@ -756,10 +963,10 @@ function DetailBody(props: {
   const noteStateLabel = currentEditableNote ? "继续这次回望" : latestReflectionNote ? "写下新的回望" : "等待回望";
   const reflectionCount = reflectionNotes.length;
   const letterHint = storedLetterLines.length
-    ? `${storedLetterLines.length} 行沉淀`
+    ? `${storedLetterLines.length} 行封存文字`
     : hasThoughtTrace
       ? "来自思考首尾"
-      : "沉淀样式";
+      : "信笺样式";
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden">
@@ -772,7 +979,7 @@ function DetailBody(props: {
               onClick={() => setLetterPreviewOpen(true)}
               className="rounded-full border border-white/[0.055] bg-white/[0.018] px-3 py-1.5 text-[12px] tracking-[0.08em] text-[rgba(181,189,194,0.66)] transition-colors duration-500 hover:border-white/[0.09] hover:text-[rgba(220,226,229,0.84)]"
             >
-              沉淀笺
+              封存笺
             </button>
           ) : null}
         </div>
@@ -796,7 +1003,7 @@ function DetailBody(props: {
             <section className="space-y-5">
               <div className="flex flex-wrap items-center gap-4 text-[12px] tracking-[0.04em] text-[rgba(126,132,136,0.42)]">
                 <time>{formatDateTimeInTimeZone(props.doubt.createdAt, props.timezone)}</time>
-                <span>{hasThoughtTrace ? "来自思考沉淀" : "时间切片"}</span>
+                <span>{hasThoughtTrace ? "来自思考封存" : "时间切片"}</span>
               </div>
               <p className="max-w-[580px] text-[17px] font-light leading-[1.78] tracking-[0.01em] text-[rgba(210,217,220,0.86)] md:text-[23px]" data-life-selected-title="true">
                 {props.doubt.rawText}
@@ -885,7 +1092,7 @@ function DetailBody(props: {
           <button type="button" className="text-sm tracking-[var(--tracking-meta)] text-[rgba(192,199,204,0.72)] transition-colors duration-300 hover:text-[rgba(220,226,229,0.9)]" onClick={handlePrimaryAction}>
             {"\u5E26\u5165\u601D\u8003"}
           </button>
-          <button type="button" className="text-sm tracking-[var(--tracking-meta)] text-[rgba(140,148,153,0.48)] transition-colors duration-300 hover:text-[rgba(174,182,187,0.7)]" onClick={props.onDelete}>
+          <button type="button" className="text-sm tracking-[var(--tracking-meta)] text-[rgba(202,208,211,0.78)] transition-colors duration-300 hover:text-[rgba(239,149,143,0.96)]" onClick={props.onDelete}>
             {"\u5220\u9664"}
           </button>
         </div>
@@ -897,7 +1104,7 @@ function DetailBody(props: {
           >
             <div className={cn("flex items-center justify-between px-8 pb-5 pt-[5.75rem]", props.compact && "px-6 pb-4 pt-5 md:px-8")}>
               <div className="space-y-1">
-                <p className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">沉淀笺</p>
+                <p className="text-[12px] uppercase tracking-[0.12em] text-[rgba(120,126,130,0.52)]">封存笺</p>
                 <p className="text-[11px] tracking-[0.08em] text-[rgba(144,152,158,0.46)]">{letterHint}</p>
               </div>
               <div className="flex items-center gap-4">
@@ -927,7 +1134,7 @@ function DetailBody(props: {
                     dateLabel={dateLabel}
                     solarTermLabel={solarTermLabel}
                     moon={moon}
-                    authorName="shuind"
+                    authorName={letterAuthorName}
                     ornamentSealText={ornamentSealText}
                     sealVisible
                     sealDateLabel={dateLabel}
@@ -948,6 +1155,9 @@ export const LifeLayer = memo(LifeLayerComponent);
 function ConfirmDialog(props: { title: string; description: string; confirmLabel: string; onCancel: () => void; onConfirm: () => void }) {
   return (
     <section
+      role="alertdialog"
+      aria-modal="true"
+      aria-label={props.title}
       className="absolute inset-0 z-40 grid place-items-center bg-black/56 p-4 animate-[zhDialogFadeIn_220ms_ease-out_1]"
     >
       <div className="w-full max-w-md rounded-[1.8rem] border border-white/[0.08] bg-[rgba(8,10,12,0.94)] px-6 py-6 shadow-[0_24px_64px_rgba(0,0,0,0.22)]">
@@ -1019,4 +1229,3 @@ function formatRelativeTime(iso: string) {
   const years = Math.floor(months / 12);
   return `${years} \u5E74\u524D`;
 }
-

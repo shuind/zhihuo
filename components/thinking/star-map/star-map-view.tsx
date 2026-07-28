@@ -21,6 +21,7 @@ export interface StarMapViewProps {
   onSelectTrack?: (trackId: string) => void
   onJumpToTrackNode: (trackId: string, nodeId: string) => void
   onSubmitFromNode?: (trackId: string, nodeId: string, rawInput: string) => Promise<void>
+  onOpenSettings?: () => void
 
   composerEnabled?: boolean
   className?: string
@@ -81,6 +82,7 @@ export function StarMapView({
   frozen,
   onJumpToTrackNode,
   onSubmitFromNode,
+  onOpenSettings,
   composerEnabled = true,
   className,
   mediaAssetSources,
@@ -244,10 +246,12 @@ export function StarMapView({
     }
     setCurateStatus("error")
     setCurateError(result.error)
-    window.setTimeout(() => {
-      setCurateStatus((prev) => (prev === "error" ? "idle" : prev))
-      setCurateError(null)
-    }, 2600)
+    if (!isCurateSettingsError(result.error)) {
+      window.setTimeout(() => {
+        setCurateStatus((prev) => (prev === "error" ? "idle" : prev))
+        setCurateError(null)
+      }, 5000)
+    }
   }
 
   function resetToFallback() {
@@ -398,8 +402,20 @@ export function StarMapView({
         ) : null}
 
         {curateStatus === "error" && curateErrorLabel ? (
-          <div className="pointer-events-none absolute bottom-20 left-1/2 max-w-[calc(100vw-32px)] -translate-x-1/2 rounded-full border border-[#3a2a2a] bg-[#0f0e0b]/86 px-4 py-1.5 text-center text-[11px] tracking-[0.06em] text-[#c9a89a] backdrop-blur-sm">
-            {curateErrorLabel}
+          <div
+            role="alert"
+            className="pointer-events-auto absolute bottom-20 left-1/2 flex max-w-[calc(100vw-32px)] -translate-x-1/2 items-center gap-3 rounded-full border border-[#3a2a2a] bg-[#0f0e0b]/92 px-4 py-2 text-center text-[11px] tracking-[0.04em] text-[#d9b8aa] backdrop-blur-sm"
+          >
+            <span>{curateErrorLabel}</span>
+            {curateError && isCurateSettingsError(curateError) && onOpenSettings ? (
+              <button
+                type="button"
+                className="shrink-0 rounded-full border border-[#76594c] px-2.5 py-1 text-[#f0d4c5] hover:bg-white/[0.06]"
+                onClick={onOpenSettings}
+              >
+                前往设置
+              </button>
+            ) : null}
           </div>
         ) : null}
       </div>
@@ -501,10 +517,20 @@ function hashText(value: string) {
 }
 
 function getCurateErrorLabel(error: string) {
-  if (/未授权|unauthorized|http_401|api key|apikey|deepseek|network|fetch/i.test(error)) {
+  if (/允许按次使用第三方 AI/i.test(error)) {
+    return "AI 策展尚未获授权"
+  }
+  if (/api key|apikey|请先在设置里填写/i.test(error)) {
+    return "请先在设置里填写 AI API Key"
+  }
+  if (/未授权|unauthorized|http_401|deepseek|network|fetch/i.test(error)) {
     return "AI 策展暂不可用 · 已保留当前星图"
   }
   return "策展失败 · 已保留当前星图"
+}
+
+function isCurateSettingsError(error: string) {
+  return /允许按次使用第三方 AI|api key|apikey|请先在设置里填写/i.test(error)
 }
 
 function loadPersistedCuratedScene(spaceId: string, signature: string): Scene | null {

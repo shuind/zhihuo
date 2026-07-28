@@ -1,6 +1,9 @@
 "use client";
 
+import { useRef, useState } from "react";
+
 import type { ThinkingScratchItem, ThinkingSpace } from "@/components/zhihuo-model";
+import { cn } from "@/lib/utils";
 
 export function ScratchDrawer(props: {
   open: boolean;
@@ -14,9 +17,11 @@ export function ScratchDrawer(props: {
   showNotice: (message: string) => void;
   formatRelativeTime: (createdAt?: string) => string;
 }) {
+  const [activeActionsId, setActiveActionsId] = useState<string | null>(null);
+  const longPressTimerRef = useRef<number | null>(null);
   if (!props.open) return null;
   return (
-    <div className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
+    <div role="dialog" aria-modal="true" aria-label="随记列表" className="absolute inset-0 z-40 bg-black/15 backdrop-blur-[1px]">
       <button
         type="button"
         aria-label="关闭随记列表"
@@ -28,7 +33,7 @@ export function ScratchDrawer(props: {
           <div className="mx-auto h-1.5 w-14 rounded-full bg-black/[0.08]" />
           <div className="mt-4 flex items-center justify-between gap-3">
             <p className="text-[15px] text-slate-800">随记</p>
-            <span className="text-[11px] text-slate-400">{props.items.length} 条</span>
+            <span className="text-[11px] text-slate-600">{props.items.length} 条</span>
           </div>
           <div className="mt-4 max-h-[62vh] overflow-y-auto pr-1">
             <div className="space-y-3 pb-1">
@@ -40,16 +45,39 @@ export function ScratchDrawer(props: {
                   <div
                     key={item.id}
                     className="rounded-[20px] border border-black/[0.05] bg-white/34 px-4 py-3"
+                    onPointerDown={(event) => {
+                      if (event.pointerType === "mouse") return;
+                      if (event.target instanceof Element && event.target.closest("button")) return;
+                      if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+                      longPressTimerRef.current = window.setTimeout(() => {
+                        setActiveActionsId(item.id);
+                        longPressTimerRef.current = null;
+                      }, 520);
+                    }}
+                    onPointerUp={() => {
+                      if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+                      longPressTimerRef.current = null;
+                    }}
+                    onPointerCancel={() => {
+                      if (longPressTimerRef.current) window.clearTimeout(longPressTimerRef.current);
+                      longPressTimerRef.current = null;
+                    }}
                   >
                     <div className="flex items-start justify-between gap-4">
                       <div className="min-w-0 flex-1">
                         <p className="text-[14px] leading-[1.7] text-slate-800 [overflow-wrap:anywhere]">{item.rawText}</p>
-                        <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                        <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-600">
                           <span>{props.formatRelativeTime(item.updatedAt)}</span>
                           {linkedSpace ? <span>已进入想一想</span> : null}
                         </div>
                       </div>
-                      <div className="flex shrink-0 items-center gap-2">
+                      <div
+                        className={cn(
+                          "shrink-0 items-center gap-2 md:flex",
+                          activeActionsId === item.id ? "flex" : "hidden"
+                        )}
+                        aria-label="随记操作"
+                      >
                         {linkedSpace ? (
                           <button
                             type="button"
@@ -72,23 +100,23 @@ export function ScratchDrawer(props: {
                         )}
                         <button
                           type="button"
-                          className="rounded-full px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-slate-700"
+                          className="rounded-full px-2 py-1 text-[11px] text-slate-600 transition-colors hover:text-slate-700"
                           onClick={() =>
                             void (async () => {
                               const ok = await props.onFeedScratchToTime(item.id);
                               if (!ok) {
-                                props.showNotice("放入时间失败，请稍后再试");
+                                props.showNotice("封存失败，请稍后再试");
                                 return;
                               }
-                              props.showNotice("已放入时间层");
+                              props.showNotice("已封存到时间");
                             })()
                           }
                         >
-                          放入时间
+                          封存
                         </button>
                         <button
                           type="button"
-                          className="rounded-full px-2 py-1 text-[11px] text-slate-400 transition-colors hover:text-slate-700"
+                          className="rounded-full px-2 py-1 text-[11px] text-slate-600 transition-colors hover:text-slate-700"
                           onClick={() =>
                             void (async () => {
                               const ok = await props.onDeleteScratch(item.id);

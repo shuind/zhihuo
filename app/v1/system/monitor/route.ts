@@ -1,8 +1,9 @@
 import { NextRequest } from "next/server";
 
 import { getAuthSecretStatus } from "@/lib/server/auth";
-import { readDb, readMonitorTrafficMetrics } from "@/lib/server/db";
-import { getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
+import { isAdminUser } from "@/lib/server/admin";
+import { readDb, readMonitorTrafficMetrics, readUserDb } from "@/lib/server/db";
+import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { getSystemMonitorMetrics } from "@/lib/server/store";
 
@@ -12,6 +13,8 @@ export const GET = withApiRoute(
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
+    const userDb = await readUserDb(userId, []);
+    if (!isAdminUser(userDb, userId)) return errorJson(403, "forbidden");
     const db = await readDb();
     const metrics = getSystemMonitorMetrics(db);
     const traffic = await readMonitorTrafficMetrics();

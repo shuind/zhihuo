@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 
 import { canImportUserData } from "@/lib/capabilities";
-import { updateDb } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
+import { ALL_USER_SCOPED_TABLES } from "@/lib/server/db/postgres-scope";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { writeThinkingMediaAssetFile } from "@/lib/server/media";
 import { withApiRoute } from "@/lib/server/observability";
@@ -93,6 +94,15 @@ type UserExportPayload = {
       starMapPlacementsSignature?: string | null;
       starMapPlacementsUpdatedAt?: string | null;
     }>;
+    node_links?: Array<{
+      id?: string;
+      spaceId?: string;
+      sourceNodeId?: string;
+      targetNodeId?: string;
+      linkType?: "related";
+      score?: number;
+      createdAt?: string;
+    }>;
     inbox?: Record<string, Array<{ id?: string; rawText?: string; createdAt?: string }>>;
     scratch?: Array<{
       id?: string;
@@ -142,6 +152,7 @@ type OverwriteVerify = {
     inbox: number;
     scratch: number;
     mediaAssets: number;
+    nodeLinks: number;
   };
 };
 
@@ -153,10 +164,12 @@ function validateReferences(payload: UserExportPayload) {
   const inbox = payload.thinking?.inbox ?? {};
   const meta = Array.isArray(payload.thinking?.space_meta) ? payload.thinking.space_meta : [];
   const mediaAssets = Array.isArray(payload.thinking?.media_assets) ? payload.thinking.media_assets : [];
+  const nodeLinks = Array.isArray(payload.thinking?.node_links) ? payload.thinking.node_links : [];
 
   const doubtIds = new Set(doubts.map((item) => item.id).filter((id): id is string => typeof id === "string"));
   const spaceIds = new Set(spaces.map((item) => item.id).filter((id): id is string => typeof id === "string"));
   const mediaIds = new Set(mediaAssets.map((item) => item.id).filter((id): id is string => typeof id === "string"));
+  const nodeIds = new Set(nodes.map((item) => item.id).filter((id): id is string => typeof id === "string"));
 
   const brokenNotes = notes.filter((item) => !doubtIds.has(item.doubt_id ?? ""));
   const brokenNodes = nodes.filter(
@@ -178,14 +191,21 @@ function validateReferences(payload: UserExportPayload) {
     return false;
   });
   const brokenInbox = Object.entries(inbox).filter(([spaceId]) => !spaceIds.has(spaceId));
+  const brokenLinks = nodeLinks.filter(
+    (item) =>
+      !spaceIds.has(item.spaceId ?? "") ||
+      !nodeIds.has(item.sourceNodeId ?? "") ||
+      !nodeIds.has(item.targetNodeId ?? "")
+  );
 
   return {
-    ok: brokenNotes.length + brokenNodes.length + brokenMeta.length + brokenInbox.length === 0,
+    ok: brokenNotes.length + brokenNodes.length + brokenMeta.length + brokenInbox.length + brokenLinks.length === 0,
     broken: {
       notes: brokenNotes.length,
       nodes: brokenNodes.length,
       space_meta: brokenMeta.length,
-      inbox: brokenInbox.length
+      inbox: brokenInbox.length,
+      node_links: brokenLinks.length
     }
   };
 }
@@ -206,7 +226,8 @@ function countPayload(payload: UserExportPayload): OverwriteVerify {
       spaceMeta: (payload.thinking?.space_meta ?? []).filter((item) => spaceIds.has(item.spaceId ?? "")).length,
       inbox: Object.values(payload.thinking?.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
       scratch: (payload.thinking?.scratch ?? []).filter((item) => typeof item.deletedAt !== "string").length,
-      mediaAssets: (payload.thinking?.media_assets ?? []).filter((item) => typeof item.deletedAt !== "string" && typeof item.deleted_at !== "string").length
+      mediaAssets: (payload.thinking?.media_assets ?? []).filter((item) => typeof item.deletedAt !== "string" && typeof item.deleted_at !== "string").length,
+      nodeLinks: payload.thinking?.node_links?.length ?? 0
     }
   };
 }
@@ -223,7 +244,8 @@ function countSnapshot(snapshot: NonNullable<ReturnType<typeof getUserSyncSnapsh
       spaceMeta: snapshot.thinking.spaceMeta.length,
       inbox: Object.values(snapshot.thinking.inbox ?? {}).reduce((sum, list) => sum + (Array.isArray(list) ? list.length : 0), 0),
       scratch: snapshot.thinking.scratch?.length ?? 0,
-      mediaAssets: snapshot.thinking.mediaAssets?.length ?? 0
+      mediaAssets: snapshot.thinking.mediaAssets?.length ?? 0,
+      nodeLinks: snapshot.thinking.nodeLinks?.length ?? 0
     }
   };
 }
@@ -239,6 +261,9 @@ function verifyOverwriteCounts(expected: OverwriteVerify, actual: OverwriteVerif
   if (actual.thinking.scratch !== expected.thinking.scratch) mismatches.push(`thinking.scratch:${actual.thinking.scratch}/${expected.thinking.scratch}`);
   if (actual.thinking.mediaAssets !== expected.thinking.mediaAssets) {
     mismatches.push(`thinking.mediaAssets:${actual.thinking.mediaAssets}/${expected.thinking.mediaAssets}`);
+  }
+  if (actual.thinking.nodeLinks !== expected.thinking.nodeLinks) {
+    mismatches.push(`thinking.nodeLinks:${actual.thinking.nodeLinks}/${expected.thinking.nodeLinks}`);
   }
   return mismatches;
 }
@@ -273,7 +298,7 @@ export const POST = withApiRoute(
         }
       | null = null;
 
-    await updateDb(async (db) => {
+    await updateUserDbScoped(userId, ALL_USER_SCOPED_TABLES, async (db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!canImportUserData(user)) return;
 
@@ -281,6 +306,9 @@ export const POST = withApiRoute(
         spaces: (payload.thinking?.spaces ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["spaces"],
         nodes: (payload.thinking?.nodes ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["nodes"],
         spaceMeta: (payload.thinking?.space_meta ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["spaceMeta"],
+        nodeLinks: Array.isArray(payload.thinking?.node_links)
+          ? (payload.thinking.node_links as Parameters<typeof replaceThinkingSnapshot>[2]["nodeLinks"])
+          : undefined,
         inbox: (payload.thinking?.inbox ?? {}) as Parameters<typeof replaceThinkingSnapshot>[2]["inbox"],
         scratch: (payload.thinking?.scratch ?? []) as Parameters<typeof replaceThinkingSnapshot>[2]["scratch"],
         mediaAssets: (payload.thinking?.media_assets ?? []).map((asset) => ({

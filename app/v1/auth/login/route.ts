@@ -1,7 +1,7 @@
 ﻿import { NextRequest, NextResponse } from "next/server";
 
 import { setSessionCookie, verifyPassword } from "@/lib/server/auth";
-import { readDb, updateDb } from "@/lib/server/db";
+import { findActiveUserByEmail, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, parseJsonBody } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createId, nowIso } from "@/lib/server/utils";
@@ -18,12 +18,11 @@ export const POST = withApiRoute(
     const password = typeof body?.password === "string" ? body.password : "";
     if (!email || !password) return errorJson(400, "邮箱和密码不能为空");
 
-    const db = await readDb();
-    const user = db.users.find((item) => item.email === email && !item.deleted_at);
+    const user = await findActiveUserByEmail(email);
     if (!user) return errorJson(401, "账号或密码错误");
     if (!verifyPassword(password, user.password_hash)) return errorJson(401, "账号或密码错误");
 
-    await updateDb((nextDb) => {
+    await updateUserDbScoped(user.id, ["audit_logs"], (nextDb) => {
       nextDb.audit_logs.push({
         id: createId(),
         user_id: user.id,

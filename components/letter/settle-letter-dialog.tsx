@@ -8,7 +8,8 @@ import { poetize } from "@/lib/letter-poetize";
 import { suggestVariant } from "./letter-exporter-dialog";
 import { saveLetterSealText, saveLetterVariant } from "@/lib/letter-variant-store";
 import { cn } from "@/lib/utils";
-import { loadAiApiSettings } from "@/lib/ai-settings";
+import { loadAiApiSettings, loadAiRemoteProcessingConsent } from "@/lib/ai-settings";
+import { useLetterAuthorName } from "@/lib/letter-settings";
 import type { LetterCondenseRequest, LetterCondenseResponse } from "@/lib/letter-ai";
 
 type Phase = "preview" | "sealing" | "sealed";
@@ -44,6 +45,7 @@ export function SettleLetterDialog({
   onClose,
   authorName
 }: SettleLetterDialogProps) {
+  const storedAuthorName = useLetterAuthorName();
   const [phase, setPhase] = useState<Phase>("preview");
   const [busy, setBusy] = useState(false);
   const [errMsg, setErrMsg] = useState<string | null>(null);
@@ -54,6 +56,8 @@ export function SettleLetterDialog({
   const [aiStatus, setAiStatus] = useState<AiStatus>("idle");
   const [aiHint, setAiHint] = useState<string | null>(null);
   const [hasUserEditedLetter, setHasUserEditedLetter] = useState(false);
+  const [remoteConsentGranted, setRemoteConsentGranted] = useState(false);
+  const [useAiThisTime, setUseAiThisTime] = useState(false);
   const paperRef = useRef<HTMLDivElement>(null);
   const condenseRequestIdRef = useRef(0);
   const userEditedRef = useRef(false);
@@ -67,6 +71,8 @@ export function SettleLetterDialog({
       setAiHint(null);
       setVariant(suggestVariant(writtenAt, false));
       setOrnamentSealText("知");
+      setRemoteConsentGranted(loadAiRemoteProcessingConsent());
+      setUseAiThisTime(false);
     }
   }, [open, writtenAt]);
 
@@ -98,7 +104,8 @@ export function SettleLetterDialog({
       const body: LetterCondenseRequest = {
         doubt: doubtText,
         nodes,
-        closing: closingNote
+        closing: closingNote,
+        allowRemoteProcessing: true
       };
       if (ai.apiKey) body.ai = ai;
 
@@ -152,7 +159,6 @@ export function SettleLetterDialog({
     setAiHint(null);
     setPaperTitle(defaultPaperTitle);
     setPaperLines(defaultPaperLines);
-    void requestCondense({ overwrite: false });
   }, [open, defaultPaperTitle, defaultPaperLines, requestCondense]);
 
   const handleTitleChange = useCallback((value: string) => {
@@ -209,6 +215,9 @@ export function SettleLetterDialog({
         <div
           data-settle-letter-dialog="true"
           data-settle-letter-phase={phase}
+          role="dialog"
+          aria-modal="true"
+          aria-label="封存为信笺"
           className="absolute inset-0 z-50 grid place-items-center bg-black/45 backdrop-blur-[2px] animate-[zhDialogFadeIn_220ms_ease-out_1]"
           onClick={phase === "sealed" ? onClose : undefined}
         >
@@ -227,7 +236,7 @@ export function SettleLetterDialog({
                   dateLabel={dateLabel}
                   solarTermLabel={solarTermLabel}
                   moon={moon}
-                  authorName={authorName ?? "shuind"}
+                  authorName={authorName ?? storedAuthorName}
                   ornamentSealText={ornamentSealText}
                   sealVisible={phase === "sealed"}
                   sealDateLabel={dateLabel}
@@ -281,6 +290,29 @@ export function SettleLetterDialog({
                       </div>
                     ) : null}
 
+                    <div className="mt-5 rounded-lg border border-slate-300 bg-white/70 p-3">
+                      <label className="flex items-start gap-2 text-[13px] text-slate-700">
+                        <input
+                          type="checkbox"
+                          checked={useAiThisTime}
+                          disabled={!remoteConsentGranted}
+                          onChange={(event) => {
+                            setUseAiThisTime(event.target.checked);
+                            setAiHint(null);
+                          }}
+                          className="mt-0.5 h-4 w-4 accent-slate-900"
+                        />
+                        <span>
+                          <span className="font-medium">{useAiThisTime ? "本次使用 AI 凝练" : "本次不用 AI"}</span>
+                          <span className="mt-1 block text-[11px] leading-5 text-slate-600">
+                            {remoteConsentGranted
+                              ? "开启后，点击下方按钮才会把当前疑问、节点与札记发送给所选模型服务商。"
+                              : "请先在设置 → AI 中允许按次使用第三方 AI；当前信笺完全在本机生成。"}
+                          </span>
+                        </span>
+                      </label>
+                    </div>
+
                     {errMsg ? (
                       <p className="mt-4 text-[12px] text-rose-500">{errMsg}</p>
                     ) : null}
@@ -299,10 +331,10 @@ export function SettleLetterDialog({
                       data-settle-letter-regenerate="true"
                       aria-label={hasUserEditedLetter ? "重新凝练并覆盖当前信笺" : "重新凝练信笺"}
                       onClick={() => void requestCondense({ overwrite: true, showFallbackHint: true })}
-                      disabled={aiStatus === "loading"}
+                      disabled={aiStatus === "loading" || !remoteConsentGranted || !useAiThisTime}
                       className="rounded-full border border-black/12 px-4 py-2 text-[13px] text-slate-700 hover:bg-black/5 disabled:opacity-60"
                     >
-                      {aiStatus === "loading" ? "凝练中…" : "重新凝练"}
+                      {aiStatus === "loading" ? "凝练中…" : hasUserEditedLetter ? "重新用 AI 凝练" : "用 AI 凝练"}
                     </button>
                     <button
                       type="button"

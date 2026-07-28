@@ -8,6 +8,7 @@ export type AiApiSettings = {
 };
 
 export const AI_SETTINGS_STORAGE_KEY = "zhihuo_ai_api_settings_v1";
+export const AI_REMOTE_PROCESSING_CONSENT_KEY = "zhihuo_ai_remote_processing_consent_v1";
 export const DEFAULT_AI_PROVIDER: AiProvider = "deepseek";
 export const DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 export const DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash";
@@ -66,6 +67,17 @@ export function saveAiApiSettings(settings: Partial<AiApiSettings>) {
 export function clearAiApiSettings() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(AI_SETTINGS_STORAGE_KEY);
+}
+
+export function loadAiRemoteProcessingConsent() {
+  if (typeof window === "undefined") return false;
+  return window.localStorage.getItem(AI_REMOTE_PROCESSING_CONSENT_KEY) === "granted";
+}
+
+export function saveAiRemoteProcessingConsent(granted: boolean) {
+  if (typeof window === "undefined") return;
+  if (granted) window.localStorage.setItem(AI_REMOTE_PROCESSING_CONSENT_KEY, "granted");
+  else window.localStorage.removeItem(AI_REMOTE_PROCESSING_CONSENT_KEY);
 }
 
 export function normalizeBaseUrl(value: unknown, fallback = DEFAULT_DEEPSEEK_BASE_URL) {

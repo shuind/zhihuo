@@ -37,6 +37,24 @@ export async function deleteThinkingMediaAssetFile(userId: string, assetId: stri
   await rm(getThinkingMediaAssetPath(userId, assetId), { force: true });
 }
 
+export async function deleteThinkingMediaUserDirectory(userId: string) {
+  await rm(getThinkingMediaUserDir(userId), { recursive: true, force: true });
+}
+
+export async function deleteMarkedThinkingMediaFiles(
+  userId: string,
+  assets: Array<{ id: string; user_id: string; deleted_at: string | null }>
+) {
+  const deletedAssetIds = assets
+    .filter((asset) => asset.user_id === userId && Boolean(asset.deleted_at))
+    .map((asset) => asset.id);
+  await Promise.all(deletedAssetIds.map((assetId) => deleteThinkingMediaAssetFile(userId, assetId)));
+}
+
+export async function deleteThinkingMediaAssetFiles(userId: string, assetIds: string[]) {
+  await Promise.all([...new Set(assetIds)].map((assetId) => deleteThinkingMediaAssetFile(userId, assetId)));
+}
+
 export function sha256Hex(bytes: Uint8Array) {
   return createHash("sha256").update(bytes).digest("hex");
 }

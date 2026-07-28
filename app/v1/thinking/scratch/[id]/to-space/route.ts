@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { convertScratchToSpace } from "@/lib/server/store";
@@ -16,7 +16,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let result: ReturnType<typeof convertScratchToSpace> = { kind: "not_found" } as ReturnType<typeof convertScratchToSpace>;
-    await updateDbScoped(["thinking_scratch", "thinking_spaces", "thinking_space_meta"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_scratch", "thinking_spaces", "thinking_space_meta"], (db) => {
       result = convertScratchToSpace(db, userId, params.id);
     });
 

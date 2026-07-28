@@ -12,7 +12,7 @@ export function MenuItem(props: { label: string; onClick: () => void; disabled?:
       disabled={props.disabled}
       className={cn(
         "block w-full rounded-lg px-2.5 py-1.5 text-left text-xs transition-colors",
-        props.disabled ? "cursor-not-allowed text-slate-400" : "text-slate-700 hover:bg-slate-100"
+        props.disabled ? "cursor-not-allowed text-slate-600" : "text-slate-700 hover:bg-slate-100"
       )}
       onClick={props.onClick}
     >
@@ -25,6 +25,10 @@ export function NodeMenu(props: {
   disabled: boolean;
   onEdit: () => void;
   onCopy: () => void;
+  onMarkMisplaced?: () => void;
+  onMoveUp?: () => void;
+  onMoveDown?: () => void;
+  openRequestNonce?: number;
   onDelete: () => void;
   imageSrc?: string | null;
   imageAlt?: string;
@@ -42,6 +46,13 @@ export function NodeMenu(props: {
   const [menuStyle, setMenuStyle] = useState<{ top: number; left: number } | null>(null);
   const hasImage = Boolean(props.imageSrc);
   const triggerDisabled = props.disabled || props.imageBusy;
+  const lastOpenRequestRef = useRef(props.openRequestNonce);
+
+  useEffect(() => {
+    if (props.openRequestNonce === undefined || props.openRequestNonce === lastOpenRequestRef.current) return;
+    lastOpenRequestRef.current = props.openRequestNonce;
+    setOpen(true);
+  }, [props.openRequestNonce]);
 
   useEffect(() => {
     if (!open) return;
@@ -120,7 +131,7 @@ export function NodeMenu(props: {
         type="button"
         role="menuitem"
         disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
+        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-600"
         onClick={() => runAction(props.onEdit)}
       >
         修改
@@ -129,17 +140,34 @@ export function NodeMenu(props: {
         type="button"
         role="menuitem"
         disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
+        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-600"
         onClick={() => runAction(props.onCopy)}
       >
         复制
       </button>
+      {props.onMarkMisplaced ? (
+        <button
+          type="button"
+          role="menuitem"
+          disabled={props.disabled}
+          className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-600"
+          onClick={() => runAction(props.onMarkMisplaced as () => void)}
+        >
+          先放这里
+        </button>
+      ) : null}
+      {props.onMoveUp ? (
+        <MenuItem label="上移" disabled={props.disabled} onClick={() => runAction(props.onMoveUp as () => void)} />
+      ) : null}
+      {props.onMoveDown ? (
+        <MenuItem label="下移" disabled={props.disabled} onClick={() => runAction(props.onMoveDown as () => void)} />
+      ) : null}
       <div className="my-1 h-px bg-black/8" />
       <button
         type="button"
         role="menuitem"
         disabled={props.disabled}
-        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-400"
+        className="block w-full rounded-lg px-2 py-1 text-left text-[11px] text-slate-700 transition-colors hover:bg-slate-100 disabled:text-slate-600"
         onClick={() => runAction(props.onDelete)}
       >
         删除
@@ -159,7 +187,7 @@ export function NodeMenu(props: {
           "relative flex items-center justify-center overflow-hidden transition-colors",
           hasImage
             ? "h-9 w-9 rounded-[12px] bg-transparent"
-            : "h-7 w-7 rounded-full bg-transparent text-slate-400 hover:bg-white/80 hover:text-slate-700",
+            : "h-7 w-7 rounded-full bg-transparent text-slate-600 hover:bg-white/80 hover:text-slate-700",
           triggerDisabled ? "cursor-not-allowed opacity-60" : open ? "cursor-pointer" : "cursor-pointer hover:bg-black/[0.025]"
         )}
         disabled={triggerDisabled}

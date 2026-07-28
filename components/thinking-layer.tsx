@@ -20,6 +20,7 @@ import { cn } from "@/lib/utils";
 
 import {
   DIMENSION_LABEL,
+  MAX_ACTIVE_SPACES,
   copyText,
   formatTimeInTimeZone,
   type DimensionKey,
@@ -28,12 +29,27 @@ import {
   type ThinkingSpaceStatus,
   type ThinkingStore,
 } from "@/components/zhihuo-model";
-import { SettleLetterDialog, type SettleLetterSnapshot } from "@/components/letter/settle-letter-dialog";
+import type { SettleLetterSnapshot } from "@/components/letter/settle-letter-dialog";
 import { MenuItem, NodeMenu } from "@/components/thinking/layer/node-menu";
-import { OrganizePanel, type OrganizeNodeEntry, type OrganizeScope } from "@/components/thinking/layer/organize-panel";
+import dynamic from "next/dynamic";
+import {
+  OrganizePanel,
+  type OrganizeNodeEntry,
+  type OrganizeScope,
+  type OrganizeSuggestion
+} from "@/components/thinking/layer/organize-panel";
 import { ScratchDrawer } from "@/components/thinking/layer/scratch-drawer";
 import { DeleteSpaceDialog, ExportSpaceDialog, RenameSpaceDialog } from "@/components/thinking/layer/space-dialogs";
-import { StarMapView, type StarMapStatePatch } from "@/components/thinking/star-map";
+import type { StarMapStatePatch } from "@/components/thinking/star-map";
+
+const StarMapView = dynamic(
+  () => import("@/components/thinking/star-map").then((module) => module.StarMapView),
+  { loading: () => <div className="grid h-full place-items-center text-sm text-slate-600">正在展开星图…</div> }
+);
+const SettleLetterDialog = dynamic(
+  () => import("@/components/letter/settle-letter-dialog").then((module) => module.SettleLetterDialog),
+  { loading: () => null }
+);
 
 const TRACK_POSITION_STORAGE_KEY = "zhihuo_track_positions_v1";
 function formatRelativeNodeTime(createdAt?: string) {
@@ -73,6 +89,49 @@ function trackCardPreview(track: ThinkingTrackView) {
 
 function spaceStatusLabel(status: ThinkingSpaceStatus) {
   return status === "hidden" ? "已封存" : "进行中";
+}
+
+function MiniStarMapPreview({ scene }: { scene: ThinkingSpaceMeta["starMapCuratedScene"] }) {
+  const stars = scene?.stars?.slice(0, 18) ?? [];
+  if (!stars.length) {
+    return (
+      <span aria-hidden="true" className="grid h-7 w-10 shrink-0 place-items-center rounded-full bg-slate-900/[0.04] text-[10px] text-slate-600">
+        ···
+      </span>
+    );
+  }
+  const positions = new Map(
+    stars.map((star) => {
+      const radius = [0, 5, 9, 13, 16][star.ring] ?? 10;
+      const angle = (star.angle * Math.PI) / 180;
+      return [star.id, { x: 21 + Math.cos(angle) * radius, y: 14 + Math.sin(angle) * radius }] as const;
+    })
+  );
+  return (
+    <svg aria-hidden="true" width="42" height="28" viewBox="0 0 42 28" className="shrink-0 rounded-full bg-[#11100d]">
+      {(scene?.strands ?? []).slice(0, 20).map((strand) => {
+        const from = positions.get(strand.fromId);
+        const to = positions.get(strand.toId);
+        if (!from || !to) return null;
+        return <line key={strand.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#7c735e" strokeOpacity="0.42" strokeWidth="0.5" />;
+      })}
+      <circle cx="21" cy="14" r="1.5" fill="#d8bd82" />
+      {stars.map((star) => {
+        const point = positions.get(star.id);
+        if (!point) return null;
+        return (
+          <circle
+            key={star.id}
+            cx={point.x}
+            cy={point.y}
+            r={star.role === "hero" ? 1.35 : 0.8}
+            fill={star.role === "hero" ? "#f0d28c" : "#b8b09c"}
+            opacity={star.role === "ambient" ? 0.5 : 0.9}
+          />
+        );
+      })}
+    </svg>
+  );
 }
 
 export type ThinkingTrackNodeView = {
@@ -136,12 +195,16 @@ type AutoSealPrompt = {
 };
 
 function buildSettleLetterLines(tracks: ThinkingTrackView[]) {
-  return tracks.flatMap((track, index) => {
-    const nodes = track.nodes.map((node) => node.questionText.trim()).filter(Boolean);
-    if (!nodes.length) return [];
-    const heading = track.isParking ? "未归入方向" : `方向 ${index + 1}`;
-    return [heading, ...nodes];
-  });
+  const seen = new Set<string>();
+  return tracks.flatMap((track) =>
+    track.nodes
+      .map((node) => node.questionText.trim())
+      .filter((text) => {
+        if (!text || seen.has(text)) return false;
+        seen.add(text);
+        return true;
+      })
+  );
 }
 
 function buildNodeCopyText(node: ThinkingTrackNodeView, answerDraft?: string) {
@@ -161,7 +224,6 @@ function ThinkingLayerComponent(props: {
   onCreateSpace: (rawInput: string) => Promise<
     | {
         ok: true;
-        converted?: boolean;
         spaceId: string;
         createdAsStatement?: boolean;
         suggestedQuestions?: string[];
@@ -175,7 +237,6 @@ function ThinkingLayerComponent(props: {
   ) => Promise<
     | {
         ok: true;
-        converted: boolean;
         noteText: string | null;
         trackId: string;
         nodeId: string;
@@ -188,7 +249,7 @@ function ThinkingLayerComponent(props: {
     spaceId: string,
     moves: Array<{ nodeId: string; targetTrackId: string }>
   ) => Promise<{ ok: true; movedCount: number } | { ok: false; message: string }>;
-  onMoveNode: (nodeId: string, targetTrackId: string) => Promise<boolean>;
+  onMoveNode: (nodeId: string, targetTrackId: string, targetOrderIndex?: number) => Promise<boolean>;
   onMarkMisplaced: (nodeId: string) => Promise<boolean>;
   onDeleteNode: (nodeId: string) => Promise<boolean>;
   onUpdateNodeQuestion: (nodeId: string, rawQuestionText: string) => Promise<boolean>;
@@ -222,6 +283,7 @@ function ThinkingLayerComponent(props: {
   onScratchToSpace: (scratchId: string) => Promise<{ ok: true; spaceId: string } | { ok: false; message: string }>;
   focusMode: boolean;
   onFocusModeChange: (enabled: boolean) => void;
+  onOpenSettings: () => void;
   onViewModeChange?: (mode: "spaces" | "detail") => void;
   reentryTarget: { spaceId: string; mode: "root"; trackId?: string | null; nodeId?: string | null } | null;
   onReentryHandled: () => void;
@@ -269,6 +331,9 @@ function ThinkingLayerComponent(props: {
   const [organizeTargetTrackId, setOrganizeTargetTrackId] = useState<string>("__new__");
   const [isApplyingOrganize, setIsApplyingOrganize] = useState(false);
   const [organizePanelOpen, setOrganizePanelOpen] = useState(false);
+  const [organizeSuggestions, setOrganizeSuggestions] = useState<OrganizeSuggestion[]>([]);
+  const [organizeSuggestionsLoading, setOrganizeSuggestionsLoading] = useState(false);
+  const [applyingSuggestionNodeId, setApplyingSuggestionNodeId] = useState<string | null>(null);
   const [focusMenuNodeId, setFocusMenuNodeId] = useState<string | null>(null);
   const [deleteSpaceOpen, setDeleteSpaceOpen] = useState(false);
   const [thinkingViewMode, setThinkingViewMode] = useState<"spaces" | "detail">("spaces");
@@ -286,6 +351,7 @@ function ThinkingLayerComponent(props: {
   const [clipboardNodeId, setClipboardNodeId] = useState<string | null>(null);
   const [clipboardSourceTrackId, setClipboardSourceTrackId] = useState<string | null>(null);
   const [scratchDrawerOpen, setScratchDrawerOpen] = useState(false);
+  const [nodeMenuRequest, setNodeMenuRequest] = useState<{ nodeId: string; nonce: number } | null>(null);
   const [writeToTimeOpen, setWriteToTimeOpen] = useState(false);
   const [isWritingToTime, setIsWritingToTime] = useState(false);
 
@@ -301,6 +367,7 @@ function ThinkingLayerComponent(props: {
   const lastRestoredTrackKeyRef = useRef<string | null>(null);
   const suppressTrackPersistUntilRef = useRef(0);
   const suppressQuestionFocusUntilRef = useRef(0);
+  const nodeLongPressTimerRef = useRef<number | null>(null);
   const moreMenuRef = useRef<HTMLDivElement | null>(null);
   const spaceFinderInputRef = useRef<HTMLInputElement | null>(null);
   const moreMenuPanelRef = useRef<HTMLDivElement | null>(null);
@@ -358,6 +425,10 @@ function ThinkingLayerComponent(props: {
   const activeSpace = useMemo(
     () => spaces.find((space) => space.id === props.activeSpaceId) ?? null,
     [props.activeSpaceId, spaces]
+  );
+  const settleWrittenAt = useMemo(
+    () => new Date(activeSpace?.createdAt ?? Date.now()),
+    [activeSpace?.createdAt]
   );
   const activeSpaceView = useMemo(
     () => (activeSpace && props.spaceView?.spaceId === activeSpace.id ? props.spaceView : null),
@@ -925,6 +996,34 @@ function ThinkingLayerComponent(props: {
     })();
   }, [activeSpace, isApplyingOrganize, organizeNodeMap, organizeSelectedNodeIds, organizeTargetTrackId, props]);
 
+  const refreshOrganizeSuggestions = useCallback(() => {
+    if (!activeSpace || organizeSuggestionsLoading) return;
+    setOrganizeSuggestionsLoading(true);
+    void props.onOrganizePreview(activeSpace.id).then((candidates) => {
+      setOrganizeSuggestions([...candidates].sort((a, b) => b.score - a.score));
+      setOrganizeSuggestionsLoading(false);
+    });
+  }, [activeSpace, organizeSuggestionsLoading, props]);
+
+  const applyOrganizeSuggestion = useCallback(
+    (suggestion: OrganizeSuggestion) => {
+      if (!activeSpace || applyingSuggestionNodeId) return;
+      setApplyingSuggestionNodeId(suggestion.nodeId);
+      void props
+        .onOrganizeApply(activeSpace.id, [{ nodeId: suggestion.nodeId, targetTrackId: suggestion.suggestedTrackId }])
+        .then((result) => {
+          setApplyingSuggestionNodeId(null);
+          if (!result.ok) {
+            props.showNotice(result.message);
+            return;
+          }
+          setOrganizeSuggestions((current) => current.filter((item) => item.nodeId !== suggestion.nodeId));
+          props.showNotice("已按建议归位");
+        });
+    },
+    [activeSpace, applyingSuggestionNodeId, props]
+  );
+
   const createSpace = useCallback(() => {
     if (!writeEnabled) {
       props.showNotice("当前正在同步，稍后再写");
@@ -1129,8 +1228,14 @@ function ThinkingLayerComponent(props: {
     setOrganizeSelectedNodeIds([]);
     setOrganizeTargetTrackId(defaultTargetTrackId);
     setIsApplyingOrganize(false);
+    setOrganizeSuggestions([]);
     setOrganizePanelOpen(true);
-  }, [activeSpace, activeTrackId, organizeTargetTracks]);
+    setOrganizeSuggestionsLoading(true);
+    void props.onOrganizePreview(activeSpace.id).then((candidates) => {
+      setOrganizeSuggestions([...candidates].sort((a, b) => b.score - a.score));
+      setOrganizeSuggestionsLoading(false);
+    });
+  }, [activeSpace, activeTrackId, organizeTargetTracks, props]);
 
   const openWriteToTimeDialog = useCallback(() => {
     if (!activeSpace || activeSpace.status !== "active") return;
@@ -1547,7 +1652,7 @@ function ThinkingLayerComponent(props: {
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
               <div className="min-w-0">
                 <p className="line-clamp-1 text-sm font-medium">{props.autoSealPrompt.title}</p>
-                <p className="mt-1 text-xs leading-5 text-slate-500">
+                <p className="mt-1 text-xs leading-5 text-slate-600">
                   这段思考安静 {props.autoSealPrompt.inactiveDays} 天了，要封存进时间吗？
                 </p>
               </div>
@@ -1575,7 +1680,7 @@ function ThinkingLayerComponent(props: {
                   type="button"
                   size="sm"
                   variant="ghost"
-                  className="rounded-full px-3 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700"
+                  className="rounded-full px-3 text-xs text-slate-600 hover:bg-slate-100 hover:text-slate-700"
                   disabled={autoSealSubmitting || props.autoSealBusy}
                   onClick={() => props.onAutoSealDisable?.()}
                 >
@@ -1603,7 +1708,7 @@ function ThinkingLayerComponent(props: {
                 <button
                   type="button"
                   aria-label="返回空间列表"
-                  className="grid h-8 w-8 place-items-center rounded-full text-slate-500 transition-colors hover:bg-white/65 hover:text-slate-700"
+                  className="grid h-11 w-11 place-items-center rounded-full text-slate-600 transition-colors hover:bg-white/65 hover:text-slate-700 sm:h-8 sm:w-8"
                   onClick={backToSpaces}
                 >
                   <span aria-hidden="true" className="text-lg leading-none">
@@ -1613,7 +1718,21 @@ function ThinkingLayerComponent(props: {
                 <h2 className="line-clamp-1 text-[14px] font-medium text-slate-800 md:text-[15px]">{activeSpace.rootQuestionText}</h2>
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <div className="flex items-center gap-0.5 rounded-full border border-black/[0.07] bg-white/65 p-0.5 text-slate-500">
+                <button
+                  type="button"
+                  aria-pressed={props.focusMode}
+                  title={props.focusMode ? "退出专注模式" : "进入专注模式"}
+                  className={cn(
+                    "h-8 rounded-full border px-3 text-xs transition-colors",
+                    props.focusMode
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-black/[0.08] bg-white/65 text-slate-600 hover:bg-white"
+                  )}
+                  onClick={() => props.onFocusModeChange(!props.focusMode)}
+                >
+                  {props.focusMode ? "退出专注" : "专注"}
+                </button>
+                <div className="flex items-center gap-0.5 rounded-full border border-black/[0.07] bg-white/65 p-0.5 text-slate-600">
                   <button
                     type="button"
                     aria-label="轨道视图"
@@ -1657,7 +1776,7 @@ function ThinkingLayerComponent(props: {
                 <button
                   type="button"
                   aria-label="更多"
-                  className="grid h-8 w-8 place-items-center rounded-full text-slate-500 transition-colors hover:bg-white/65 hover:text-slate-700"
+                  className="grid h-11 w-11 place-items-center rounded-full text-slate-600 transition-colors hover:bg-white/65 hover:text-slate-700 sm:h-8 sm:w-8"
                   onClick={() => setMoreOpen((prev) => !prev)}
                 >
                   <span aria-hidden="true" className="text-xl leading-none">
@@ -1713,23 +1832,27 @@ function ThinkingLayerComponent(props: {
               <div className="min-w-0 flex-1 overflow-x-auto">
                 <div className="flex w-max min-w-full items-center gap-2 pr-3">
                   {tabs.length ? (
-                    tabs.map((space) => (
-                      <button
-                        key={space.id}
-                        type="button"
-                        onClick={() => openSpaceDetail(space.id)}
-                        className={cn(
-                          "max-w-[240px] rounded-full border px-3 py-1.5 text-left text-xs leading-[1.35] transition-colors",
-                          props.activeSpaceId === space.id
-                            ? "border-black/18 bg-white text-slate-900"
-                            : "border-black/8 bg-white/52 text-slate-600 hover:bg-white/82"
-                        )}
-                      >
-                        <span className="line-clamp-1">{space.rootQuestionText}</span>
-                      </button>
-                    ))
+                    tabs.map((space) => {
+                      const meta = props.store.spaceMeta.find((item) => item.spaceId === space.id);
+                      return (
+                        <button
+                          key={space.id}
+                          type="button"
+                          onClick={() => openSpaceDetail(space.id)}
+                          className={cn(
+                            "flex max-w-[270px] items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-left text-xs leading-[1.35] transition-colors",
+                            props.activeSpaceId === space.id
+                              ? "border-black/18 bg-white text-slate-900"
+                              : "border-black/8 bg-white/52 text-slate-600 hover:bg-white/82"
+                          )}
+                        >
+                          <MiniStarMapPreview scene={meta?.starMapCuratedScene ?? null} />
+                          <span className="line-clamp-1">{space.rootQuestionText}</span>
+                        </button>
+                      );
+                    })
                   ) : (
-                    <span className="text-xs text-slate-500">先创建一个思考空间</span>
+                    <span className="text-xs text-slate-600">先创建一个思考空间</span>
                   )}
                   {overflowSpaces.length ? (
                     <button
@@ -1750,7 +1873,9 @@ function ThinkingLayerComponent(props: {
                   ) : null}
                   <button
                     type="button"
-                    className="rounded-full border border-black/10 bg-white/68 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-white"
+                    disabled={activeSpaces.length >= MAX_ACTIVE_SPACES}
+                      title={activeSpaces.length >= MAX_ACTIVE_SPACES ? "请先封存一个进行中的空间" : undefined}
+                    className="rounded-full border border-black/10 bg-white/68 px-3 py-1.5 text-xs text-slate-600 transition-colors hover:bg-white disabled:cursor-not-allowed disabled:opacity-45"
                     onClick={() => {
                       setCreateSpaceHint("");
                       setCreateSpaceSuggestions([]);
@@ -1759,6 +1884,9 @@ function ThinkingLayerComponent(props: {
                   >
                     + 新思考
                   </button>
+                  <span className="shrink-0 text-[11px] text-slate-600" aria-label={`${activeSpaces.length} / ${MAX_ACTIVE_SPACES} 个进行中的空间`}>
+                    {activeSpaces.length}/{MAX_ACTIVE_SPACES}
+                  </span>
                 </div>
               </div>
             </div>
@@ -1789,8 +1917,8 @@ function ThinkingLayerComponent(props: {
                           setSpaceFinderQuery("");
                         }
                       }}
-                      placeholder="??????"
-                      className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-400"
+                      placeholder="搜索思考空间…"
+                      className="w-full bg-transparent text-sm text-slate-800 outline-none placeholder:text-slate-600"
                     />
                   </div>
                   <div className="mt-3 max-h-[360px] overflow-y-auto pr-1">
@@ -1803,16 +1931,23 @@ function ThinkingLayerComponent(props: {
                             className="w-full rounded-[18px] border border-transparent px-3 py-3 text-left transition-colors hover:border-black/[0.05] hover:bg-white/72"
                             onClick={() => openSpaceDetail(space.id)}
                           >
-                            <p className="text-sm leading-[1.65] text-slate-800 [overflow-wrap:anywhere]">{space.rootQuestionText}</p>
-                            <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-500">
-                              <span>{spaceStatusLabel(space.status)}</span>
-                              <span>{formatRelativeNodeTime(space.lastActivityAt ?? space.createdAt)}</span>
+                            <div className="flex items-center gap-3">
+                              <MiniStarMapPreview
+                                scene={props.store.spaceMeta.find((item) => item.spaceId === space.id)?.starMapCuratedScene ?? null}
+                              />
+                              <div className="min-w-0">
+                                <p className="text-sm leading-[1.65] text-slate-800 [overflow-wrap:anywhere]">{space.rootQuestionText}</p>
+                                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-600">
+                                  <span>{spaceStatusLabel(space.status)}</span>
+                                  <span>{formatRelativeNodeTime(space.lastActivityAt ?? space.createdAt)}</span>
+                                </div>
+                              </div>
                             </div>
                           </button>
                         ))}
                       </div>
                     ) : (
-                      <div className="grid h-28 place-items-center text-sm text-slate-500">?????????</div>
+                      <div className="grid h-28 place-items-center text-sm text-slate-600">没有找到相近的空间</div>
                     )}
                   </div>
                 </div>
@@ -1839,6 +1974,7 @@ function ThinkingLayerComponent(props: {
                     activeTrackId={activeTrackId}
                     spaceId={activeSpace.id}
                     frozen={activeSpace.status === "hidden"}
+                    onOpenSettings={props.onOpenSettings}
                     mediaAssetSources={mediaAssetSources}
                     starMapState={
                       activeSpaceMeta
@@ -1888,7 +2024,7 @@ function ThinkingLayerComponent(props: {
               ) : (
               <div
                 className={cn(
-                  "ml-auto mr-0 grid h-full max-w-[1180px] min-h-0 gap-6 md:mr-6 md:gap-11 lg:mr-10 xl:mr-14",
+                  "ml-auto mr-0 grid h-full max-w-[1180px] min-h-0 grid-cols-1 grid-rows-[minmax(0,1fr)_auto] gap-3 md:mr-6 md:grid-rows-1 md:gap-11 lg:mr-10 xl:mr-14",
                   props.focusMode ? "md:grid-cols-[minmax(0,760px)]" : "md:grid-cols-[minmax(0,760px)_minmax(0,1fr)]"
                 )}
               >
@@ -1901,14 +2037,14 @@ function ThinkingLayerComponent(props: {
                       <div className="w-full max-w-[760px]">
                         <div className="flex items-center gap-4">
                           <span className="h-px flex-1 bg-black/[0.04]" />
-                          <p className="shrink-0 text-[11px] text-slate-400/90">{currentTrackHeading}</p>
+                          <p className="shrink-0 text-[11px] text-slate-600/90">{currentTrackHeading}</p>
                           <span className="h-px flex-1 bg-black/[0.04]" />
                         </div>
                       </div>
                     ) : null}
 
                     {!activeTrack ? (
-                      <div className="mt-8 grid min-h-0 flex-1 place-items-center rounded-[24px] border border-black/[0.05] bg-white/26 p-8 text-sm text-slate-500">
+                      <div className="mt-8 grid min-h-0 flex-1 place-items-center rounded-[24px] border border-black/[0.05] bg-white/26 p-8 text-sm text-slate-600">
                         继续输入疑问，主线会在这里展开
                       </div>
                     ) : (
@@ -1928,7 +2064,7 @@ function ThinkingLayerComponent(props: {
                         }}
                       >
                         <ul className="w-full max-w-[760px] min-w-0 space-y-6 pb-32 pt-2">
-                          {activeTrack.nodes.map((node) => {
+                          {activeTrack.nodes.map((node, nodeIndex) => {
                             const isExpanded = expandedNodeId === node.id;
                             const draftValue = answerDraftByNodeId[node.id] ?? node.answerText ?? "";
                             const isEditing = editingNodeId === node.id;
@@ -1963,6 +2099,27 @@ function ThinkingLayerComponent(props: {
                                     focusNodeId: node.id
                                   });
                                 }}
+                                onPointerDown={(event) => {
+                                  if (event.pointerType === "mouse" || activeSpace.status !== "active") return;
+                                  if (event.target instanceof Element && event.target.closest("button,input,textarea,a")) return;
+                                  if (nodeLongPressTimerRef.current) window.clearTimeout(nodeLongPressTimerRef.current);
+                                  nodeLongPressTimerRef.current = window.setTimeout(() => {
+                                    setNodeMenuRequest({ nodeId: node.id, nonce: Date.now() });
+                                    nodeLongPressTimerRef.current = null;
+                                  }, 520);
+                                }}
+                                onPointerUp={() => {
+                                  if (nodeLongPressTimerRef.current) window.clearTimeout(nodeLongPressTimerRef.current);
+                                  nodeLongPressTimerRef.current = null;
+                                }}
+                                onPointerCancel={() => {
+                                  if (nodeLongPressTimerRef.current) window.clearTimeout(nodeLongPressTimerRef.current);
+                                  nodeLongPressTimerRef.current = null;
+                                }}
+                                onPointerMove={() => {
+                                  if (nodeLongPressTimerRef.current) window.clearTimeout(nodeLongPressTimerRef.current);
+                                  nodeLongPressTimerRef.current = null;
+                                }}
                               >
                                 <div
                                   role="button"
@@ -1987,7 +2144,7 @@ function ThinkingLayerComponent(props: {
                                   }}
                                 >
                                   <div className="flex items-start justify-between gap-3">
-                                    <div className="flex items-center gap-2 text-xs text-slate-400">
+                                    <div className="flex items-center gap-2 text-xs text-slate-600">
                                       <span aria-hidden="true" className="h-1.5 w-1.5 rounded-full bg-slate-300/90" />
                                       <span>{formatRelativeNodeTime(node.createdAt)}</span>
                                     </div>
@@ -1996,6 +2153,9 @@ function ThinkingLayerComponent(props: {
                                         <div className="flex items-center gap-1" onClick={(event) => event.stopPropagation()}>
                                           <NodeMenu
                                             disabled={activeSpace.status !== "active"}
+                                            openRequestNonce={
+                                              nodeMenuRequest?.nodeId === node.id ? nodeMenuRequest.nonce : undefined
+                                            }
                                             triggerClassName={
                                               imageSrc
                                                 ? "opacity-100"
@@ -2017,6 +2177,30 @@ function ThinkingLayerComponent(props: {
                                             onRemoveImage={() => removeNodeImage(node.id)}
                                             onEdit={() => startEditingNode(node)}
                                             onCopy={() => copyNodeText(node)}
+                                            onMarkMisplaced={() =>
+                                              void (async () => {
+                                                const ok = await props.onMarkMisplaced(node.id);
+                                                props.showNotice(ok ? "已先放到待整理区" : "移动失败，请稍后再试");
+                                              })()
+                                            }
+                                            onMoveUp={
+                                              nodeIndex > 0
+                                                ? () =>
+                                                    void (async () => {
+                                                      const ok = await props.onMoveNode(node.id, activeTrack.id, nodeIndex - 1);
+                                                      props.showNotice(ok ? "已上移" : "移动失败，请稍后再试");
+                                                    })()
+                                                : undefined
+                                            }
+                                            onMoveDown={
+                                              nodeIndex < activeTrack.nodes.length - 1
+                                                ? () =>
+                                                    void (async () => {
+                                                      const ok = await props.onMoveNode(node.id, activeTrack.id, nodeIndex + 1);
+                                                      props.showNotice(ok ? "已下移" : "移动失败，请稍后再试");
+                                                    })()
+                                                : undefined
+                                            }
                                             onDelete={() =>
                                               void (async () => {
                                                 const ok = await props.onDeleteNode(node.id);
@@ -2062,13 +2246,13 @@ function ThinkingLayerComponent(props: {
                                       <p className="whitespace-pre-wrap text-left text-[15px] leading-[1.82] text-slate-900 [overflow-wrap:anywhere]">{node.questionText}</p>
                                     )}
                                     {node.noteText ? (
-                                      <p className="mt-3 text-left text-xs leading-[1.75] text-slate-500/90 [overflow-wrap:anywhere]">附注：{node.noteText}</p>
+                                      <p className="mt-3 text-left text-xs leading-[1.75] text-slate-600/90 [overflow-wrap:anywhere]">附注：{node.noteText}</p>
                                     ) : null}
                                   </div>
-                                  <div className="mt-4 flex items-center justify-between text-[11px] text-slate-400/90">
+                                  <div className="mt-4 flex items-center justify-between text-[11px] text-slate-600/90">
                                     <div className="flex flex-wrap items-center gap-2">
                                       {props.showThinkingDimensions ? (
-                                        <span data-thinking-dimension-label="true" className="rounded-full bg-white/45 px-2 py-0.5 text-[10.5px] text-slate-500">
+                                        <span data-thinking-dimension-label="true" className="rounded-full bg-white/45 px-2 py-0.5 text-[10.5px] text-slate-600">
                                           {DIMENSION_LABEL[node.dimension] ?? "未命名维度"}
                                         </span>
                                       ) : null}
@@ -2076,7 +2260,7 @@ function ThinkingLayerComponent(props: {
                                     {node.echoTrackId ? (
                                       <button
                                         type="button"
-                                        className="text-[11px] text-slate-500/90 transition-colors hover:text-slate-700"
+                                        className="text-[11px] text-slate-600/90 transition-colors hover:text-slate-700"
                                         onClick={(event) => {
                                           event.stopPropagation();
                                           switchTrack(node.echoTrackId as string);
@@ -2108,7 +2292,7 @@ function ThinkingLayerComponent(props: {
                                       data-zh-input="multiline"
                                       rows={1}
                                       disabled={activeSpace.status !== "active" || savingAnswerNodeId === node.id}
-                                      className="min-h-[1.9rem] w-full border-0 bg-transparent px-0 py-0 text-[14px] leading-[1.7] text-slate-700 outline-none shadow-none ring-0 placeholder:text-slate-400/65 disabled:text-slate-400 focus-visible:ring-0"
+                                      className="min-h-[1.9rem] w-full border-0 bg-transparent px-0 py-0 text-[14px] leading-[1.7] text-slate-700 outline-none shadow-none ring-0 placeholder:text-slate-600/65 disabled:text-slate-600 focus-visible:ring-0"
                                       onChange={(event) =>
                                         setAnswerDraftByNodeId((prev) => ({
                                           ...prev,
@@ -2143,10 +2327,14 @@ function ThinkingLayerComponent(props: {
                 </div>
 
                 {!props.focusMode ? (
-                  <aside data-other-tracks="true" className="min-h-0 w-[220px] justify-self-end border-l border-black/[0.04] pl-5 md:pt-1">
+                  <aside
+                    data-other-tracks="true"
+                    aria-label="其他方向"
+                    className="min-h-0 w-full border-t border-black/[0.05] pt-3 md:w-[220px] md:justify-self-end md:border-l md:border-t-0 md:pl-5 md:pt-1"
+                  >
                     <div className="flex h-full min-h-0 flex-col">
-                      <p className="mb-4 text-[12px] tracking-[0.04em] text-slate-400">其他方向</p>
-                      <div className="grid max-h-full gap-4 overflow-y-auto pr-1">
+                      <p className="mb-2 text-[12px] tracking-[0.04em] text-slate-600 md:mb-4">其他方向</p>
+                      <div className="flex max-h-full gap-2 overflow-x-auto pb-1 pr-1 md:grid md:gap-4 md:overflow-x-hidden md:overflow-y-auto md:pb-0">
                         {otherTracks.map((track) => (
                             <button
                               key={track.id}
@@ -2154,13 +2342,13 @@ function ThinkingLayerComponent(props: {
                               data-other-track-button="true"
                               onClick={() => switchTrack(track.id)}
                               className={cn(
-                                "rounded-[18px] border border-black/[0.04] bg-[rgba(255,255,255,0.24)] px-5 py-5 text-left transition-colors hover:bg-[rgba(255,255,255,0.38)]",
+                                "min-w-[168px] rounded-[16px] border border-black/[0.05] bg-[rgba(255,255,255,0.3)] px-4 py-3 text-left transition-colors hover:bg-[rgba(255,255,255,0.42)] md:min-w-0 md:rounded-[18px] md:px-5 md:py-5",
                                 pausedTrackIds[track.id] ? "opacity-35" : "opacity-[0.78] hover:opacity-[0.94]"
                               )}
                             >
                               <p className="text-[14px] font-medium leading-[1.6] text-slate-700 [overflow-wrap:anywhere]">{trackCardTitle(track)}</p>
-                              <p className="mt-2.5 text-[12px] leading-[1.7] text-slate-500/92 [overflow-wrap:anywhere]">{trackCardPreview(track)}</p>
-                              <div className="mt-2.5 flex items-center gap-3 text-[11px] text-slate-400/90">
+                              <p className="mt-1.5 line-clamp-1 text-[12px] leading-[1.7] text-slate-600/92 [overflow-wrap:anywhere] md:mt-2.5 md:line-clamp-none">{trackCardPreview(track)}</p>
+                              <div className="mt-1.5 flex items-center gap-3 text-[11px] text-slate-600/90 md:mt-2.5">
                                 <span>{track.nodeCount} 条想法</span>
                                 <span>{formatRelativeNodeTime(track.nodes[track.nodes.length - 1]?.createdAt)}</span>
                               </div>
@@ -2171,7 +2359,7 @@ function ThinkingLayerComponent(props: {
                             type="button"
                             data-new-track-button="true"
                             onClick={createNewDirection}
-                            className="rounded-[18px] border border-black/[0.04] bg-[rgba(255,255,255,0.18)] px-5 py-5 text-left text-[14px] text-slate-500/90 transition-colors hover:bg-[rgba(255,255,255,0.3)] hover:text-slate-700"
+                            className="min-w-[112px] rounded-[16px] border border-black/[0.05] bg-[rgba(255,255,255,0.24)] px-4 py-3 text-left text-[14px] text-slate-600/90 transition-colors hover:bg-[rgba(255,255,255,0.36)] hover:text-slate-700 md:min-w-0 md:rounded-[18px] md:px-5 md:py-5"
                           >
                             新方向
                           </button>
@@ -2223,7 +2411,7 @@ function ThinkingLayerComponent(props: {
                       rows={1}
                       disabled={!writeEnabled || activeSpace.status !== "active"}
                       placeholder={activeSpace.status === "active" ? "继续想一想…" : "这个空间已封存"}
-                      className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/80 disabled:text-slate-500 focus-visible:ring-0"
+                      className="min-h-[2.45rem] max-h-[180px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-600/80 disabled:text-slate-600 focus-visible:ring-0"
                       onChange={(event) => setQuestionInput(event.target.value)}
                       onKeyDown={(event) => {
                         if (!shouldSubmitOnEnter(event)) return;
@@ -2238,7 +2426,7 @@ function ThinkingLayerComponent(props: {
                     <button
                       type="button"
                       aria-label="继续"
-                      className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/58 text-slate-500 transition-colors hover:bg-white/72 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
+                      className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/58 text-slate-600 transition-colors hover:bg-white/72 hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45 sm:h-9 sm:w-9"
                       disabled={!writeEnabled || activeSpace.status !== "active" || isAddingQuestion || !composerCanSubmit}
                       onClick={() => addQuestion(questionInput, false)}
                     >
@@ -2246,7 +2434,7 @@ function ThinkingLayerComponent(props: {
                     </button>
                   </div>
 
-                  <p className={cn("mt-2 min-h-[1.1em] text-[11px] text-slate-500/85", inputHint ? "opacity-100" : "opacity-0")}>{inputHint}</p>
+                  <p className={cn("mt-2 min-h-[1.1em] text-[11px] text-slate-600/85", inputHint ? "opacity-100" : "opacity-0")}>{inputHint}</p>
                   {inputSuggestions.length ? (
                     <div className="mt-3 flex flex-wrap gap-2">
                       {inputSuggestions.map((suggestion) => (
@@ -2278,13 +2466,13 @@ function ThinkingLayerComponent(props: {
                     {sortedScratchItems.length ? (
                       <button
                         type="button"
-                        className="text-[11px] text-slate-400 transition-colors hover:text-slate-700"
+                        className="text-[11px] text-slate-600 transition-colors hover:text-slate-700"
                         onClick={() => setScratchDrawerOpen(true)}
                       >
                         查看全部
                       </button>
                     ) : null}
-                    <span className="text-[11px] text-slate-400">{sortedScratchItems.length} 条</span>
+                    <span className="text-[11px] text-slate-600">{sortedScratchItems.length} 条</span>
                   </div>
                 </div>
                 <div className="mt-4 flex items-end gap-3 rounded-[22px] border border-black/[0.05] bg-white/40 px-4 py-3">
@@ -2297,7 +2485,7 @@ function ThinkingLayerComponent(props: {
                     data-zh-input="multiline"
                     rows={1}
                     disabled={!writeEnabled}
-                    className="min-h-[2.45rem] max-h-[160px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-400/85 focus-visible:ring-0"
+                    className="min-h-[2.45rem] max-h-[160px] flex-1 border-0 bg-transparent px-0 py-2 text-sm leading-[1.75] text-slate-800 outline-none shadow-none ring-0 placeholder:text-slate-600/85 focus-visible:ring-0"
                     placeholder="随手记下一句…"
                     onChange={(event) => setScratchInput(event.target.value)}
                     onKeyDown={onSubmitEnter(createScratch)}
@@ -2305,7 +2493,7 @@ function ThinkingLayerComponent(props: {
                   <button
                     type="button"
                     aria-label="保存随记"
-                    className="grid h-9 w-9 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/70 text-slate-500 transition-colors hover:bg-white hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45"
+                    className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-black/[0.06] bg-white/70 text-slate-600 transition-colors hover:bg-white hover:text-slate-700 disabled:cursor-not-allowed disabled:opacity-45 sm:h-9 sm:w-9"
                     disabled={!writeEnabled || !scratchInput.trim() || isCreatingScratch}
                     onClick={() => void createScratch()}
                   >
@@ -2320,7 +2508,7 @@ function ThinkingLayerComponent(props: {
                     onClick={() => setScratchDrawerOpen(true)}
                   >
                     <p className="text-[15px] leading-[1.75] text-slate-800 [overflow-wrap:anywhere]">{latestScratch.rawText}</p>
-                    <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-400">
+                    <div className="mt-2 flex items-center gap-2 text-[11px] text-slate-600">
                       <span>{formatRelativeNodeTime(latestScratch.updatedAt)}</span>
                       {latestScratch.derivedSpaceId ? <span>已进入想一想</span> : null}
                     </div>
@@ -2338,7 +2526,7 @@ function ThinkingLayerComponent(props: {
           doubtId={activeSpace.sourceTimeDoubtId ?? activeSpace.id}
           doubtText={activeSpace.rootQuestionText}
           nodes={settleLetterLines}
-          writtenAt={new Date(activeSpace.createdAt ?? Date.now())}
+            writtenAt={settleWrittenAt}
           onConfirm={submitWriteToTime}
           onClose={closeSettleDialog}
         />
@@ -2350,9 +2538,9 @@ function ThinkingLayerComponent(props: {
             <div className="flex items-center justify-between">
               <div>
                 <p className="text-sm text-slate-800">从任意念头开始</p>
-                <p className="mt-1 text-xs text-slate-500">它会成为这段思考的中心</p>
+                <p className="mt-1 text-xs text-slate-600">它会成为这段思考的中心</p>
               </div>
-              <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={() => setCreateSpaceOpen(false)}>
+              <button type="button" className="text-xs text-slate-600 hover:text-slate-700" onClick={() => setCreateSpaceOpen(false)}>
                 关闭
               </button>
             </div>
@@ -2374,12 +2562,12 @@ function ThinkingLayerComponent(props: {
                 type="button"
                 data-create-space-submit="true"
                 disabled={!writeEnabled || isCreatingSpace}
-                className="h-10 rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60"
+                className="h-11 rounded-full bg-slate-900 text-slate-50 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-60 sm:h-10"
                 onClick={createSpace}
               >
                 {isCreatingSpace ? "创建中..." : "创建"}
               </Button>
-              <p className={cn("min-h-[1.2em] text-xs text-slate-500", createSpaceHint ? "opacity-100" : "opacity-0")}>{createSpaceHint}</p>
+              <p className={cn("min-h-[1.2em] text-xs text-slate-600", createSpaceHint ? "opacity-100" : "opacity-0")}>{createSpaceHint}</p>
               {createSpaceSuggestions.length ? (
                 <div className="flex flex-wrap gap-2">
                   {createSpaceSuggestions.map((suggestion) => (
@@ -2456,6 +2644,11 @@ function ThinkingLayerComponent(props: {
         onTargetTrackIdChange={setOrganizeTargetTrackId}
         targetTracks={organizeTargetTrackOptions}
         isApplying={isApplyingOrganize}
+        suggestions={organizeSuggestions}
+        suggestionsLoading={organizeSuggestionsLoading}
+        applyingSuggestionNodeId={applyingSuggestionNodeId}
+        onRefreshSuggestions={refreshOrganizeSuggestions}
+        onApplySuggestion={applyOrganizeSuggestion}
         onClose={() => setOrganizePanelOpen(false)}
         onApply={applyOrganize}
         formatRelativeTime={formatRelativeNodeTime}
@@ -2498,7 +2691,7 @@ function ThinkingLayerComponent(props: {
             <div className="flex items-start justify-between gap-4 border-b border-black/[0.05] px-7 pb-4 pt-6">
               <div className="min-w-0">
                 <p className="text-[15px] leading-tight text-slate-900">空间背景</p>
-                <p className="mt-1.5 text-xs leading-relaxed text-slate-500">
+                <p className="mt-1.5 text-xs leading-relaxed text-slate-600">
                   点击图片即设为背景，再次点击当前背景可取消。悬停图片可预览或移除。
                 </p>
               </div>
@@ -2506,7 +2699,7 @@ function ThinkingLayerComponent(props: {
                 type="button"
                 aria-label="关闭空间背景"
                 onClick={() => setGalleryOpen(false)}
-                className="shrink-0 rounded-full p-1.5 text-slate-400 transition-colors hover:bg-black/[0.04] hover:text-slate-700"
+                className="shrink-0 rounded-full p-1.5 text-slate-600 transition-colors hover:bg-black/[0.04] hover:text-slate-700"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" aria-hidden="true">
                   <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" />
@@ -2531,7 +2724,7 @@ function ThinkingLayerComponent(props: {
                 >
                   <span
                     className={cn(
-                      "grid h-10 w-10 place-items-center rounded-full bg-[#efeae1] text-slate-500 transition-colors",
+                      "grid h-11 w-11 place-items-center rounded-full bg-[#efeae1] text-slate-600 transition-colors sm:h-10 sm:w-10",
                       "group-hover:bg-slate-900 group-hover:text-white"
                     )}
                   >
@@ -2552,7 +2745,7 @@ function ThinkingLayerComponent(props: {
                         ? "松开即可上传"
                         : "添加图片"}
                   </span>
-                  <span className="text-[11px] text-slate-400">
+                  <span className="text-[11px] text-slate-600">
                     {isDraggingGallery ? "支持 PNG / JPG / WebP" : "拖拽到此处或点击选择"}
                   </span>
                 </button>
@@ -2596,7 +2789,7 @@ function ThinkingLayerComponent(props: {
                             />
                           </>
                         ) : (
-                          <span className="grid h-full w-full place-items-center text-xs text-slate-400">
+                          <span className="grid h-full w-full place-items-center text-xs text-slate-600">
                             预览不可用
                           </span>
                         )}
@@ -2627,7 +2820,7 @@ function ThinkingLayerComponent(props: {
                           <button
                             type="button"
                             aria-label="查看大图"
-                            className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full bg-white/94 text-slate-700 shadow-sm transition-colors hover:bg-white"
+                            className="pointer-events-auto grid h-11 w-11 place-items-center rounded-full bg-white/94 text-slate-700 shadow-sm transition-colors hover:bg-white sm:h-8 sm:w-8"
                             onClick={(event) => {
                               event.stopPropagation();
                               setPreviewImage({ src: asset.src as string, alt: "空间背景候选图" });
@@ -2648,7 +2841,7 @@ function ThinkingLayerComponent(props: {
                           type="button"
                           aria-label="从图集移除"
                           disabled={busy}
-                          className="pointer-events-auto grid h-8 w-8 place-items-center rounded-full bg-white/94 text-slate-600 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50"
+                          className="pointer-events-auto grid h-11 w-11 place-items-center rounded-full bg-white/94 text-slate-600 shadow-sm transition-colors hover:bg-red-50 hover:text-red-600 disabled:opacity-50 sm:h-8 sm:w-8"
                           onClick={(event) => {
                             event.stopPropagation();
                             removeSpaceGalleryImage(asset.assetId);
@@ -2666,7 +2859,7 @@ function ThinkingLayerComponent(props: {
                         </button>
                       </div>
 
-                      {/* ���作中遮罩 */}
+                      {/* 操作中遮罩 */}
                       {busy ? (
                         <div className="pointer-events-none absolute inset-0 grid place-items-center bg-[rgba(15,17,20,0.28)] text-[11px] text-white backdrop-blur-[1px]">
                           {selectBusy ? "应用中…" : "移除中…"}
@@ -2678,7 +2871,7 @@ function ThinkingLayerComponent(props: {
               </div>
 
               {activeSpaceGallery.length === 0 ? (
-                <p className="mt-5 text-center text-xs text-slate-500">
+                <p className="mt-5 text-center text-xs text-slate-600">
                   还没有图片。从上方磁贴上传，或直接拖拽到窗口中。
                 </p>
               ) : null}
@@ -2689,7 +2882,7 @@ function ThinkingLayerComponent(props: {
               <p
                 className={cn(
                   "min-h-[1.2em] flex-1 text-xs transition-opacity",
-                  galleryHint ? "text-slate-600 opacity-100" : "text-slate-400 opacity-0"
+                  galleryHint ? "text-slate-600 opacity-100" : "text-slate-600 opacity-0"
                 )}
               >
                 {galleryHint || "."}

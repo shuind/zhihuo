@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { setSpaceStatus } from "@/lib/server/store";
@@ -21,7 +21,7 @@ export const POST = withApiRoute(
 
     let kind: "ok" | "not_found" | "over_limit" = "not_found";
     let nextStatus: string | null = null;
-    await updateDbScoped(["thinking_spaces"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces"], (db) => {
       const result = setSpaceStatus(db, userId, params.spaceId, status);
       kind = result.kind;
       if (result.kind === "ok") nextStatus = result.space.status;

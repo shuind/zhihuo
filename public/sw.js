@@ -1,6 +1,8 @@
-const CACHE_VERSION = "2026-06-06-v1";
+const CACHE_VERSION = "2026-07-11-v2";
 const STATIC_CACHE = `zhihuo-static-${CACHE_VERSION}`;
 const NAVIGATION_CACHE = `zhihuo-navigation-${CACHE_VERSION}`;
+const MAX_STATIC_ENTRIES = 80;
+const MAX_NAVIGATION_ENTRIES = 12;
 const STATIC_ASSETS = [
   "/",
   "/manifest.webmanifest",
@@ -58,6 +60,7 @@ async function cacheFirst(request) {
   if (response.ok) {
     const cache = await caches.open(STATIC_CACHE);
     await cache.put(request, response.clone());
+    await trimCache(cache, MAX_STATIC_ENTRIES);
   }
   return response;
 }
@@ -66,11 +69,20 @@ async function networkFirstNavigation(request) {
   const cache = await caches.open(NAVIGATION_CACHE);
   try {
     const response = await fetch(request);
-    if (response.ok) await cache.put(request, response.clone());
+    if (response.ok) {
+      await cache.put(request, response.clone());
+      await trimCache(cache, MAX_NAVIGATION_ENTRIES);
+    }
     return response;
   } catch {
     return (await cache.match(request)) || (await caches.match("/")) || Response.error();
   }
+}
+
+async function trimCache(cache, maxEntries) {
+  const keys = await cache.keys();
+  const stale = keys.slice(0, Math.max(0, keys.length - maxEntries));
+  await Promise.all(stale.map((request) => cache.delete(request)));
 }
 
 self.addEventListener("fetch", (event) => {

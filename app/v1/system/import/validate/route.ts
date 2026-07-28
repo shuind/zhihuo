@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
 
-import { readDb, updateDb } from "@/lib/server/db";
+import { readUserDb, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
+import { normalizeUserImportPayload, validateUserImportReferences } from "@/lib/server/import-payload";
 import { withApiRoute } from "@/lib/server/observability";
 import { verifyUserExportIntegrity } from "@/lib/server/security";
 import { createId, nowIso } from "@/lib/server/utils";
@@ -10,53 +11,6 @@ type ValidateBody = {
   payload?: unknown;
   checksum?: string;
 };
-
-function validateReferences(payload: unknown) {
-  if (!payload || typeof payload !== "object") return { ok: false as const, reason: "payload must be object" };
-
-  const root = payload as {
-    life?: { doubts?: Array<{ id?: string }>; notes?: Array<{ doubt_id?: string }> };
-    thinking?: {
-      spaces?: Array<{ id?: string }>;
-      nodes?: Array<{ space_id?: string; image_asset_id?: string | null }>;
-      inbox?: Array<{ space_id?: string }>;
-      space_meta?: Array<{ space_id?: string; background_asset_ids?: string[]; background_selected_asset_id?: string | null }>;
-      media_assets?: Array<{ id?: string }>;
-    };
-  };
-  const doubts = Array.isArray(root.life?.doubts) ? root.life?.doubts : [];
-  const notes = Array.isArray(root.life?.notes) ? root.life?.notes : [];
-  const spaces = Array.isArray(root.thinking?.spaces) ? root.thinking?.spaces : [];
-  const nodes = Array.isArray(root.thinking?.nodes) ? root.thinking?.nodes : [];
-  const inbox = Array.isArray(root.thinking?.inbox) ? root.thinking?.inbox : [];
-  const spaceMeta = Array.isArray(root.thinking?.space_meta) ? root.thinking?.space_meta : [];
-  const mediaAssets = Array.isArray(root.thinking?.media_assets) ? root.thinking?.media_assets : [];
-
-  const doubtIds = new Set(doubts.map((item) => item.id).filter((id): id is string => typeof id === "string"));
-  const spaceIds = new Set(spaces.map((item) => item.id).filter((id): id is string => typeof id === "string"));
-  const mediaIds = new Set(mediaAssets.map((item) => item.id).filter((id): id is string => typeof id === "string"));
-
-  const brokenNotes = notes.filter((item) => !doubtIds.has(item.doubt_id ?? ""));
-  const brokenNodes = nodes.filter((item) => !spaceIds.has(item.space_id ?? "") || (item.image_asset_id ? !mediaIds.has(item.image_asset_id) : false));
-  const brokenInbox = inbox.filter((item) => !spaceIds.has(item.space_id ?? ""));
-  const brokenMeta = spaceMeta.filter((item) => {
-    if (!spaceIds.has(item.space_id ?? "")) return true;
-    const backgroundAssetIds = Array.isArray(item.background_asset_ids) ? item.background_asset_ids : [];
-    if (backgroundAssetIds.some((assetId) => typeof assetId === "string" && !mediaIds.has(assetId))) return true;
-    if (item.background_selected_asset_id && !mediaIds.has(item.background_selected_asset_id)) return true;
-    return false;
-  });
-
-  return {
-    ok: brokenNotes.length + brokenNodes.length + brokenInbox.length + brokenMeta.length === 0,
-    broken: {
-      notes: brokenNotes.length,
-      nodes: brokenNodes.length,
-      inbox: brokenInbox.length,
-      space_meta: brokenMeta.length
-    }
-  };
-}
 
 export const POST = withApiRoute(
   "system.import.validate",
@@ -67,16 +21,16 @@ export const POST = withApiRoute(
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
-    const db = await readDb();
+    const db = await readUserDb(userId, []);
     const user = db.users.find((item) => item.id === userId && !item.deleted_at);
     if (!user) return unauthorizedJson();
 
     const integrity = verifyUserExportIntegrity(body.payload, body.checksum);
     if (!integrity.ok) return errorJson(400, integrity.reason);
-    const refs = validateReferences(body.payload);
+    const refs = validateUserImportReferences(normalizeUserImportPayload(body.payload, userId));
     if (!refs.ok) return errorJson(400, `reference check failed: ${JSON.stringify(refs.broken)}`);
 
-    await updateDb((nextDb) => {
+    await updateUserDbScoped(userId, ["audit_logs"], (nextDb) => {
       nextDb.audit_logs.push({
         id: createId(),
         user_id: userId,

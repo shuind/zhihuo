@@ -1,6 +1,6 @@
 "use client";
 
-const LETTER_EXPORT_PIXEL_RATIO = 3;
+const LETTER_EXPORT_PIXEL_RATIO = 2;
 
 export async function exportLetterPng(node: HTMLElement, filename: string) {
   await prepareLetterForExport(node);
@@ -8,7 +8,7 @@ export async function exportLetterPng(node: HTMLElement, filename: string) {
   const htmlToImage = await import("html-to-image");
   const { width, height } = getExportSize(node);
   const fontEmbedCSS = await getFontEmbedCss(htmlToImage, node);
-  const dataUrl = await htmlToImage.toPng(node, {
+  const blob = await htmlToImage.toBlob(node, {
     pixelRatio: LETTER_EXPORT_PIXEL_RATIO,
     cacheBust: true,
     backgroundColor: "transparent",
@@ -22,7 +22,8 @@ export async function exportLetterPng(node: HTMLElement, filename: string) {
     fontEmbedCSS
   });
 
-  downloadDataUrl(dataUrl, filename);
+  if (!blob) throw new Error("信笺图片生成失败");
+  downloadBlob(blob, filename);
 }
 
 async function prepareLetterForExport(node: HTMLElement) {
@@ -102,11 +103,13 @@ async function getFontEmbedCss(
   }
 }
 
-function downloadDataUrl(dataUrl: string, filename: string) {
+function downloadBlob(blob: Blob, filename: string) {
+  const objectUrl = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.download = filename;
-  link.href = dataUrl;
+  link.href = objectUrl;
   link.click();
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
 }
 
 function nextFrame() {

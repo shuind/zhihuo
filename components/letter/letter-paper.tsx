@@ -52,7 +52,7 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
     dateLabel,
     solarTermLabel,
     moon,
-    authorName = "shuind",
+    authorName,
     spriteFade = 0,
     ornamentSealText,
     sealVisible = false,
@@ -235,12 +235,14 @@ export const LetterPaper = forwardRef<HTMLDivElement, LetterPaperProps>(function
             >
               知惑
             </span>
-            <span
-              className="text-[10px] tracking-[0.2em]"
-              style={{ color: p.subtleSoft }}
-            >
-              {authorName}
-            </span>
+            {authorName?.trim() ? (
+              <span
+                className="text-[10px] tracking-[0.2em]"
+                style={{ color: p.subtleSoft }}
+              >
+                {authorName}
+              </span>
+            ) : null}
           </div>
         </div>
         <div className="h-[64px] w-[72px]" style={{ color: p.sprite }}>

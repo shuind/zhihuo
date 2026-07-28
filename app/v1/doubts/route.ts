@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { readDb, updateDbScoped } from "@/lib/server/db";
+import { readUserDb, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createDoubt, listDoubts } from "@/lib/server/store";
@@ -12,7 +12,7 @@ export const GET = withApiRoute("doubts.list", async (request: NextRequest) => {
   const includeArchived = parseBoolean(request.nextUrl.searchParams.get("include_archived"), false);
   const includeNotes = parseBoolean(request.nextUrl.searchParams.get("include_notes"), false);
   const range = request.nextUrl.searchParams.get("range");
-  const db = await readDb();
+  const db = await readUserDb(userId, ["doubts", "doubt_notes"]);
   const doubts = listDoubts(db, userId, { range, includeArchived });
   if (!includeNotes) return okJson({ doubts });
   const doubtIds = new Set(doubts.map((item) => item.id));
@@ -42,7 +42,7 @@ export const POST = withApiRoute(
     const preferredId =
       typeof body.client_entity_id === "string" && body.client_entity_id.trim() ? body.client_entity_id.trim() : null;
 
-    const db = await updateDbScoped(["doubts"], (state) => {
+    const db = await updateUserDbScoped(userId, ["doubts"], (state) => {
       createDoubt(state, userId, body.raw_text ?? "", {
         clientEntityId: preferredId,
         clientUpdatedAt: clientUpdatedAt

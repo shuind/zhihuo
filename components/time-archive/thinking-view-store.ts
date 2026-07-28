@@ -122,7 +122,7 @@ export function buildSpaceViewFromStore(store: ThinkingStore, spaceId: string): 
       const isParking = parkingTrackId === trackId;
       return {
         id: trackId,
-        titleQuestionText: isParking ? "????" : nodes[0]?.questionText ?? "???",
+        titleQuestionText: isParking ? "先放这里" : nodes[0]?.questionText ?? "新方向",
         isParking,
         isEmpty: nodes.length === 0,
         nodeCount: nodes.length,

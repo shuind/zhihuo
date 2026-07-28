@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { feedScratchToTime } from "@/lib/server/store";
@@ -16,7 +16,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let result: ReturnType<typeof feedScratchToTime> = { kind: "not_found" } as ReturnType<typeof feedScratchToTime>;
-    await updateDbScoped(["thinking_scratch", "doubts"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_scratch", "doubts"], (db) => {
       result = feedScratchToTime(db, userId, params.id);
     });
 

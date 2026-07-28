@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb } from "@/lib/server/db";
+import { readUserDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { getSpaceView, getUserSyncSnapshot } from "@/lib/server/store";
@@ -8,7 +8,7 @@ import { getSpaceView, getUserSyncSnapshot } from "@/lib/server/store";
 export const GET = withApiRoute("sync.snapshot.get", async (request: NextRequest) => {
   const userId = getUserId(request);
   if (!userId) return unauthorizedJson();
-  const db = await readDb();
+  const db = await readUserDb(userId);
   const snapshot = getUserSyncSnapshot(db, userId);
   if (!snapshot) return errorJson(404, "用户不存在");
 

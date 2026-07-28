@@ -6,31 +6,45 @@ import { createEmptyDbState, type ScopedTable } from "@/lib/server/db/postgres-s
 import { deleteRowsNotInSet, upsertTable } from "@/lib/server/db/table-sync";
 import type { DbState } from "@/lib/server/types";
 
-export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[]): Promise<DbState> {
+export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[], userId?: string): Promise<DbState> {
   const state = createEmptyDbState();
+  const params = userId ? [userId] : [];
+  if (userId) {
+    const { rows } = await client.query(
+      "SELECT id, email, password_hash, created_at, deleted_at FROM users WHERE id = $1",
+      params
+    );
+    state.users = rows as DbState["users"];
+  }
   for (const table of scope) {
     if (table === "doubts") {
       const { rows } = await client.query(
-        "SELECT id, user_id, raw_text, first_node_preview, last_node_preview, letter_title, letter_lines, letter_variant, letter_seal_text, created_at, archived_at, deleted_at FROM doubts"
+        `SELECT id, user_id, raw_text, first_node_preview, last_node_preview, letter_title, letter_lines, letter_variant, letter_seal_text, created_at, archived_at, deleted_at FROM doubts${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.doubts = rows as DbState["doubts"];
       continue;
     }
     if (table === "doubt_notes") {
-      const { rows } = await client.query("SELECT id, doubt_id, note_text, created_at FROM doubt_notes");
+      const { rows } = await client.query(
+        `SELECT id, doubt_id, note_text, created_at FROM doubt_notes${userId ? " WHERE doubt_id IN (SELECT id FROM doubts WHERE user_id = $1)" : ""}`,
+        params
+      );
       state.doubt_notes = rows as DbState["doubt_notes"];
       continue;
     }
     if (table === "thinking_spaces") {
       const { rows } = await client.query(
-        "SELECT id, user_id, root_question_text, status, created_at, frozen_at, last_activity_at, source_time_doubt_id FROM thinking_spaces"
+        `SELECT id, user_id, root_question_text, status, created_at, frozen_at, last_activity_at, source_time_doubt_id FROM thinking_spaces${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.thinking_spaces = rows as DbState["thinking_spaces"];
       continue;
     }
     if (table === "thinking_space_meta") {
       const { rows } = await client.query(
-        "SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints, star_map_scene_signature, star_map_curated_scene, star_map_curated_at, star_map_star_placements, star_map_placements_signature, star_map_placements_updated_at FROM thinking_space_meta"
+        `SELECT space_id, user_freeze_note, export_version, background_text, background_version, background_asset_ids, background_selected_asset_id, suggestion_decay, last_track_id, last_organized_order, parking_track_id, pending_track_id, empty_track_ids, milestone_node_ids, track_direction_hints, star_map_scene_signature, star_map_curated_scene, star_map_curated_at, star_map_star_placements, star_map_placements_signature, star_map_placements_updated_at FROM thinking_space_meta${userId ? " WHERE space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)" : ""}`,
+        params
       );
       state.thinking_space_meta = rows.map((row) => ({
         ...row,
@@ -79,7 +93,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "thinking_nodes") {
       const { rows } = await client.query(
-        "SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, image_asset_id, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes"
+        `SELECT id, space_id, parent_node_id, raw_question_text, note_text, answer_text, image_asset_id, created_at, order_index, is_suggested, state, dimension FROM thinking_nodes${userId ? " WHERE space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)" : ""}`,
+        params
       );
       state.thinking_nodes = rows.map((row) => ({
         ...row,
@@ -92,13 +107,17 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
       continue;
     }
     if (table === "thinking_inbox") {
-      const { rows } = await client.query("SELECT id, space_id, raw_text, created_at FROM thinking_inbox");
+      const { rows } = await client.query(
+        `SELECT id, space_id, raw_text, created_at FROM thinking_inbox${userId ? " WHERE space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)" : ""}`,
+        params
+      );
       state.thinking_inbox = rows as DbState["thinking_inbox"];
       continue;
     }
     if (table === "thinking_scratch") {
       const { rows } = await client.query(
-        "SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch"
+        `SELECT id, user_id, raw_text, created_at, updated_at, archived_at, deleted_at, derived_space_id, fed_time_doubt_id FROM thinking_scratch${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.thinking_scratch = rows.map((row) => ({
         ...row,
@@ -111,7 +130,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "thinking_node_links") {
       const { rows } = await client.query(
-        "SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links"
+        `SELECT id, space_id, source_node_id, target_node_id, link_type, score, created_at FROM thinking_node_links${userId ? " WHERE space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)" : ""}`,
+        params
       );
       state.thinking_node_links = rows.map((row) => ({
         ...row,
@@ -122,7 +142,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "thinking_media_assets") {
       const { rows } = await client.query(
-        "SELECT id, user_id, file_name, mime_type, byte_size, sha256, width, height, created_at, uploaded_at, deleted_at FROM thinking_media_assets"
+        `SELECT id, user_id, file_name, mime_type, byte_size, sha256, width, height, created_at, uploaded_at, deleted_at FROM thinking_media_assets${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.thinking_media_assets = rows.map((row) => ({
         ...row,
@@ -139,12 +160,18 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
       continue;
     }
     if (table === "audit_logs") {
-      const { rows } = await client.query("SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs");
+      const { rows } = await client.query(
+        `SELECT id, user_id, action, target_type, target_id, detail, created_at FROM audit_logs${userId ? " WHERE user_id = $1" : ""}`,
+        params
+      );
       state.audit_logs = rows as DbState["audit_logs"];
       continue;
     }
     if (table === "user_sync_state") {
-      const { rows } = await client.query("SELECT user_id, revision, last_sequence, updated_at FROM user_sync_state");
+      const { rows } = await client.query(
+        `SELECT user_id, revision, last_sequence, updated_at FROM user_sync_state${userId ? " WHERE user_id = $1" : ""}`,
+        params
+      );
       state.user_sync_state = rows.map((row) => ({
         ...row,
         revision: Number(row.revision),
@@ -154,7 +181,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "applied_client_mutations") {
       const { rows } = await client.query(
-        "SELECT id, user_id, client_mutation_id, op, base_revision, applied_revision, created_at FROM applied_client_mutations"
+        `SELECT id, user_id, client_mutation_id, op, base_revision, applied_revision, created_at FROM applied_client_mutations${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.applied_client_mutations = rows.map((row) => ({
         ...row,
@@ -165,7 +193,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "sync_operation_log") {
       const { rows } = await client.query(
-        "SELECT id, user_id, client_mutation_id, device_id, client_order, client_updated_at, op, payload, applied_revision, server_sequence, created_at FROM sync_operation_log"
+        `SELECT id, user_id, client_mutation_id, device_id, client_order, client_updated_at, op, payload, applied_revision, server_sequence, created_at FROM sync_operation_log${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.sync_operation_log = rows.map((row) => ({
         ...row,
@@ -179,7 +208,8 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
     }
     if (table === "sync_repair_items") {
       const { rows } = await client.query(
-        "SELECT id, user_id, client_mutation_id, op, payload, reason, destination_class, original_target_id, created_at, resolved_at FROM sync_repair_items"
+        `SELECT id, user_id, client_mutation_id, op, payload, reason, destination_class, original_target_id, created_at, resolved_at FROM sync_repair_items${userId ? " WHERE user_id = $1" : ""}`,
+        params
       );
       state.sync_repair_items = rows.map((row) => ({
         ...row,
@@ -193,7 +223,39 @@ export async function readScopedDbFromPg(client: PoolClient, scope: ScopedTable[
   return normalizeDb(state);
 }
 
-export async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: ScopedTable[]) {
+const USER_SCOPE_PREDICATES: Record<ScopedTable, string> = {
+  doubts: "user_id = $1",
+  doubt_notes: "doubt_id IN (SELECT id FROM doubts WHERE user_id = $1)",
+  thinking_spaces: "user_id = $1",
+  thinking_space_meta: "space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)",
+  thinking_nodes: "space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)",
+  thinking_inbox: "space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)",
+  thinking_scratch: "user_id = $1",
+  thinking_node_links: "space_id IN (SELECT id FROM thinking_spaces WHERE user_id = $1)",
+  thinking_media_assets: "user_id = $1",
+  audit_logs: "user_id = $1",
+  user_sync_state: "user_id = $1",
+  applied_client_mutations: "user_id = $1",
+  sync_operation_log: "user_id = $1",
+  sync_repair_items: "user_id = $1"
+};
+
+async function deleteUserRowsNotInSet(
+  client: PoolClient,
+  table: ScopedTable,
+  idColumn: string,
+  ids: string[],
+  userId: string
+) {
+  const predicate = USER_SCOPE_PREDICATES[table];
+  if (!ids.length) {
+    await client.query(`DELETE FROM ${table} WHERE ${predicate}`, [userId]);
+    return;
+  }
+  await client.query(`DELETE FROM ${table} WHERE ${predicate} AND NOT (${idColumn} = ANY($2::text[]))`, [userId, ids]);
+}
+
+export async function persistScopedDbToPg(client: PoolClient, db: DbState, scope: ScopedTable[], userId?: string) {
   const planByScope = buildPgScopedPlanMap(db, scope);
 
   for (const table of PG_SCOPED_UPSERT_ORDER) {
@@ -206,6 +268,7 @@ export async function persistScopedDbToPg(client: PoolClient, db: DbState, scope
     const plan = planByScope.get(table);
     if (!plan) continue;
     const ids = [...new Set(plan.rows.map((row) => String(row[0])))];
-    await deleteRowsNotInSet(client, plan.table, plan.idColumn, ids);
+    if (userId) await deleteUserRowsNotInSet(client, table, plan.idColumn, ids, userId);
+    else await deleteRowsNotInSet(client, plan.table, plan.idColumn, ids);
   }
 }

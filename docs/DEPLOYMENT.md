@@ -34,6 +34,14 @@ curl http://127.0.0.1:3000/v1/health
 docker compose exec app sh -lc 'env | grep -E "^SMTP_|^NODE_ENV"'
 ```
 
+The Compose configuration persists three independent data sets:
+
+- `zhihuo-pgdata`: PostgreSQL records
+- `zhihuo-user-data`: JSON fallback database and uploaded media under `/app/data`
+- `zhihuo-runtime-data`: runtime-generated keys under `/app/runtime-data`
+
+Do not remove these named volumes during an update. A complete backup must include all three; even when PostgreSQL is enabled, `zhihuo-user-data` can still contain media files.
+
 ## 3. CI workflow
 
 File: `.github/workflows/ci.yml`
@@ -107,6 +115,8 @@ git log --oneline -n 10
 git checkout <old_commit_sha>
 docker compose up -d --build
 ```
+
+Before a destructive migration or volume change, back up the PostgreSQL database and both app data volumes. Restoring only PostgreSQL does not restore uploaded media or runtime keys.
 
 ## 7. Optional reverse proxy
 

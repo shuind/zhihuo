@@ -4,6 +4,7 @@ import { getAuthCookieName } from "@/lib/server/auth";
 import { updateDb } from "@/lib/server/db";
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
+import { deleteThinkingMediaUserDirectory } from "@/lib/server/media";
 import { deleteAllUserData } from "@/lib/server/store";
 
 type DeleteBody = {
@@ -28,6 +29,7 @@ export const POST = withApiRoute(
       deleted = deleteAllUserData(db, userId, reason);
     });
     if (!deleted) return errorJson(404, "用户不存在");
+    await deleteThinkingMediaUserDirectory(userId);
 
     const response = okJson({ ok: true, deleted });
     response.cookies.set(getAuthCookieName(), "", {

@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { addQuestionToSpace } from "@/lib/server/store";
@@ -28,7 +28,6 @@ export const POST = withApiRoute(
       kind: "ok" | "not_found" | "readonly" | "invalid";
       nodeId: string | null;
       normalized: string | null;
-      converted: boolean;
       noteText: string | null;
       trackId: string | null;
       updatedAt: string | null;
@@ -37,14 +36,13 @@ export const POST = withApiRoute(
       kind: "not_found",
       nodeId: null,
       normalized: null,
-      converted: false,
       noteText: null,
       trackId: null,
       updatedAt: null,
       suggestedQuestions: []
     };
 
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes"], (db) => {
       const result = addQuestionToSpace(db, userId, params.spaceId, body.raw_text ?? "", {
         track_id: typeof body.track_id === "string" ? body.track_id : null,
         from_suggestion: body.from_suggestion === true,
@@ -56,7 +54,6 @@ export const POST = withApiRoute(
       if (result.kind === "ok") {
         state.nodeId = result.node.id;
         state.normalized = result.normalized_question_text;
-        state.converted = result.converted;
         state.noteText = result.note_text;
         state.trackId = result.track_id;
         state.updatedAt = result.node.created_at;
@@ -73,7 +70,6 @@ export const POST = withApiRoute(
     return okJson({
       node_id: state.nodeId,
       normalized_question_text: state.normalized,
-      converted: state.converted,
       note_text: state.noteText,
       track_id: state.trackId,
       updated_at: state.updatedAt,

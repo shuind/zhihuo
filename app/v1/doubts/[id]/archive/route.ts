@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { archiveDoubt } from "@/lib/server/store";
@@ -17,7 +17,7 @@ export const POST = withApiRoute(
 
     let found = false;
     let archivedAt: string | null = null;
-    await updateDbScoped(["doubts"], (db) => {
+    await updateUserDbScoped(userId, ["doubts"], (db) => {
       const doubt = archiveDoubt(db, userId, params.id);
       if (!doubt) return;
       found = true;

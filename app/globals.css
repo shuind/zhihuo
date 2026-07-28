@@ -70,9 +70,22 @@ body {
 body {
   @apply bg-background text-foreground antialiased;
   font-family: var(--font-ui-sans);
+  padding-top: var(--safe-top);
   padding-left: var(--safe-left);
   padding-right: var(--safe-right);
   padding-bottom: var(--safe-bottom);
+}
+
+html[data-zhihuo-layer="life"] body {
+  background: #020203;
+}
+
+html[data-zhihuo-layer="thinking"] body {
+  background: #f3f0ea;
+}
+
+html[data-zhihuo-layer="settings"] body {
+  background: #efebe4;
 }
 
 button,
@@ -197,7 +210,7 @@ body.is-hidden .time-status-dot--active::after {
   --time-divider: rgba(200, 214, 222, 0.09);
   --time-text-strong: rgba(232, 237, 240, 0.94);
   --time-text: rgba(206, 214, 219, 0.82);
-  --time-text-soft: rgba(172, 181, 188, 0.62);
+  --time-text-soft: rgba(184, 193, 198, 0.7);
   --time-accent: rgba(191, 206, 214, 0.66);
   --time-accent-soft: rgba(191, 206, 214, 0.07);
   --time-focus: rgba(191, 206, 214, 0.1);
@@ -455,6 +468,22 @@ body.is-hidden .time-status-dot--active::after {
 
 [data-life-layout="true"] .time-status-dot--plain::after {
   opacity: 0;
+}
+
+.time-status-dot--sealed {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  background: #a85f49;
+  box-shadow: 0 0 0 1px rgba(8, 11, 16, 0.82), 0 0 12px rgba(168, 95, 73, 0.24);
+  transform: rotate(8deg);
+}
+
+.time-status-dot--sealed::after {
+  inset: -3px;
+  border-radius: 3px;
+  border-color: rgba(190, 112, 88, 0.28);
+  opacity: 1;
 }
 
 .time-status-dot--linked {
@@ -808,6 +837,42 @@ body.is-hidden .time-status-dot--active::after {
   }
 }
 
+.layer-light-veil {
+  pointer-events: none;
+  position: absolute;
+  inset: 0;
+  z-index: 60;
+  animation: zhLayerLightVeil 420ms ease-out both;
+}
+
+.layer-light-veil--dark {
+  background: rgba(9, 14, 17, 0.34);
+}
+
+.layer-light-veil--paper {
+  background: rgba(246, 241, 232, 0.32);
+}
+
+.night-paper-mode.thinking-surface {
+  background-color: #ded8ce;
+  background-image:
+    radial-gradient(circle at 16% 8%, rgba(255, 250, 240, 0.34), transparent 38%),
+    linear-gradient(145deg, rgba(219, 211, 199, 0.96), rgba(231, 225, 216, 0.98));
+}
+
+.night-paper-mode [data-track-panel="true"] {
+  filter: brightness(0.94);
+}
+
+@keyframes zhLayerLightVeil {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
 @keyframes zhDialogFadeIn {
   from {
     opacity: 0;
@@ -860,6 +925,19 @@ body.is-hidden .time-status-dot--active::after {
 }
 
 @media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto !important;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 1ms !important;
+  }
+
   .breath,
   .star,
   .time-status-dot--active,

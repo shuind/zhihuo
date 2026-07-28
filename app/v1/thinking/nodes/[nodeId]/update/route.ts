@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { runPgTransaction, updateDbScoped } from "@/lib/server/db";
+import { runUserPgTransaction, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateNodeQuestion } from "@/lib/server/store";
@@ -23,7 +23,7 @@ export const POST = withApiRoute(
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
 
-    const pgResult = await runPgTransaction("thinking.nodes.update.sql", async (client) => {
+    const pgResult = await runUserPgTransaction(userId, "thinking.nodes.update.sql", async (client) => {
       const found = await client.query<{ status: string; space_id: string; background_text: string | null }>(
         `SELECT s.status, s.id AS space_id, m.background_text
          FROM thinking_nodes n
@@ -78,7 +78,7 @@ export const POST = withApiRoute(
 
     let kind: "ok" | "not_found" | "readonly" | "invalid" = "not_found";
     let questionText = "";
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "thinking_node_links"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes", "thinking_node_links"], (db) => {
       const result = updateNodeQuestion(db, userId, params.nodeId, rawQuestionText);
       kind = result.kind;
       if (result.kind === "ok") questionText = result.node.raw_question_text;

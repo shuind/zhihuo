@@ -3,7 +3,7 @@ import { isIP } from "node:net";
 
 import { NextRequest, NextResponse } from "next/server";
 
-import { applyCorsHeaders } from "@/lib/server/cors";
+import { applyCorsHeaders, isTrustedRequestOrigin } from "@/lib/server/cors";
 
 type JsonLike = string | number | boolean | null | JsonLike[] | { [k: string]: JsonLike };
 
@@ -208,6 +208,18 @@ export function withApiRoute<Context extends WrappedContext>(
       ip: getClientIp(request),
       startedAt
     };
+
+    if (request.method !== "GET" && request.method !== "HEAD" && request.method !== "OPTIONS" && !isTrustedRequestOrigin(request)) {
+      logWarn("api.origin_rejected", {
+        requestId: meta.requestId,
+        route: name,
+        method: meta.method,
+        origin: request.headers.get("origin") ?? "missing"
+      });
+      const response = NextResponse.json({ error: "origin not allowed", request_id: meta.requestId }, { status: 403 });
+      response.headers.set("x-request-id", meta.requestId);
+      return response;
+    }
 
     if (options?.rateLimit) {
       const bucket = `${options.rateLimit.bucket}:${meta.ip}`;

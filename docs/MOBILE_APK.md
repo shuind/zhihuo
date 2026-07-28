@@ -13,7 +13,7 @@ pnpm build:mobile
 
 ## Build Debug APK
 
-Install Android Studio or the Android command-line SDK first, then set one of:
+Install Android Studio (including its bundled Java 21 runtime) or the Android command-line SDK first, then set one of:
 
 ```powershell
 $env:ANDROID_HOME="C:\Users\<you>\AppData\Local\Android\Sdk"
@@ -31,7 +31,18 @@ Then run:
 pnpm build:android:debug
 ```
 
+The build script requires Java 21 or newer. It uses a compatible `JAVA_HOME` / `ANDROID_STUDIO_JDK` when configured and can automatically find the standard Android Studio JBR location on Windows, macOS, and Linux.
+
 The debug APK will be generated under `android/app/build/outputs/apk/debug/`.
+
+## Android Shell Behavior
+
+- System Back closes the top dialog or sheet first, then leaves a thinking/detail view, then returns to the Time layer, and finally minimizes the app.
+- The first account-binding choice cannot be accidentally dismissed with Back.
+- Predictive Back is enabled in the Android manifest for API 33+.
+- Status-bar icon contrast follows the current layer: light icons on the Time layer, dark icons on Thinking and Settings.
+- The WebView consumes the top/side/bottom safe-area insets. Android 16 edge-to-edge mode therefore does not place headers under the status bar.
+- The launch theme uses the Time layer's deep-black background and the existing Zhihuo tree mark, avoiding the former white Capacitor placeholder flash.
 
 ## Cloud Sync From APK
 

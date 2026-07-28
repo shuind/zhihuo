@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { deleteThinkingScratch } from "@/lib/server/store";
@@ -17,7 +17,7 @@ export const POST = withApiRoute(
     if (!userId) return unauthorizedJson();
 
     let scratch: DbState["thinking_scratch"][number] | null = null;
-    await updateDbScoped(["thinking_scratch"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_scratch"], (db) => {
       scratch = deleteThinkingScratch(db, userId, params.id);
     });
 

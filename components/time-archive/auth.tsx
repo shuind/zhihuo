@@ -9,7 +9,7 @@ import { onSubmitEnter } from "@/lib/input-events";
 import { cn } from "@/lib/utils";
 export function AuthDialog(props: { onClose: () => void; onAuthed: () => void }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
+    <div role="dialog" aria-modal="true" aria-label="账号登录或注册" className="absolute inset-0 z-50 flex items-center justify-center bg-black/55 px-4 backdrop-blur-sm">
       <div className="w-full max-w-md">
         <AuthPanel onAuthed={props.onAuthed} onClose={props.onClose} />
       </div>
@@ -19,7 +19,7 @@ export function AuthDialog(props: { onClose: () => void; onAuthed: () => void })
 
 export function BindingDialog(props: { submitting: boolean; onUploadLocal: () => void; onKeepCloud: () => void }) {
   return (
-    <div className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
+    <div role="alertdialog" aria-modal="true" aria-label="选择本机或云端数据" className="absolute inset-0 z-50 flex items-center justify-center bg-black/60 px-4 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-3xl border border-slate-200/15 bg-slate-950/95 p-6 text-slate-100 shadow-[0_30px_90px_rgba(0,0,0,0.5)]">
         <p className="text-sm tracking-[0.18em] text-slate-300/85">首次绑定账号</p>
         <h2 className="mt-3 text-xl font-medium">云端已存在数据</h2>
@@ -194,6 +194,7 @@ export function AuthPanel(props: { onAuthed: () => void; onClose?: () => void })
           {props.onClose ? (
             <button
               type="button"
+              data-native-back="true"
               className="rounded-full border border-slate-300/20 px-2.5 py-1 text-xs text-slate-300/75 transition-colors hover:bg-slate-800/70"
               onClick={props.onClose}
             >
@@ -244,39 +245,43 @@ export function AuthPanel(props: { onAuthed: () => void; onClose?: () => void })
         </div>
         <div className="mt-4 grid gap-3">
           <input
+            aria-label="邮箱"
             type="email"
             value={email}
             onChange={(event) => setEmail(event.target.value)}
             placeholder="邮箱"
-            className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
+            className="h-11 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45 sm:h-10"
           />
           <input
+            aria-label={mode === "forgot" ? "新密码" : "密码"}
             type="password"
             value={password}
             onChange={(event) => setPassword(event.target.value)}
             placeholder={mode === "forgot" ? "新密码（至少8位）" : "密码（至少8位）"}
-            className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
+            className="h-11 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45 sm:h-10"
             onKeyDown={onSubmitEnter(submit)}
           />
           {mode !== "login" ? (
             <input
+              aria-label={mode === "register" ? "重复输入密码" : "重复输入新密码"}
               type="password"
               value={confirmPassword}
               onChange={(event) => setConfirmPassword(event.target.value)}
               placeholder={mode === "register" ? "重复输入密码" : "重复输入新密码"}
-              className="h-10 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
+              className="h-11 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45 sm:h-10"
               onKeyDown={onSubmitEnter(submit)}
             />
           ) : null}
           {mode !== "login" && !(mode === "register" && REGISTER_CODE_BYPASS_ENABLED) ? (
             <div className="flex gap-2">
               <input
+                aria-label="邮箱验证码"
                 type="text"
                 inputMode="numeric"
                 value={code}
                 onChange={(event) => setCode(event.target.value.replace(/\D+/g, "").slice(0, 6))}
                 placeholder="邮箱验证码"
-                className="h-10 flex-1 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45"
+                className="h-11 flex-1 rounded-lg border border-slate-300/20 bg-slate-950/60 px-3 text-sm text-slate-100 outline-none focus-visible:ring-1 focus-visible:ring-slate-300/45 sm:h-10"
                 onKeyDown={onSubmitEnter(submit)}
               />
               <Button

@@ -4,7 +4,9 @@ import { SCENE_CURATOR_SYSTEM_PROMPT } from "@/components/thinking/star-map/dire
 import { validateScene } from "@/components/thinking/star-map/director/scene-validator"
 import type { Scene, SceneStar, SceneStrand } from "@/components/thinking/star-map/stage/scene-types"
 import { makeRng } from "@/components/thinking/star-map/stage/scene-compiler"
-import { DEFAULT_AI_PROVIDER, getAiProviderDefaults, normalizeAiApiSettings, normalizeBaseUrl } from "@/lib/ai-settings"
+import { DEFAULT_AI_PROVIDER, getAiProviderDefaults, normalizeAiApiSettings } from "@/lib/ai-settings"
+import { fetchAiEndpoint, resolveAiBaseUrl, UnsafeAiEndpointError } from "@/lib/server/ai-endpoint"
+import { readUserDb } from "@/lib/server/db"
 import { errorJson, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http"
 import { logWarn, withApiRoute } from "@/lib/server/observability"
 
@@ -24,6 +26,7 @@ type ThoughtInput = {
 type CurateRequest = {
   rootQuestion?: string
   thoughts?: ThoughtInput[]
+  allowRemoteProcessing?: boolean
   ai?: {
     provider?: string
     apiKey?: string
@@ -102,48 +105,74 @@ export const POST = withApiRoute(
   async (request: NextRequest) => {
     const userId = getUserId(request)
     if (!userId) return unauthorizedJson()
+    const userDb = await readUserDb(userId, [])
+    if (!userDb.users.some((user) => user.id === userId && !user.deleted_at)) return unauthorizedJson()
 
     const body = await parseJsonBody<CurateRequest>(request)
     if (!body || !Array.isArray(body.thoughts) || body.thoughts.length === 0) {
       return errorJson(400, "thoughts is required")
     }
+    if (body.allowRemoteProcessing !== true) {
+      return errorJson(403, "请先在设置中允许按次使用第三方 AI")
+    }
 
     const ai = normalizeAiApiSettings(body.ai)
     const envDefaults = getAiProviderDefaults(DEFAULT_AI_PROVIDER)
     const providerDefaults = getAiProviderDefaults(ai.provider)
-    const apiKey = ai.apiKey || process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || ""
+    const apiKey = ai.apiKey || process.env.AI_API_KEY || process.env.DEEPSEEK_API_KEY || process.env.OPENAI_API_KEY || ""
     if (!apiKey) return errorJson(503, "请先在设置里填写 AI API Key")
 
     const thoughts = sanitizeThoughts(body.thoughts)
     if (!thoughts.length) return errorJson(400, "valid thoughts is required")
 
     const rootQuestion = trimText(body.rootQuestion ?? "", 200)
-    const baseUrl = ai.apiKey
-      ? normalizeBaseUrl(ai.baseUrl, providerDefaults.baseUrl)
-      : normalizeBaseUrl(process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL, envDefaults.baseUrl)
-    const model = ai.apiKey ? ai.model : process.env.AI_MODEL || process.env.STAR_MAP_CURATOR_MODEL || envDefaults.model
-    const response = await fetch(`${baseUrl}/chat/completions`, {
-      method: "POST",
-      headers: {
-        authorization: `Bearer ${apiKey}`,
-        "content-type": "application/json",
-      },
-      body: JSON.stringify({
-        model,
-        messages: [
-          {
-            role: "system",
-            content: `${SCENE_CURATOR_SYSTEM_PROMPT}\n\nReturn only valid json. Do not wrap it in markdown. The json object must follow the star_map_scene schema.`,
-          },
-          {
-            role: "user",
-            content: `Please curate this thinking star map as json. Schema:\n${JSON.stringify(STAR_MAP_SCENE_SCHEMA)}\nInput:\n${JSON.stringify({ rootQuestion, thoughts })}`,
-          },
-        ],
-        response_format: { type: "json_object" },
-        max_tokens: 3000,
-      }),
-    })
+    let baseUrl: string
+    try {
+      baseUrl = ai.apiKey
+        ? resolveAiBaseUrl(ai.baseUrl, providerDefaults.baseUrl, "client")
+        : resolveAiBaseUrl(
+            process.env.AI_BASE_URL || process.env.DEEPSEEK_BASE_URL || process.env.OPENAI_BASE_URL,
+            envDefaults.baseUrl,
+            "server"
+          )
+    } catch (error) {
+      if (error instanceof UnsafeAiEndpointError) return errorJson(400, "AI endpoint is not allowed")
+      throw error
+    }
+    const model = ai.apiKey
+      ? ai.model
+      : process.env.AI_MODEL || process.env.STAR_MAP_CURATOR_MODEL || process.env.OPENAI_MODEL || envDefaults.model
+    let response: Response
+    try {
+      response = await fetchAiEndpoint(`${baseUrl}/chat/completions`, {
+        method: "POST",
+        headers: {
+          authorization: `Bearer ${apiKey}`,
+          "content-type": "application/json",
+        },
+        body: JSON.stringify({
+          model,
+          messages: [
+            {
+              role: "system",
+              content: `${SCENE_CURATOR_SYSTEM_PROMPT}\n\nReturn only valid json. Do not wrap it in markdown. The json object must follow the star_map_scene schema.`,
+            },
+            {
+              role: "user",
+              content: `Please curate this thinking star map as json. Schema:\n${JSON.stringify(STAR_MAP_SCENE_SCHEMA)}\nInput:\n${JSON.stringify({ rootQuestion, thoughts })}`,
+            },
+          ],
+          response_format: { type: "json_object" },
+          max_tokens: 3000,
+        }),
+      }, ai.apiKey ? "client" : "server")
+    } catch (error) {
+      if (error instanceof UnsafeAiEndpointError) return errorJson(400, "AI endpoint is not allowed")
+      logWarn("thinking.star_map.curate.request_failed", {
+        error: error instanceof Error ? error.message : String(error),
+      })
+      return errorJson(502, "star map curator failed")
+    }
 
     const raw = (await response.json().catch(() => null)) as unknown
     if (!response.ok) {

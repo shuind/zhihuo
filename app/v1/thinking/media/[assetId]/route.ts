@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 
-import { readDb } from "@/lib/server/db";
+import { readUserDb } from "@/lib/server/db";
 import { errorJson, getUserId, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { readThinkingMediaAssetFile } from "@/lib/server/media";
@@ -11,7 +11,7 @@ export const GET = withApiRoute(
     const userId = getUserId(_request);
     if (!userId) return unauthorizedJson();
 
-    const db = await readDb();
+    const db = await readUserDb(userId, ["thinking_media_assets"]);
     const asset = db.thinking_media_assets.find(
       (item) => item.id === params.assetId && item.user_id === userId && !item.deleted_at
     );
@@ -22,8 +22,10 @@ export const GET = withApiRoute(
       return new Response(bytes, {
         headers: {
           "content-type": asset.mime_type || "application/octet-stream",
-          "cache-control": "public, max-age=31536000, immutable",
-          "content-length": String(bytes.byteLength)
+          "cache-control": "private, max-age=86400, immutable",
+          "content-length": String(bytes.byteLength),
+          "content-disposition": "inline",
+          "x-content-type-options": "nosniff"
         }
       });
     } catch {

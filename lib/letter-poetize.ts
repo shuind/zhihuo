@@ -8,7 +8,7 @@
 export type PoetizeInput = {
   /** 原始疑问 */
   doubt: string;
-  /** 思考过程中的节点（从发问到沉淀的顺序） */
+  /** 思考过程中的节点（从发问到封存的顺序） */
   nodes: string[];
   /** 用户的落笔一句（可选，思考层写回时间时留下的那句） */
   closing?: string;

@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 
 import { validateScene } from "@/components/thinking/star-map/director/scene-validator";
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { updateSpaceStarMapState, type StarMapStatePatch } from "@/lib/server/store";
@@ -34,7 +34,7 @@ export const POST = withApiRoute(
     if (patch.kind !== "ok") return errorJson(400, "星图状态无效");
 
     const resultRef: { value: ReturnType<typeof updateSpaceStarMapState> | null } = { value: null };
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta"], (db) => {
       resultRef.value = updateSpaceStarMapState(db, userId, params.spaceId, patch.value);
     });
 

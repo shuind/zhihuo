@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { readDb, updateDbScoped } from "@/lib/server/db";
+import { readUserDb, updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { getSpaceView, updateSpaceBackground } from "@/lib/server/store";
@@ -11,7 +11,7 @@ export const GET = withApiRoute(
   async (request: NextRequest, { params }: { params: { spaceId: string } }) => {
     const userId = getUserId(request);
     if (!userId) return unauthorizedJson();
-    const db = await readDb();
+    const db = await readUserDb(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes", "thinking_inbox", "thinking_node_links", "thinking_media_assets"]);
     const space = getSpaceView(db, userId, params.spaceId);
     if (!space) return errorJson(404, "空间不存在");
     return okJson(space);
@@ -40,7 +40,7 @@ export const POST = withApiRoute(
     if (!isBackgroundCompatRequest) return errorJson(400, "unsupported space mutation");
 
     const resultRef: { value: ReturnType<typeof updateSpaceBackground> | null } = { value: null };
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_media_assets"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_media_assets"], (db) => {
       resultRef.value = updateSpaceBackground(
         db,
         userId,

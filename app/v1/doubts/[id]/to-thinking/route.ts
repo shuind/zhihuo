@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { createThinkingSpaceFromDoubt } from "@/lib/server/store";
@@ -21,7 +21,7 @@ export const POST = withApiRoute(
     let spaceId: string | null = null;
     let spaceCreatedAt: string | null = null;
 
-    await updateDbScoped(["doubts", "thinking_spaces", "thinking_space_meta"], (db) => {
+    await updateUserDbScoped(userId, ["doubts", "thinking_spaces", "thinking_space_meta"], (db) => {
       const result = createThinkingSpaceFromDoubt(db, userId, params.id);
       if (!result) return;
       found = true;

@@ -157,6 +157,8 @@ export function StageRenderer({
         height={compiled.height}
         viewBox={`0 0 ${compiled.width} ${compiled.height}`}
         className="absolute inset-0 touch-none"
+        role="img"
+        aria-label="思考星图，可用 Tab 选择星点"
       >
         <defs>
           {/* core glow: three stacked radial gradients = no hard boundary */}
@@ -292,6 +294,9 @@ export function StageRenderer({
                   cy={star.y}
                   r={hitRadius}
                   fill="transparent"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={star.text ? `查看：${star.text}` : "查看思考节点"}
                   className={cn(onMoveStar ? "cursor-grab active:cursor-grabbing" : "cursor-pointer", dragId === star.id ? "cursor-grabbing" : null)}
                   style={{ touchAction: "none" }}
                   onMouseEnter={() => setHoverId(star.id)}
@@ -302,6 +307,12 @@ export function StageRenderer({
                   onPointerCancel={endDrag}
                   onClick={() => {
                     if (!onMoveStar) onSelectStar?.(star)
+                  }}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onSelectStar?.(star);
+                    }
                   }}
                 />
               </g>
@@ -337,10 +348,19 @@ export function StageRenderer({
               <div
                 key={`label-${star.id}`}
                 className="pointer-events-auto absolute cursor-pointer select-none transition-opacity"
+                role="button"
+                tabIndex={0}
+                aria-label={`查看：${star.text}`}
                 style={style}
                 onClick={() => onSelectStar?.(star)}
                 onMouseEnter={() => setHoverId(star.id)}
                 onMouseLeave={() => setHoverId((h) => (h === star.id ? null : h))}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" || event.key === " ") {
+                    event.preventDefault();
+                    onSelectStar?.(star);
+                  }
+                }}
               >
                 <div
                   className={cn(

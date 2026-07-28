@@ -46,7 +46,7 @@ export function LetterExporterDialog({
   closingNote,
   writtenAt,
   frozen = false,
-  authorName = "shuind"
+  authorName
 }: LetterExporterDialogProps) {
   const when = writtenAt ?? new Date();
   const [variant, setVariant] = useState<PaperVariant>(() => suggestVariant(when, frozen));

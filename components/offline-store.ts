@@ -4,7 +4,7 @@ import type { ThinkingSpaceView } from "@/components/thinking-layer";
 import type { LifeStore, ThinkingStore } from "@/components/zhihuo-model";
 
 const DB_NAME = "zhihuo_offline_v1";
-const DB_VERSION = 3;
+const DB_VERSION = 4;
 const SNAPSHOT_STORE = "snapshot";
 const QUEUE_STORE = "mutation_queue";
 const MEDIA_STORE = "media_asset";
@@ -332,6 +332,7 @@ function openDb(): Promise<IDBDatabase | null> {
       request.onerror = () => resolve(null);
       request.onupgradeneeded = () => {
         const db = request.result;
+        const tx = request.transaction;
         if (!db.objectStoreNames.contains(SNAPSHOT_STORE)) {
           db.createObjectStore(SNAPSHOT_STORE, { keyPath: "key" });
         }
@@ -343,6 +344,23 @@ function openDb(): Promise<IDBDatabase | null> {
         }
         if (!db.objectStoreNames.contains(SYNC_BACKUP_STORE)) {
           db.createObjectStore(SYNC_BACKUP_STORE, { keyPath: "id" });
+        }
+        if (tx) {
+          const queue = tx.objectStore(QUEUE_STORE);
+          if (!queue.indexNames.contains("ownerKey")) queue.createIndex("ownerKey", "ownerKey", { unique: false });
+          if (!queue.indexNames.contains("ownerStatus")) {
+            queue.createIndex("ownerStatus", ["ownerKey", "status"], { unique: false });
+          }
+          const media = tx.objectStore(MEDIA_STORE);
+          if (!media.indexNames.contains("ownerKey")) media.createIndex("ownerKey", "ownerKey", { unique: false });
+          if (!media.indexNames.contains("ownerStatus")) {
+            media.createIndex("ownerStatus", ["ownerKey", "status"], { unique: false });
+          }
+          const backups = tx.objectStore(SYNC_BACKUP_STORE);
+          if (!backups.indexNames.contains("ownerKey")) backups.createIndex("ownerKey", "ownerKey", { unique: false });
+          if (!backups.indexNames.contains("ownerCreatedAt")) {
+            backups.createIndex("ownerCreatedAt", ["ownerKey", "createdAt"], { unique: false });
+          }
         }
       };
       request.onsuccess = () => resolve(request.result);
@@ -374,6 +392,29 @@ function shouldKeepExistingSnapshot(existing: OfflineSnapshot | undefined, incom
   if (!existing) return false;
   const existingMeta = createOfflineSnapshotMeta(getOrCreateLocalProfileId(), existing.meta);
   const incomingMeta = incoming.meta;
+  if (existingMeta.ownerMode === "guest" && incomingMeta.ownerMode === "guest") {
+    const existingItemCount =
+      existing.lifeStore.doubts.length +
+      existing.lifeStore.notes.length +
+      existing.thinkingStore.spaces.length +
+      existing.thinkingStore.nodes.length +
+      existing.thinkingStore.scratch.length +
+      existing.thinkingStore.mediaAssets.length;
+    const incomingItemCount =
+      incoming.lifeStore.doubts.length +
+      incoming.lifeStore.notes.length +
+      incoming.thinkingStore.spaces.length +
+      incoming.thinkingStore.nodes.length +
+      incoming.thinkingStore.scratch.length +
+      incoming.thinkingStore.mediaAssets.length;
+    if (existingItemCount > 0 && incomingItemCount === 0) return true;
+    if (
+      existingMeta.completeness === "complete" &&
+      (incomingMeta.completeness === "syncing" || incomingMeta.completeness === "stale")
+    ) {
+      return true;
+    }
+  }
   if (
     existingMeta.ownerMode !== "user" ||
     incomingMeta.ownerMode !== "user" ||
@@ -538,7 +579,7 @@ export async function listOfflineMutationsByOwner(ownerKey: OfflineOwnerKey, now
   return new Promise((resolve) => {
     const tx = db.transaction(QUEUE_STORE, "readonly");
     const store = tx.objectStore(QUEUE_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerKey").getAll(ownerKey);
     req.onerror = () => resolve([]);
     req.onsuccess = () => {
       const rows = (req.result as QueuedMutation[] | undefined) ?? [];
@@ -649,7 +690,7 @@ export async function listDeadLetterMutationsByOwner(ownerKey: OfflineOwnerKey):
   return new Promise((resolve) => {
     const tx = db.transaction(QUEUE_STORE, "readonly");
     const store = tx.objectStore(QUEUE_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerStatus").getAll([ownerKey, "dead_letter"]);
     req.onerror = () => resolve([]);
     req.onsuccess = () => {
       const rows = (req.result as QueuedMutation[] | undefined) ?? [];
@@ -657,8 +698,7 @@ export async function listDeadLetterMutationsByOwner(ownerKey: OfflineOwnerKey):
       resolve(
         rows
           .map((item) => normalizeQueuedMutation(item, fallbackOwnerKey))
-          .filter((item) => item.ownerKey === ownerKey)
-          .filter((item) => item.status === "dead_letter")
+          .filter((item) => item.ownerKey === ownerKey && item.status === "dead_letter")
           .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
       );
     };
@@ -671,13 +711,13 @@ export async function clearOfflineMutationsByOwner(ownerKey: OfflineOwnerKey): P
   await new Promise<void>((resolve) => {
     const tx = db.transaction(QUEUE_STORE, "readwrite");
     const store = tx.objectStore(QUEUE_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerKey").openKeyCursor(ownerKey);
     req.onerror = () => resolve();
     req.onsuccess = () => {
-      const rows = (req.result as QueuedMutation[] | undefined) ?? [];
-      for (const row of rows) {
-        if (row.ownerKey === ownerKey) store.delete(row.id);
-      }
+      const cursor = req.result;
+      if (!cursor) return;
+      store.delete(cursor.primaryKey);
+      cursor.continue();
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
@@ -689,11 +729,17 @@ export async function clearOfflineSnapshotByOwner(ownerKey: OfflineOwnerKey): Pr
   await deleteSnapshotRow(ownerKey);
 }
 
-export async function clearOfflineOwnerState(ownerKey: OfflineOwnerKey): Promise<void> {
+export async function clearOfflineWorkingStateByOwner(ownerKey: OfflineOwnerKey): Promise<void> {
   await Promise.all([
     clearOfflineSnapshotByOwner(ownerKey),
     clearOfflineMutationsByOwner(ownerKey),
-    clearOfflineMediaAssetsByOwner(ownerKey),
+    clearOfflineMediaAssetsByOwner(ownerKey)
+  ]);
+}
+
+export async function clearOfflineOwnerState(ownerKey: OfflineOwnerKey): Promise<void> {
+  await Promise.all([
+    clearOfflineWorkingStateByOwner(ownerKey),
     clearOfflineSyncBackupsByOwner(ownerKey)
   ]);
 }
@@ -732,7 +778,7 @@ export async function listOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): 
   return new Promise((resolve) => {
     const tx = db.transaction(MEDIA_STORE, "readonly");
     const store = tx.objectStore(MEDIA_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerKey").getAll(ownerKey);
     req.onerror = () => resolve([]);
     req.onsuccess = () => {
       const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
@@ -747,8 +793,22 @@ export async function listOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): 
 }
 
 export async function listPendingOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey): Promise<OfflineMediaAssetRecord[]> {
-  const assets = await listOfflineMediaAssetsByOwner(ownerKey);
-  return assets.filter((item) => item.status === "pending" && !item.deletedAt && item.blob);
+  const db = await openDb();
+  if (!db) return [];
+  return new Promise((resolve) => {
+    const tx = db.transaction(MEDIA_STORE, "readonly");
+    const req = tx.objectStore(MEDIA_STORE).index("ownerStatus").getAll([ownerKey, "pending"]);
+    req.onerror = () => resolve([]);
+    req.onsuccess = () => {
+      const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
+      resolve(
+        rows
+          .map((item) => normalizeOfflineMediaAsset(item, ownerKey))
+          .filter((item) => item.ownerKey === ownerKey && item.status === "pending" && !item.deletedAt && item.blob)
+          .sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime())
+      );
+    };
+  });
 }
 
 export async function updateOfflineMediaAsset(
@@ -805,13 +865,13 @@ export async function clearOfflineMediaAssetsByOwner(ownerKey: OfflineOwnerKey):
   await new Promise<void>((resolve) => {
     const tx = db.transaction(MEDIA_STORE, "readwrite");
     const store = tx.objectStore(MEDIA_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerKey").openKeyCursor(ownerKey);
     req.onerror = () => resolve();
     req.onsuccess = () => {
-      const rows = (req.result as OfflineMediaAssetRecord[] | undefined) ?? [];
-      for (const row of rows) {
-        if (row.ownerKey === ownerKey) store.delete(row.id);
-      }
+      const cursor = req.result;
+      if (!cursor) return;
+      store.delete(cursor.primaryKey);
+      cursor.continue();
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();
@@ -829,9 +889,9 @@ export async function createOfflineSyncBackup(ownerKey: OfflineOwnerKey, reason:
     const mediaStore = tx.objectStore(MEDIA_STORE);
     const backupStore = tx.objectStore(SYNC_BACKUP_STORE);
     const snapshotReq = snapshotStore.get(ownerKey);
-    const queueReq = queueStore.getAll();
-    const mediaReq = mediaStore.getAll();
-    const backupsReq = backupStore.getAll();
+    const queueReq = queueStore.index("ownerKey").getAll(ownerKey);
+    const mediaReq = mediaStore.index("ownerKey").getAll(ownerKey);
+    const backupsReq = backupStore.index("ownerKey").getAll(ownerKey);
     let backup: OfflineSyncBackupRecord | null = null;
 
     tx.oncomplete = () => resolve(backup);
@@ -875,7 +935,7 @@ export async function listOfflineSyncBackupsByOwner(ownerKey: OfflineOwnerKey): 
   if (!db) return [];
   return new Promise((resolve) => {
     const tx = db.transaction(SYNC_BACKUP_STORE, "readonly");
-    const req = tx.objectStore(SYNC_BACKUP_STORE).getAll();
+    const req = tx.objectStore(SYNC_BACKUP_STORE).index("ownerKey").getAll(ownerKey);
     req.onerror = () => resolve([]);
     req.onsuccess = () => {
       const rows = (req.result as OfflineSyncBackupRecord[] | undefined) ?? [];
@@ -918,11 +978,13 @@ export async function restoreOfflineSyncBackup(backupId: string): Promise<Offlin
         key: normalized.ownerKey,
         value: cloneValue(normalized.snapshot)
       } satisfies SnapshotRecord);
-      const queueReq = queueStore.getAll();
+      const queueReq = queueStore.index("ownerKey").openKeyCursor(normalized.ownerKey);
       queueReq.onsuccess = () => {
-        const rows = (queueReq.result as QueuedMutation[] | undefined) ?? [];
-        for (const row of rows) {
-          if (row.ownerKey === normalized.ownerKey) queueStore.delete(row.id);
+        const cursor = queueReq.result;
+        if (cursor) {
+          queueStore.delete(cursor.primaryKey);
+          cursor.continue();
+          return;
         }
         for (const mutation of normalized.mutations) {
           if (mutation.status !== "acked") queueStore.put(cloneValue(mutation));
@@ -942,13 +1004,13 @@ export async function clearOfflineSyncBackupsByOwner(ownerKey: OfflineOwnerKey):
   await new Promise<void>((resolve) => {
     const tx = db.transaction(SYNC_BACKUP_STORE, "readwrite");
     const store = tx.objectStore(SYNC_BACKUP_STORE);
-    const req = store.getAll();
+    const req = store.index("ownerKey").openKeyCursor(ownerKey);
     req.onerror = () => resolve();
     req.onsuccess = () => {
-      const rows = (req.result as OfflineSyncBackupRecord[] | undefined) ?? [];
-      for (const row of rows) {
-        if (row.ownerKey === ownerKey) store.delete(row.id);
-      }
+      const cursor = req.result;
+      if (!cursor) return;
+      store.delete(cursor.primaryKey);
+      cursor.continue();
     };
     tx.oncomplete = () => resolve();
     tx.onerror = () => resolve();

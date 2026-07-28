@@ -125,7 +125,7 @@ export default function OpsMonitorPage() {
               <div className="mt-4 grid grid-cols-2 gap-3 text-sm md:grid-cols-3">
                 <MetricPill label="时间条目总量" value={data.content.time_entries_total} />
                 <MetricPill label="思路空间总量" value={data.content.spaces_total} />
-                <MetricPill label="已沉淀空间" value={data.content.spaces_settled} />
+                <MetricPill label="已封存空间" value={data.content.spaces_settled} />
                 <MetricPill label="思路条目总量" value={data.content.thought_items_total} />
                 <MetricPill label="待处理随记" value={data.content.scratch_open_total} />
               </div>

@@ -12,6 +12,7 @@ jobs:
     timeout-minutes: 20
     env:
       CI: "true"
+      ADMIN_EMAILS: zhihuo-api-ci-admin@example.com
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -244,7 +244,6 @@ export function createThinkingSpace(
   const normalized = normalizeQuestionInput(cleaned, null);
   // Space titles should accept short scratch content (e.g. single-character notes).
   const finalRootText = normalized.ok ? normalized.text : cleaned;
-  const converted = normalized.ok ? normalized.converted : false;
   const createdAsStatement = normalized.ok ? !normalized.is_question : true;
   const suggestedQuestions = normalized.ok ? normalized.suggested_questions.slice(0, 3) : [];
   const questionSuggestion = suggestedQuestions[0] ?? null;
@@ -263,7 +262,6 @@ export function createThinkingSpace(
       return {
         over_limit: false as const,
         space: existed,
-        converted,
         created_as_statement: createdAsStatement,
         suggested_questions: suggestedQuestions,
         question_suggestion: questionSuggestion
@@ -302,7 +300,6 @@ export function createThinkingSpace(
   return {
     over_limit: false as const,
     space,
-    converted,
     created_as_statement: createdAsStatement,
     suggested_questions: suggestedQuestions,
     question_suggestion: questionSuggestion
@@ -541,7 +538,6 @@ export function addQuestionToSpace(
         kind: "ok" as const,
         node: existed,
         normalized_question_text: existed.raw_question_text,
-        converted: false,
         note_text: existed.note_text ?? null,
         track_id: trackIdFromNode(existed),
         suggested_questions: suggestedQuestions
@@ -595,7 +591,6 @@ export function addQuestionToSpace(
     kind: "ok" as const,
     node,
     normalized_question_text: normalized.text,
-    converted: normalized.converted,
     note_text: normalized.raw_note,
     track_id: trackId,
     suggested_questions: suggestedQuestions
@@ -1163,7 +1158,13 @@ export function updateSpaceRootQuestion(db: DbState, userId: string, spaceId: st
   return { kind: "ok" as const, root_question_text: space.root_question_text, changed: true as const };
 }
 
-export function moveNode(db: DbState, userId: string, nodeId: string, targetTrackId: string) {
+export function moveNode(
+  db: DbState,
+  userId: string,
+  nodeId: string,
+  targetTrackId: string,
+  targetOrderIndex?: number
+) {
   const node = db.thinking_nodes.find((item) => item.id === nodeId);
   if (!node) return null;
   const space = requireSpace(db, userId, node.space_id);
@@ -1172,11 +1173,31 @@ export function moveNode(db: DbState, userId: string, nodeId: string, targetTrac
 
   const normalizedTarget = normalizeTrackId(targetTrackId);
   const nextTrackId = normalizedTarget === "__new__" || !normalizedTarget ? createId() : normalizedTarget;
-  if (trackIdFromNode(node) === nextTrackId) return { readonly: false as const, node, track_id: nextTrackId };
+  const currentTrackId = trackIdFromNode(node);
+  if (currentTrackId === nextTrackId && !Number.isFinite(targetOrderIndex)) {
+    return { readonly: false as const, node, track_id: nextTrackId };
+  }
   const meta = ensureMeta(db, node.space_id);
   removeEmptyTrackId(meta, nextTrackId);
   node.parent_node_id = toTrackParentId(nextTrackId);
-  node.order_index = maxOrderIndex(getSpaceNodes(db, node.space_id)) + 1;
+  const orderedNodes = getSpaceNodes(db, node.space_id)
+    .slice()
+    .sort((a, b) => a.order_index - b.order_index)
+    .filter((item) => item.id !== node.id);
+  const targetNodes = orderedNodes.filter((item) => trackIdFromNode(item) === nextTrackId);
+  const requestedIndex = Number.isFinite(targetOrderIndex)
+    ? Math.max(0, Math.min(targetNodes.length, Math.trunc(targetOrderIndex as number)))
+    : targetNodes.length;
+  const anchor = targetNodes[requestedIndex] ?? null;
+  const insertAt = anchor
+    ? orderedNodes.findIndex((item) => item.id === anchor.id)
+    : targetNodes.length
+      ? orderedNodes.findIndex((item) => item.id === targetNodes[targetNodes.length - 1]!.id) + 1
+      : orderedNodes.length;
+  orderedNodes.splice(Math.max(0, insertAt), 0, node);
+  orderedNodes.forEach((item, index) => {
+    item.order_index = index + 1;
+  });
   node.dimension = classifyDimension(node.raw_question_text);
   markSpaceActivity(space);
   bumpUserRevision(db, userId);
@@ -1456,6 +1477,8 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       parkingTrackId: meta.parking_track_id ?? null,
       pendingTrackId: meta.pending_track_id ?? null,
       emptyTrackIds: meta.empty_track_ids ?? [],
+      milestoneNodeIds: meta.milestone_node_ids ?? [],
+      trackDirectionHints: meta.track_direction_hints ?? {},
       starMapSceneSignature: meta.star_map_scene_signature ?? null,
       starMapCuratedScene: meta.star_map_curated_scene ?? null,
       starMapCuratedAt: meta.star_map_curated_at ?? null,
@@ -1463,6 +1486,17 @@ export function getThinkingSnapshot(db: DbState, userId: string): ThinkingSnapsh
       starMapPlacementsSignature: meta.star_map_placements_signature ?? null,
       starMapPlacementsUpdatedAt: meta.star_map_placements_updated_at ?? null
     })),
+    nodeLinks: db.thinking_node_links
+      .filter((link) => spaceIds.has(link.space_id))
+      .map((link) => ({
+        id: link.id,
+        spaceId: link.space_id,
+        sourceNodeId: link.source_node_id,
+        targetNodeId: link.target_node_id,
+        linkType: link.link_type,
+        score: link.score,
+        createdAt: link.created_at
+      })),
     mediaAssets: listThinkingMediaAssets(db, userId).map((asset) => ({
       id: asset.id,
       userId: asset.user_id,
@@ -1508,6 +1542,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
     };
   });
   const spaceIds = new Set(nextSpaces.map((space) => space.id));
+  const userSpaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
 
   const nextNodes: ThinkingNodeRecord[] = (snapshot.nodes ?? [])
     .filter((node) => typeof node.spaceId === "string" && spaceIds.has(node.spaceId))
@@ -1526,6 +1561,7 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
       dimension: node.dimension ?? "definition"
     }))
     .filter((node) => node.raw_question_text);
+  const nodeIds = new Set(nextNodes.map((node) => node.id));
   const nextNodesBySpace = new Map<string, ThinkingNodeRecord[]>();
   for (const node of nextNodes) {
     const list = nextNodesBySpace.get(node.space_id);
@@ -1538,8 +1574,9 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
 
   const nextMeta: ThinkingSpaceMetaRecord[] = (snapshot.spaceMeta ?? [])
     .filter((meta) => typeof meta.spaceId === "string" && spaceIds.has(meta.spaceId))
-    .map((meta) =>
-      sanitizeMeta({
+    .map((meta) => {
+      const existingMeta = db.thinking_space_meta.find((item) => item.space_id === meta.spaceId);
+      return sanitizeMeta({
         space_id: meta.spaceId,
         user_freeze_note: null,
         export_version: Number.isFinite(meta.exportVersion) && meta.exportVersion > 0 ? meta.exportVersion : 1,
@@ -1567,8 +1604,18 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
         empty_track_ids: Array.isArray(meta.emptyTrackIds)
           ? meta.emptyTrackIds.filter((id) => typeof id === "string")
           : [],
-        milestone_node_ids: [],
-        track_direction_hints: {},
+        milestone_node_ids: (Array.isArray(meta.milestoneNodeIds)
+          ? meta.milestoneNodeIds
+          : existingMeta?.milestone_node_ids ?? []
+        ).filter((id) => typeof id === "string" && nodeIds.has(id)),
+        track_direction_hints:
+          meta.trackDirectionHints && typeof meta.trackDirectionHints === "object"
+            ? Object.fromEntries(
+                Object.entries(meta.trackDirectionHints).filter(
+                  ([trackId, hint]) => typeof trackId === "string" && (typeof hint === "string" || hint === null)
+                )
+              )
+            : existingMeta?.track_direction_hints ?? {},
         star_map_scene_signature:
           typeof meta.starMapSceneSignature === "string" && meta.starMapSceneSignature.trim()
             ? meta.starMapSceneSignature
@@ -1585,8 +1632,8 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
           typeof meta.starMapPlacementsUpdatedAt === "string" && meta.starMapPlacementsUpdatedAt.trim()
             ? meta.starMapPlacementsUpdatedAt
             : null
-      })
-    );
+      });
+    });
 
   const rawInbox = snapshot.inbox ?? {};
   const nextInbox = Object.entries(rawInbox).flatMap(([spaceId, list]) => {
@@ -1631,15 +1678,50 @@ export function replaceThinkingSnapshot(db: DbState, userId: string, snapshot: T
       uploaded_at: typeof asset.uploadedAt === "string" ? asset.uploadedAt : null,
       deleted_at: typeof asset.deletedAt === "string" ? asset.deletedAt : null
     }));
+  const rawNodeLinks =
+    snapshot.nodeLinks ??
+    db.thinking_node_links
+      .filter((link) => userSpaceIds.has(link.space_id))
+      .map((link) => ({
+        id: link.id,
+        spaceId: link.space_id,
+        sourceNodeId: link.source_node_id,
+        targetNodeId: link.target_node_id,
+        linkType: link.link_type,
+        score: link.score,
+        createdAt: link.created_at
+      }));
+  const nextNodeLinks: ThinkingNodeLinkRecord[] = rawNodeLinks
+    .filter(
+      (link) =>
+        link &&
+        typeof link.spaceId === "string" &&
+        spaceIds.has(link.spaceId) &&
+        typeof link.sourceNodeId === "string" &&
+        nodeIds.has(link.sourceNodeId) &&
+        typeof link.targetNodeId === "string" &&
+        nodeIds.has(link.targetNodeId)
+    )
+    .map((link) => ({
+      id: typeof link.id === "string" ? link.id : createId(),
+      space_id: link.spaceId,
+      source_node_id: link.sourceNodeId,
+      target_node_id: link.targetNodeId,
+      link_type: "related",
+      score: Number.isFinite(link.score) ? Number(link.score) : 0,
+      created_at: typeof link.createdAt === "string" ? link.createdAt : nowIso()
+    }));
 
-  const userSpaceIds = new Set(db.thinking_spaces.filter((space) => space.user_id === userId).map((space) => space.id));
   db.thinking_spaces = [...db.thinking_spaces.filter((space) => space.user_id !== userId), ...nextSpaces];
   db.thinking_nodes = [
     ...db.thinking_nodes.filter((node) => !userSpaceIds.has(node.space_id)),
     ...nextNodes.sort((a, b) => a.order_index - b.order_index)
   ];
   db.thinking_space_meta = [...db.thinking_space_meta.filter((meta) => !userSpaceIds.has(meta.space_id)), ...nextMeta];
-  db.thinking_node_links = db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id));
+  db.thinking_node_links = [
+    ...db.thinking_node_links.filter((link) => !userSpaceIds.has(link.space_id)),
+    ...nextNodeLinks
+  ];
   db.thinking_inbox = [...db.thinking_inbox.filter((item) => !userSpaceIds.has(item.space_id)), ...nextInbox];
   db.thinking_scratch = [...db.thinking_scratch.filter((item) => item.user_id !== userId), ...nextScratch];
   db.thinking_media_assets = [...db.thinking_media_assets.filter((asset) => asset.user_id !== userId), ...nextMediaAssets];

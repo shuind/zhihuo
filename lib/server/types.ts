@@ -254,12 +254,23 @@ export type ThinkingSnapshot = {
     parkingTrackId?: string | null;
     pendingTrackId?: string | null;
     emptyTrackIds?: string[];
+    milestoneNodeIds?: string[];
+    trackDirectionHints?: Record<string, string | null>;
     starMapSceneSignature?: string | null;
     starMapCuratedScene?: Record<string, unknown> | null;
     starMapCuratedAt?: string | null;
     starMapStarPlacements?: Record<string, StarMapPlacementRecord>;
     starMapPlacementsSignature?: string | null;
     starMapPlacementsUpdatedAt?: string | null;
+  }>;
+  nodeLinks?: Array<{
+    id: string;
+    spaceId: string;
+    sourceNodeId: string;
+    targetNodeId: string;
+    linkType: "related";
+    score: number;
+    createdAt: string;
   }>;
   mediaAssets?: Array<{
     id: string;

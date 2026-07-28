@@ -1,6 +1,6 @@
 ﻿import { NextRequest } from "next/server";
 
-import { updateDbScoped } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
 import { errorJson, extractClientMutationMeta, getUserId, okJson, parseJsonBody, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { writeSpaceToTime } from "@/lib/server/store";
@@ -34,7 +34,7 @@ export const POST = withApiRoute(
     let doubtId: string | null = null;
     let writtenAt: string | null = null;
 
-    await updateDbScoped(["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
+    await updateUserDbScoped(userId, ["thinking_spaces", "thinking_space_meta", "thinking_nodes", "doubts"], (db) => {
       const written = writeSpaceToTime(db, userId, params.spaceId, noteText, {
         preserveOriginalTime,
         clientDoubtId: typeof body?.client_doubt_id === "string" ? body.client_doubt_id : null,

@@ -14,7 +14,7 @@ export function TopTab(props: { label: string; active: boolean; onClick: () => v
         props.subtle
           ? props.active
             ? "border-white/[0.06] bg-white/[0.03] text-[rgba(236,233,226,0.8)]"
-            : "border-white/[0.03] bg-transparent text-[rgba(224,219,211,0.38)] hover:bg-white/[0.025] hover:text-[rgba(236,233,226,0.68)]"
+            : "border-white/[0.05] bg-transparent text-[rgba(236,233,226,0.72)] hover:bg-white/[0.04] hover:text-[rgba(248,245,238,0.9)]"
           : props.active
             ? props.daytime
               ? "border-slate-600/35 bg-slate-100/75 text-slate-900"

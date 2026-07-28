@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 
-import { updateDb } from "@/lib/server/db";
+import { updateUserDbScoped } from "@/lib/server/db";
+import { ALL_USER_SCOPED_TABLES } from "@/lib/server/db/postgres-scope";
 import { errorJson, getUserId, okJson, unauthorizedJson } from "@/lib/server/http";
 import { withApiRoute } from "@/lib/server/observability";
 import { buildUserExport, buildUserExportMarkdown } from "@/lib/server/security";
@@ -16,7 +17,7 @@ export const GET = withApiRoute(
     const includeThinking = request.nextUrl.searchParams.get("include_thinking") !== "false";
 
     let result: { markdown: string } | { payload: unknown; checksum: string } | null = null;
-    await updateDb(async (db) => {
+    await updateUserDbScoped(userId, ALL_USER_SCOPED_TABLES, async (db) => {
       const user = db.users.find((item) => item.id === userId && !item.deleted_at);
       if (!user) return;
       if (format === "markdown") {

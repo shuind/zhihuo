@@ -21,6 +21,14 @@ export type OrganizeTargetTrack = {
   title: string;
 };
 
+export type OrganizeSuggestion = {
+  nodeId: string;
+  preview: string;
+  fromTrackId: string;
+  suggestedTrackId: string;
+  score: number;
+};
+
 export function OrganizePanel(props: {
   open: boolean;
   activeTrackId: string | null;
@@ -39,20 +47,25 @@ export function OrganizePanel(props: {
   onTargetTrackIdChange: (trackId: string) => void;
   targetTracks: OrganizeTargetTrack[];
   isApplying: boolean;
+  suggestions: OrganizeSuggestion[];
+  suggestionsLoading: boolean;
+  applyingSuggestionNodeId: string | null;
+  onRefreshSuggestions: () => void;
+  onApplySuggestion: (suggestion: OrganizeSuggestion) => void;
   onClose: () => void;
   onApply: () => void;
   formatRelativeTime: (createdAt?: string) => string;
 }) {
   if (!props.open) return null;
   return (
-    <div data-organize-panel="true" className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
+    <div data-organize-panel="true" role="dialog" aria-modal="true" aria-label="整理想法" className="absolute inset-0 z-50 grid place-items-center bg-black/15 backdrop-blur-[1px]">
       <div className="w-[860px] max-w-[calc(100vw-1.5rem)] rounded-2xl border border-black/12 bg-white p-4 shadow-[0_20px_48px_rgba(15,23,42,0.22)] sm:p-5">
         <div className="flex items-center justify-between gap-2">
           <div>
             <p className="text-sm text-slate-800">整理一下</p>
-            <p className="mt-1 text-xs text-slate-500">选择内容并移动到目标方向</p>
+            <p className="mt-1 text-xs text-slate-600">选择内容并移动到目标方向</p>
           </div>
-          <button type="button" className="text-xs text-slate-500 hover:text-slate-700" onClick={props.onClose}>
+          <button type="button" className="text-xs text-slate-600 hover:text-slate-700" onClick={props.onClose}>
             关闭
           </button>
         </div>
@@ -78,6 +91,7 @@ export function OrganizePanel(props: {
             ))}
           </div>
           <input
+            aria-label="搜索待整理内容"
             value={props.query}
             placeholder="搜索内容或来源方向"
             className="h-8 min-w-0 flex-1 rounded-full border border-black/12 bg-white px-3 text-xs text-slate-700 outline-none focus-visible:ring-1 focus-visible:ring-black/20"
@@ -102,6 +116,47 @@ export function OrganizePanel(props: {
             {props.allVisibleSelected ? "取消全选" : "全选当前结果"}
           </button>
         </div>
+        <section className="mt-3 rounded-xl border border-indigo-200/80 bg-indigo-50/65 p-3" aria-label="智能整理建议">
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-xs font-medium text-indigo-950">智能整理建议</p>
+              <p className="mt-1 text-[11px] leading-5 text-indigo-800/75">只建议归位，不会自动移动；每一条都由你确认。</p>
+            </div>
+            <button
+              type="button"
+              className="shrink-0 rounded-full border border-indigo-300 bg-white px-3 py-1 text-xs text-indigo-900 disabled:opacity-50"
+              disabled={props.suggestionsLoading}
+              onClick={props.onRefreshSuggestions}
+            >
+              {props.suggestionsLoading ? "分析中…" : "重新分析"}
+            </button>
+          </div>
+          {props.suggestions.length ? (
+            <div className="mt-3 space-y-2">
+              {props.suggestions.map((suggestion) => {
+                const targetTitle = props.targetTracks.find((track) => track.id === suggestion.suggestedTrackId)?.title ?? "建议方向";
+                return (
+                  <div key={suggestion.nodeId} className="flex items-start justify-between gap-3 rounded-lg border border-indigo-200/70 bg-white px-3 py-2">
+                    <div className="min-w-0">
+                      <p className="text-[13px] leading-5 text-slate-800">{suggestion.preview || "未命名想法"}</p>
+                      <p className="mt-1 text-[11px] text-indigo-800/75">建议移到：{targetTitle}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="shrink-0 rounded-full border border-indigo-300 px-3 py-1 text-xs text-indigo-900 hover:bg-indigo-50 disabled:opacity-50"
+                      disabled={props.applyingSuggestionNodeId === suggestion.nodeId}
+                      onClick={() => props.onApplySuggestion(suggestion)}
+                    >
+                      {props.applyingSuggestionNodeId === suggestion.nodeId ? "移动中…" : "采用"}
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          ) : !props.suggestionsLoading ? (
+            <p className="mt-3 text-xs text-indigo-800/70">暂未发现需要调整的位置。</p>
+          ) : null}
+        </section>
         <div className="mt-3 max-h-[52vh] space-y-2 overflow-y-auto pr-1">
           {props.visibleNodes.length ? (
             props.visibleNodes.map((node) => (
@@ -131,7 +186,7 @@ export function OrganizePanel(props: {
                     <p className="text-[13px] leading-[1.55] text-slate-700 [overflow-wrap:anywhere]">
                       {node.questionText || `节点 ${node.nodeId.slice(0, 8)}`}
                     </p>
-                    <p className="mt-1 text-[11px] text-slate-500">
+                    <p className="mt-1 text-[11px] text-slate-600">
                       来自：{node.fromTrackTitle || "未命名方向"}
                       {node.createdAt ? ` · ${props.formatRelativeTime(node.createdAt)}` : ""}
                     </p>
@@ -140,13 +195,13 @@ export function OrganizePanel(props: {
               </label>
             ))
           ) : (
-            <p className="rounded-xl border border-black/8 bg-[#fcfaf6] px-3 py-6 text-center text-sm text-slate-500">
+            <p className="rounded-xl border border-black/8 bg-[#fcfaf6] px-3 py-6 text-center text-sm text-slate-600">
               当前范围没有待整理内容
             </p>
           )}
         </div>
         <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-slate-500">已选 {props.selectedNodeIds.length} 条</p>
+          <p className="text-xs text-slate-600">已选 {props.selectedNodeIds.length} 条</p>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="text-xs text-slate-600">移动到</span>
             <select
