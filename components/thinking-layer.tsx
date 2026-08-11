@@ -91,49 +91,6 @@ function spaceStatusLabel(status: ThinkingSpaceStatus) {
   return status === "hidden" ? "已封存" : "进行中";
 }
 
-function MiniStarMapPreview({ scene }: { scene: ThinkingSpaceMeta["starMapCuratedScene"] }) {
-  const stars = scene?.stars?.slice(0, 18) ?? [];
-  if (!stars.length) {
-    return (
-      <span aria-hidden="true" className="grid h-7 w-10 shrink-0 place-items-center rounded-full bg-slate-900/[0.04] text-[10px] text-slate-600">
-        ···
-      </span>
-    );
-  }
-  const positions = new Map(
-    stars.map((star) => {
-      const radius = [0, 5, 9, 13, 16][star.ring] ?? 10;
-      const angle = (star.angle * Math.PI) / 180;
-      return [star.id, { x: 21 + Math.cos(angle) * radius, y: 14 + Math.sin(angle) * radius }] as const;
-    })
-  );
-  return (
-    <svg aria-hidden="true" width="42" height="28" viewBox="0 0 42 28" className="shrink-0 rounded-full bg-[#11100d]">
-      {(scene?.strands ?? []).slice(0, 20).map((strand) => {
-        const from = positions.get(strand.fromId);
-        const to = positions.get(strand.toId);
-        if (!from || !to) return null;
-        return <line key={strand.id} x1={from.x} y1={from.y} x2={to.x} y2={to.y} stroke="#7c735e" strokeOpacity="0.42" strokeWidth="0.5" />;
-      })}
-      <circle cx="21" cy="14" r="1.5" fill="#d8bd82" />
-      {stars.map((star) => {
-        const point = positions.get(star.id);
-        if (!point) return null;
-        return (
-          <circle
-            key={star.id}
-            cx={point.x}
-            cy={point.y}
-            r={star.role === "hero" ? 1.35 : 0.8}
-            fill={star.role === "hero" ? "#f0d28c" : "#b8b09c"}
-            opacity={star.role === "ambient" ? 0.5 : 0.9}
-          />
-        );
-      })}
-    </svg>
-  );
-}
-
 export type ThinkingTrackNodeView = {
   id: string;
   questionText: string;
@@ -1832,25 +1789,21 @@ function ThinkingLayerComponent(props: {
               <div className="min-w-0 flex-1 overflow-x-auto">
                 <div className="flex w-max min-w-full items-center gap-2 pr-3">
                   {tabs.length ? (
-                    tabs.map((space) => {
-                      const meta = props.store.spaceMeta.find((item) => item.spaceId === space.id);
-                      return (
-                        <button
-                          key={space.id}
-                          type="button"
-                          onClick={() => openSpaceDetail(space.id)}
-                          className={cn(
-                            "flex max-w-[270px] items-center gap-2 rounded-full border py-1 pl-1 pr-3 text-left text-xs leading-[1.35] transition-colors",
-                            props.activeSpaceId === space.id
-                              ? "border-black/18 bg-white text-slate-900"
-                              : "border-black/8 bg-white/52 text-slate-600 hover:bg-white/82"
-                          )}
-                        >
-                          <MiniStarMapPreview scene={meta?.starMapCuratedScene ?? null} />
-                          <span className="line-clamp-1">{space.rootQuestionText}</span>
-                        </button>
-                      );
-                    })
+                    tabs.map((space) => (
+                      <button
+                        key={space.id}
+                        type="button"
+                        onClick={() => openSpaceDetail(space.id)}
+                        className={cn(
+                          "max-w-[240px] rounded-full border px-3 py-1.5 text-left text-xs leading-[1.35] transition-colors",
+                          props.activeSpaceId === space.id
+                            ? "border-black/18 bg-white text-slate-900"
+                            : "border-black/8 bg-white/52 text-slate-600 hover:bg-white/82"
+                        )}
+                      >
+                        <span className="line-clamp-1">{space.rootQuestionText}</span>
+                      </button>
+                    ))
                   ) : (
                     <span className="text-xs text-slate-600">先创建一个思考空间</span>
                   )}
@@ -1931,17 +1884,10 @@ function ThinkingLayerComponent(props: {
                             className="w-full rounded-[18px] border border-transparent px-3 py-3 text-left transition-colors hover:border-black/[0.05] hover:bg-white/72"
                             onClick={() => openSpaceDetail(space.id)}
                           >
-                            <div className="flex items-center gap-3">
-                              <MiniStarMapPreview
-                                scene={props.store.spaceMeta.find((item) => item.spaceId === space.id)?.starMapCuratedScene ?? null}
-                              />
-                              <div className="min-w-0">
-                                <p className="text-sm leading-[1.65] text-slate-800 [overflow-wrap:anywhere]">{space.rootQuestionText}</p>
-                                <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-600">
-                                  <span>{spaceStatusLabel(space.status)}</span>
-                                  <span>{formatRelativeNodeTime(space.lastActivityAt ?? space.createdAt)}</span>
-                                </div>
-                              </div>
+                            <p className="text-sm leading-[1.65] text-slate-800 [overflow-wrap:anywhere]">{space.rootQuestionText}</p>
+                            <div className="mt-1.5 flex items-center gap-2 text-[11px] text-slate-600">
+                              <span>{spaceStatusLabel(space.status)}</span>
+                              <span>{formatRelativeNodeTime(space.lastActivityAt ?? space.createdAt)}</span>
                             </div>
                           </button>
                         ))}
